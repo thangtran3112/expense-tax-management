@@ -25,7 +25,8 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Clerk SPF/DKIM CNAMEs verified. DMARC: `_dmarc.tobytran.dev` = `v=DMARC1; p=none; adkim=s; aspf=s`.
 - Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
 - Authenticated production smoke passed 13/13.
-- Phase 3B deduplication is deployed. Phase 3C and Phase 3D remain unimplemented.
+- Phase 3B deduplication is deployed. Phase 3C is implemented on `dev` but not deployed; Phase 3D remains unimplemented.
+- Release hazard: `dev` App API dispatches to queue `expense-tax-processing` while production Python worker polls `expense-tax-ai-worker`. Do not release `dev` to `main` until runtime migration Task 7 routing work lands.
 
 ## Boundaries
 
@@ -55,7 +56,9 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - After a squash merge, `feature/toby` diverges from its now-merged commits; fast-forward it onto the new `origin/dev` tip (or reset+force-push `feature/toby` specifically if fast-forward is not possible) before the next round of work. Never force-push `dev` or `main`.
 - Never bypass branch protection.
 - `main` remains outside the development flow until a later release phase.
-- No GitHub or Git remote write may run without explicit execution-time confirmation immediately before the command, including push, workflow dispatch, ref creation, ruleset activation, default-branch change, pull-request creation, and merge.
+- Personal repository standing approval: agents may push `feature/*` branches, open pull requests to `dev`, and squash-merge them into `origin/dev` without execution-time confirmation once the merge conditions above hold.
+- Conserve GitHub Actions minutes: stack commits locally, push only after local verification, and open exactly one pull request per phase; avoid extra pushes to an open pull request unless CI fails.
+- Every other remote write still needs explicit execution-time confirmation immediately before the command: anything targeting `main`, workflow dispatch, ruleset or default-branch changes, and force-pushes other than `feature/toby` resets.
 - Preserve unrelated worktree changes, especially `plans/mockups/**`; stage exact paths only.
 - Never inspect, print, commit, or expose secrets.
 - Inspect status and diff before editing; never revert unrelated changes.
