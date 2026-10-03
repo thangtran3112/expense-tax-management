@@ -13,6 +13,7 @@ const config = workerConfigFromEnv({
   AI_WORKER_TASK_QUEUE: "expense-tax-processing",
   APP_API_BASE_URL: "http://app-api:8100",
   FOUNDRY_BASE_URL: "http://foundry-service:8200",
+  MAILBOX_BROKER_BASE_URL: "http://mailbox-broker:8300",
   CLERK_ISSUER_URL: "https://clerk.test",
   CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
   CLERK_APP_SERVICE_AUDIENCE: "mch_appAudience",
@@ -21,6 +22,9 @@ const config = workerConfigFromEnv({
   CLERK_FOUNDRY_SERVICE_AUDIENCE: "mch_foundryAudience",
   CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_test_foundry_secret",
   CLERK_FOUNDRY_SERVICE_SUBJECT: "mch_foundry",
+  CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailboxAudience",
+  CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_test_mailbox_secret",
+  CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox",
 });
 
 function workerFactories(options: { runError?: Error } = {}) {

@@ -8,6 +8,7 @@ const ENV = {
   AI_WORKER_TASK_QUEUE: " expense-tax-processing ",
   APP_API_BASE_URL: " http://app-api:8100/ ",
   FOUNDRY_BASE_URL: " https://foundry.test/ ",
+  MAILBOX_BROKER_BASE_URL: " http://mailbox-broker:8300/ ",
   CLERK_ISSUER_URL: " https://clerk.test/ ",
   CLERK_JWKS_URL: " https://clerk.test/.well-known/jwks.json ",
   CLERK_APP_SERVICE_AUDIENCE: " mch_appAudience ",
@@ -16,6 +17,9 @@ const ENV = {
   CLERK_FOUNDRY_SERVICE_AUDIENCE: " mch_foundryAudience ",
   CLERK_FOUNDRY_MACHINE_SECRET_KEY: " ak_test_foundry_secret ",
   CLERK_FOUNDRY_SERVICE_SUBJECT: " mch_foundry ",
+  CLERK_MAILBOX_SERVICE_AUDIENCE: " mch_mailboxAudience ",
+  CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: " ak_test_mailbox_secret ",
+  CLERK_MAILBOX_WORKER_SUBJECT: " workflow-worker-mailbox ",
 } as const;
 
 const REQUIRED_KEYS = Object.keys(ENV) as (keyof typeof ENV)[];
@@ -31,6 +35,7 @@ describe("workerConfigFromEnv", () => {
       services: {
         appApiBaseUrl: "http://app-api:8100",
         foundryBaseUrl: "https://foundry.test",
+        mailboxBrokerBaseUrl: "http://mailbox-broker:8300",
       },
       clerk: {
         issuerUrl: "https://clerk.test",
@@ -44,6 +49,16 @@ describe("workerConfigFromEnv", () => {
           audience: "mch_foundryAudience",
           machineSecretKey: "ak_test_foundry_secret",
           subject: "mch_foundry",
+        },
+        mailboxApp: {
+          audience: "mch_appAudience",
+          machineSecretKey: "ak_test_mailbox_secret",
+          subject: "workflow-worker-mailbox",
+        },
+        mailboxBroker: {
+          audience: "mch_mailboxAudience",
+          machineSecretKey: "ak_test_mailbox_secret",
+          subject: "workflow-worker-mailbox",
         },
       },
     });
@@ -97,6 +112,10 @@ describe("workerConfigFromEnv", () => {
     ["CLERK_FOUNDRY_SERVICE_AUDIENCE", "foundry-audience"],
     ["CLERK_FOUNDRY_MACHINE_SECRET_KEY", "secret"],
     ["CLERK_FOUNDRY_SERVICE_SUBJECT", "foundry-subject"],
+    ["CLERK_MAILBOX_SERVICE_AUDIENCE", "mailbox-audience"],
+    ["CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY", "not-yet-issued"],
+    ["CLERK_MAILBOX_WORKER_SUBJECT", "Workflow-Worker-Mailbox"],
+    ["CLERK_MAILBOX_WORKER_SUBJECT", "mch_workerMailbox"],
   ] as const)("rejects invalid machine credential %s", (key, value) => {
     expect(() => workerConfigFromEnv({ ...ENV, [key]: value })).toThrow(key);
   });
