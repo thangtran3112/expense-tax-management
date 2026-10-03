@@ -1,0 +1,34 @@
+[Unit]
+Description=Retry family-app-backup after a failure (hourly, up to 4 attempts / 6h)
+# Self-chaining: a failed retry schedules another retry. Combined with the
+# start-limit below, systemd itself refuses a 5th start within the 6h
+# window -- that refusal, surfaced in `systemctl status`/journal, plus the
+# unit simply never succeeding, IS the "stop retries" half of the plan's
+# requirement. The normal 12h family-app-backup.timer is untouched and
+# keeps firing independently regardless of how this unit's retries go.
+OnFailure=family-app-backup-retry.service
+StartLimitIntervalSec=21600
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+# Spaces each retry attempt roughly an hour apart, including the first one
+# after the original run's failure.
+ExecStartPre=/bin/sleep 3600
+RuntimeMaxSec=7200
+ExecStart=/usr/bin/docker run --rm \
+  --name family-app-backup-retry-run \
+  --network postgres_default \
+  --read-only \
+  --tmpfs /staging:size=512m,mode=1700 \
+  --env-file /etc/family-app/backup.env \
+  -v /etc/family-app/backup-pgpassword:/run/secrets/pgpassword:ro \
+  -v /etc/family-app/backup-writer-key.json:/run/secrets/writer-key.json:ro \
+  -v /opt/family-app/backup/state:/state \
+  -v /opt/family-app/backup/ciphertext:/ciphertext \
+  -v __RECEIPT_VOLUME__:/receipts:ro \
+  __BACKUP_IMAGE__
+ExecStopPost=-/usr/bin/docker rm -f family-app-backup-retry-run
+
+# No [Install] section: activated only via OnFailure, from either
+# family-app-backup.service or (self-chained) this unit itself.

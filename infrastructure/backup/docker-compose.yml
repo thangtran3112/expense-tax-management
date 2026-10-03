@@ -1,0 +1,58 @@
+# Standalone Compose contract for the one-shot encrypted backup (Task 6 of
+# vps-backup-and-restore.md). Deliberately NOT part of
+# expense-tax-management/deploy/production/docker-compose.yml: backup is
+# shared host infrastructure (ARCHITECTURE.md "Backup and Recovery"), not
+# an Expense application service, and Compose interpolates every ${VAR:?}
+# in a file before any --profile filtering -- a required backup var inside
+# the Expense production file would break ordinary `docker compose
+# up`/`config`/deploy even when backup itself was never installed on the
+# host (this is exactly what happened before this file existed; see
+# review fix round 1).
+#
+# Usage (manual/ad hoc -- the family-app-backup systemd timer invokes the
+# pinned image directly via `docker run`, not through Compose; see
+# infrastructure/vps/steps/40-backup.sh):
+#
+#   cd infrastructure/backup
+#   docker compose --env-file /etc/family-app/backup.env \
+#     -f docker-compose.yml run --rm backup
+services:
+  backup:
+    image: ${BACKUP_IMAGE:?BACKUP_IMAGE is required}
+    read_only: true
+    tmpfs:
+      - /staging:size=512m,mode=1700
+    environment:
+      BACKUP_GCS_URI: ${BACKUP_GCS_URI:?BACKUP_GCS_URI is required}
+      BACKUP_HOST_ID: ${BACKUP_HOST_ID:?BACKUP_HOST_ID is required}
+      AGE_RECIPIENT: ${AGE_RECIPIENT:?AGE_RECIPIENT is required}
+      RECEIPT_STORAGE_DIR: /receipts
+      BACKUP_STATE_DIR: /state
+      BACKUP_CIPHERTEXT_DIR: /ciphertext
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/writer-key.json
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD_FILE: /run/secrets/pgpassword
+    volumes:
+      - /etc/family-app/backup-pgpassword:/run/secrets/pgpassword:ro
+      - /etc/family-app/backup-writer-key.json:/run/secrets/writer-key.json:ro
+      - /opt/family-app/backup/state:/state
+      - /opt/family-app/backup/ciphertext:/ciphertext
+      - expense_tax_production_storage:/receipts:ro
+    networks: [database]
+
+networks:
+  database:
+    external: true
+    name: postgres_default
+
+volumes:
+  # The Expense production receipt volume, created by
+  # expense-tax-management/deploy/production/docker-compose.yml under its
+  # own Compose project. Referenced here by its real (project-prefixed)
+  # name since Docker resolves a named volume regardless of which Compose
+  # project created it.
+  expense_tax_production_storage:
+    external: true
+    name: expense-tax-production_expense_tax_production_storage

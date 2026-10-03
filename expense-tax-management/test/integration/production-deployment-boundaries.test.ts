@@ -387,4 +387,46 @@ esac
     expect(deploy).toContain("health-check.sh");
     expect(deploy).toContain("rollback failed");
   });
+
+  it("renders normal production Compose config with no backup variables set", () => {
+    // Backup (vps-backup-and-restore.md) is shared host infrastructure, not
+    // an Expense application service -- it must never require its own env
+    // vars just to parse/deploy the normal application stack. Compose
+    // interpolates ${VAR:?} for every service before any --profile
+    // filtering, so a required backup var anywhere in this file would break
+    // every ordinary `docker compose up`/`config`/deploy, even when backup
+    // itself was never installed on the host.
+    const composeText = readProductionFile("docker-compose.yml");
+    const requiredKeys = [
+      ...new Set(
+        [...composeText.matchAll(/\$\{([A-Z][A-Z0-9_]+):\?/gu)].map(([, key]) => key),
+      ),
+    ];
+    expect(requiredKeys.some((key) => key.startsWith("BACKUP_") || key === "AGE_RECIPIENT")).toBe(
+      false,
+    );
+
+    const dir = mkdtempSync(path.join(os.tmpdir(), "expense-tax-compose-no-backup-"));
+    const envFile = path.join(dir, "normal.env");
+    try {
+      writeFileSync(envFile, requiredKeys.map((key) => `${key}=dummy-value`).join("\n"));
+      execFileSync(
+        "docker",
+        [
+          "compose",
+          "--project-name",
+          "fbk-test-compose-no-backup",
+          "--env-file",
+          envFile,
+          "-f",
+          composePath,
+          "config",
+          "--quiet",
+        ],
+        { stdio: "pipe" },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

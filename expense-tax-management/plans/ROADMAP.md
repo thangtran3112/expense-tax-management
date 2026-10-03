@@ -1,7 +1,7 @@
 # Infrastructure and Deployment Roadmap
 
-> **Status:** Private production deployment live. Backup/restore and provider migration remain unimplemented.
-> **Last updated:** 2026-09-13
+> **Status:** Private production deployment live. Backup/restore tooling is implemented and proven against disposable local Docker infrastructure (see "Backup and Restore -- Observed Results" below); it has not yet been applied to or run against the live VPS/GCP. Provider migration remains unimplemented.
+> **Last updated:** 2026-10-03
 > **Companion:** See [PLAN.md](PLAN.md) for feature order and active implementation plans.
 
 ## Current Production Topology
@@ -56,8 +56,8 @@ GCP
 
 | Work | Status | Trigger/owner |
 |---|---|---|
-| Automated PostgreSQL backup to GCS | Designed only | Separate infrastructure plan and credential approval |
-| Restore verification and recovery drill | Not built | Follows backup implementation |
+| Automated PostgreSQL backup to GCS | Built; proven locally (see below). Task 1 Terraform never applied; no live writer key/VPS install yet | Operator: apply Task 1, create writer key, `bootstrap.sh --only backup` |
+| Restore verification and recovery drill | Built; proven locally (see below) against disposable PostgreSQL + real `age` encryption. Never run against real GCS/VPS/Cloudflare | Operator: first live monthly drill after the above |
 | Production GCS receipt-storage adapter and credentials | Not built; local storage adapter only | Separate storage/infrastructure plan |
 | VPS provider migration runbook automation | Partial base bootstrap only | Required before OVH term ends in Feb 2027 |
 | Shared-cluster `30-postgres.sh` live proof | Designed, not run on current box | Fresh VPS or second family app |
@@ -75,6 +75,54 @@ GCP
 - PostgreSQL superuser credentials never enter GitHub or GCP.
 - VPS origins stay loopback-only. Cloudflare Tunnel is the public ingress path.
 - No production mutation, Terraform apply, GCP/Clerk write, workflow dispatch, push, PR creation, or merge without immediate explicit confirmation.
+
+## Backup and Restore -- Observed Results (2026-10-03)
+
+Full design: [`vps-backup-and-restore.md`](sub-plans/vps-backup-and-restore.md).
+Tasks 2-7 implemented and locally verified; Task 1 (Terraform) offline-validated
+only; Task 6/8's live-VPS and real-Cloudflare steps remain operator-only.
+Observed, not planned:
+
+- **Dump (Task 3):** against a disposable PostgreSQL 17 container seeded
+  with 5 representative databases (app, foundry, temporal,
+  temporal_visibility, mailbox), `pg_dumpall --globals-only` +
+  `pg_dump --format=custom` for each, each re-validated with a fresh
+  `pg_restore --list`. A forced mid-dump failure (invalid role) left a
+  pre-seeded success marker byte-identical.
+- **Receipts and manifest (Task 4):** against real seeded receipt files,
+  observed correct behavior for first-run full (2 files), same-month
+  daily delta (exactly the 1 new file, correct parent-id chaining),
+  unchanged-window (0 files, still a valid archive), new-calendar-month
+  full (re-archives all 3 files), and a future-mtime receipt correctly
+  deferred to the next run.
+- **Encrypt and upload (Task 5):** a temporary `age` identity generated
+  with real `age-keygen`; the full pipeline run end to end against a
+  directory-backed fake GCS transport enforcing the real
+  creation-only-upload precondition; the uploaded ciphertext decrypted
+  with the matching private identity and every manifest-referenced
+  checksum (globals, each database dump, the receipts archive) verified
+  against the decrypted bytes.
+- **Restore (Task 7):** a 5-database seeded SOURCE backed up (full + one
+  daily delta), restored onto a completely empty DESTINATION PostgreSQL
+  17 + empty receipt directory. Observed: restore refuses a non-empty
+  destination without explicit confirmation; after restoring, all 5
+  databases report the correct row count; both the full and daily
+  receipt files are present with correct bytes; the final
+  `{"status":"restored",...}` report matches every restored database.
+- **Recovery drill orchestration (Task 8):** `recovery-drill.sh` proven,
+  with fake deploy/health-check/smoke-test commands standing in for real
+  product infrastructure, in four scenarios: full pass; a failing
+  health-check fails the drill; exceeding the RTO deadline fails the
+  drill even when every individual step passed; a
+  restored-vs-supported schema-migration-version mismatch is reported
+  and migrations are skipped without itself failing the drill.
+- **Not yet observed (operator-only, out of this pass's scope):** Task 1's
+  Terraform applied against real GCP; a real writer service-account key
+  created and placed in Secret Manager; `bootstrap.sh --only backup` run
+  against the live VPS; a monthly drill against the real bucket/VPS; any
+  Cloudflare cutover simulation or rollback; real authenticated product
+  smoke tests. Proven RPO/RTO numbers above come from disposable local
+  infrastructure, not the live system.
 
 ## VPS Provider Switch
 

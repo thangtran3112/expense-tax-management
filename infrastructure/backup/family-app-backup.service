@@ -1,0 +1,39 @@
+[Unit]
+Description=family-app encrypted PostgreSQL + receipt backup
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=family-app-backup-retry.service
+
+[Service]
+Type=oneshot
+# Task 6: a failed/hung run must not hold the production host hostage --
+# two hours is the plan's own RTO-adjacent ceiling for a single attempt.
+# Exceeding it is a failure: systemd kills the container and, because
+# backup.sh only ever writes plaintext to a tmpfs that dies with the
+# container, no plaintext survives either way.
+RuntimeMaxSec=7200
+ExecStart=/usr/bin/docker run --rm \
+  --name family-app-backup-run \
+  --network postgres_default \
+  --read-only \
+  --tmpfs /staging:size=512m,mode=1700 \
+  --env-file /etc/family-app/backup.env \
+  -v /etc/family-app/backup-pgpassword:/run/secrets/pgpassword:ro \
+  -v /etc/family-app/backup-writer-key.json:/run/secrets/writer-key.json:ro \
+  -v /opt/family-app/backup/state:/state \
+  -v /opt/family-app/backup/ciphertext:/ciphertext \
+  -v __RECEIPT_VOLUME__:/receipts:ro \
+  __BACKUP_IMAGE__
+# Belt-and-suspenders: a crashed container must never leave a stale
+# writer-side lock or plaintext container behind, even though
+# remove_ciphertext_partials() already does this at the next run's
+# startup. The single-flight lock itself lives INSIDE backup.sh
+# (flock on $BACKUP_STATE_DIR/backup.lock) -- not duplicated here --
+# because that lock must also reject a concurrent manual
+# `docker run ... backup.sh` invocation outside systemd, which a
+# unit-level lock could not see.
+ExecStopPost=-/usr/bin/docker rm -f family-app-backup-run
+
+# No [Install] section: this unit is activated ONLY by
+# family-app-backup.timer (which IS enabled) or by OnFailure from the
+# retry service, never directly via `systemctl enable`.
