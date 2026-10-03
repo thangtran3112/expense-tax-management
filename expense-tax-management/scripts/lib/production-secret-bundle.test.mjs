@@ -442,8 +442,44 @@ describe("buildProductionBundle — Phase 3D-A Task 5 mailbox opt-in", () => {
     expect(bundle).toContain("CLERK_MAILBOX_WORKER_SUBJECT=workflow-worker-mailbox-not-configured");
     expect(bundle).toContain("CLERK_MAILBOX_BROKER_SUBJECT=mailbox-broker-app-not-configured");
     expect(bundle).toContain("CLERK_MAILBOX_SERVICE_AUDIENCE=mch_3J9hMailboxSvcAud01");
-    // Broker-verifier-only config: always fail-closed, never shell-overridable.
-    expect(bundle).toContain("MAILBOX_SERVICE_TOKEN_ISSUER=https://services.not-configured.invalid");
+    // Final-review Critical fix: the broker's inbound-verifier config is
+    // DERIVED from the real (or fail-closed) CLERK_ISSUER_URL/CLERK_JWKS_URL/
+    // CLERK_MAILBOX_SERVICE_AUDIENCE, never an independent placeholder --
+    // here, with no Clerk shell overrides at all, it tracks the same
+    // fail-closed CLERK_ISSUER_URL/CLERK_JWKS_URL every other service uses.
+    expect(bundle).toContain("MAILBOX_SERVICE_TOKEN_ISSUER=https://identity.not-configured.invalid");
+    expect(bundle).toContain(
+      "MAILBOX_SERVICE_JWKS_URL=https://identity.not-configured.invalid/.well-known/jwks.json",
+    );
+    expect(bundle).toContain("MAILBOX_SERVICE_TOKEN_AUDIENCE=mch_3J9hMailboxSvcAud01");
+  });
+
+  it("final-review Critical fix: derives the broker's inbound-verifier issuer/audience/JWKS from the same real Clerk values App API and workflow-worker mint their outbound tokens against", () => {
+    const bundle = buildProductionBundle({
+      shellEnv: {
+        ...requiredShellEnv,
+        ...productionClerkRuntime,
+        MAILBOX_FEATURE_ENABLED: "true",
+        ...mailboxRequiredShellEnv,
+        CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_realMailboxAudience",
+      },
+      databaseEnv: { ...databaseFixture, ...mailboxDatabaseFixture },
+      randomBytes: () => Buffer.alloc(32, 7),
+    });
+    const values = Object.fromEntries(
+      bundle.split("\n").filter(Boolean).map((line) => {
+        const index = line.indexOf("=");
+        return [line.slice(0, index), line.slice(index + 1)];
+      }),
+    );
+
+    // The broker's own verifier config must equal exactly what the real
+    // outbound callers mint against -- not merely "a real-looking value".
+    expect(values.MAILBOX_SERVICE_TOKEN_ISSUER).toBe(values.CLERK_ISSUER_URL);
+    expect(values.MAILBOX_SERVICE_JWKS_URL).toBe(values.CLERK_JWKS_URL);
+    expect(values.MAILBOX_SERVICE_TOKEN_AUDIENCE).toBe(values.CLERK_MAILBOX_SERVICE_AUDIENCE);
+    expect(values.MAILBOX_SERVICE_TOKEN_ISSUER).toBe("https://clerk.tobytran.dev");
+    expect(values.MAILBOX_SERVICE_TOKEN_AUDIENCE).toBe("mch_realMailboxAudience");
   });
 
   it("carries real mailbox Clerk runtime values from the shell while MAILBOX_FEATURE_ENABLED=true", () => {

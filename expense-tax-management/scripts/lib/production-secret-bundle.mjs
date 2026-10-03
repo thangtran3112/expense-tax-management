@@ -51,10 +51,20 @@ const CLERK_RUNTIME_KEYS = [
  *   MAILBOX_VAULT_DATABASE_URL* -- see task-5-report.md ruling.
  * - MAILBOX_CLERK_RUNTIME_KEYS: optional, shell-overridable, otherwise
  *   fail-closed (same as CLERK_RUNTIME_KEYS above).
- * - MAILBOX_FAIL_CLOSED_ONLY_KEYS: the broker's own inbound-verifier
- *   config (MAILBOX_SERVICE_TOKEN_*) -- fail-closed-only, never
- *   shell-overridable through this script, matching
- *   APP_SERVICE_TOKEN_*'s existing precedent exactly.
+ * - MAILBOX_SERVICE_TOKEN_ISSUER/_AUDIENCE/MAILBOX_SERVICE_JWKS_URL (the
+ *   broker's own inbound-verifier config) are NOT separate keys at all --
+ *   final-review Critical finding: hardcoding them to an inert placeholder
+ *   (the original "matches APP_SERVICE_TOKEN_*'s precedent" design) is
+ *   unsafe here because, unlike APP_SERVICE_TOKEN_* (dead in production --
+ *   only the never-shipped `legacy` AUTH_PROVIDER path reads it), the
+ *   broker's `createServiceVerifier` is its ONLY inbound verifier, used on
+ *   every request. App API/workflow-worker mint their outbound tokens
+ *   against the REAL CLERK_ISSUER_URL/CLERK_JWKS_URL/
+ *   CLERK_MAILBOX_SERVICE_AUDIENCE, so a placeholder issuer/audience here
+ *   would 401 every single App->broker and worker->broker call the moment
+ *   the feature is activated. Derived below, after this object, from the
+ *   same real values -- never independently configurable, so they can
+ *   never drift from what callers actually mint.
  */
 const MAILBOX_REQUIRED_SHELL_KEYS = [
   "CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY",
@@ -83,9 +93,6 @@ const MAILBOX_FAIL_CLOSED_RUNTIME_VALUES = {
   CLERK_MAILBOX_APP_API_SUBJECT: "app-api-mailbox-not-configured",
   CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox-not-configured",
   CLERK_MAILBOX_BROKER_SUBJECT: "mailbox-broker-app-not-configured",
-  MAILBOX_SERVICE_TOKEN_ISSUER: "https://services.not-configured.invalid",
-  MAILBOX_SERVICE_TOKEN_AUDIENCE: "phase-1b-inert-service",
-  MAILBOX_SERVICE_JWKS_URL: "https://services.not-configured.invalid/.well-known/jwks.json",
 };
 
 const FAIL_CLOSED_RUNTIME_VALUES = {
@@ -240,6 +247,16 @@ export function buildProductionBundle({
           .map((key) => [key, shell[key]]),
       ),
     );
+    // Final-review Critical fix: derive the broker's inbound-verifier
+    // config from the same real values App API/workflow-worker already
+    // mint their outbound tokens against (set above/earlier in `values`),
+    // instead of an independently-configurable (and previously inert)
+    // placeholder. CLERK_ISSUER_URL/CLERK_JWKS_URL are always present in
+    // `values` by this point (CLERK_RUNTIME_KEYS, unconditional);
+    // CLERK_MAILBOX_SERVICE_AUDIENCE was just set above.
+    values.MAILBOX_SERVICE_TOKEN_ISSUER = values.CLERK_ISSUER_URL;
+    values.MAILBOX_SERVICE_JWKS_URL = values.CLERK_JWKS_URL;
+    values.MAILBOX_SERVICE_TOKEN_AUDIENCE = values.CLERK_MAILBOX_SERVICE_AUDIENCE;
   }
 
   for (const [key, value] of Object.entries(values)) assertSafeValue(key, value);
