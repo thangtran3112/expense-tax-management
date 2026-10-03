@@ -82,11 +82,11 @@ function isNonceUniqueViolation(error: unknown): boolean {
 function isGenerationPrimaryKeyViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const databaseError = error as { code?: unknown; constraint?: unknown };
-  return (
-    databaseError.code === "23505" &&
-    (databaseError.constraint === "token_vault_pkey" ||
-      String(databaseError.constraint ?? "").includes("pkey"))
-  );
+  // Exact name only (migration 001's inline PRIMARY KEY (connection_id,
+  // generation) gets Postgres's default-generated name) -- a loose
+  // "contains pkey" fallback would silently misclassify an unrelated
+  // future PK violation as a generation conflict (review Minor finding).
+  return databaseError.code === "23505" && databaseError.constraint === "token_vault_pkey";
 }
 
 async function insertVaultRow(
