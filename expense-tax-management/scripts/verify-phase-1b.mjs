@@ -42,7 +42,6 @@ const inertComposeEnv = {
   CLERK_APP_MACHINE_SECRET_KEY: "ak_phase_1b_inert_app_machine_secret",
   CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_phase_1b_inert_foundry_machine_secret",
   CLERK_WEBHOOK_SIGNING_SECRET: "whsec_phase_1b_inert_webhook_secret",
-  TEMPORAL_DB_PASSWORD: "phase-1b-inert-temporal-password",
 };
 
 function run(label, command, args, env = process.env) {

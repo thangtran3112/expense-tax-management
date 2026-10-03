@@ -26,7 +26,6 @@ KNOWN_ENV_KEYS=(
   CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET
   STORAGE_BACKEND STORAGE_LOCAL_BASE_URL STORAGE_URL_SIGNING_KEY
   INBOUND_EMAIL_BASE_ADDRESS INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET
-  TEMPORAL_DB_PASSWORD
 )
 
 die() {
@@ -120,6 +119,15 @@ compose() {
   docker compose --project-name "$PROJECT_NAME" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
+require_shared_temporal() {
+  local legacy_server
+  legacy_server=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter label=com.docker.compose.service=temporal) || die "cannot inspect legacy Temporal"
+  [[ -z "$legacy_server" ]] || die "Expense-owned Temporal must be stopped before shared deployment"
+  docker network inspect family_shared >/dev/null 2>&1 || die "shared network is unavailable"
+  docker exec family-temporal temporal operator cluster health --address temporal:7233 >/dev/null 2>&1 || die "shared Temporal is unavailable"
+  docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1 || die "expense-tax Temporal namespace is unavailable"
+}
+
 APPLICATION_SERVICES=(app-api foundry-service ai-worker capture-web office-web foundry-web)
 verify_running_images() {
   local expected_tag=$1 service container_id actual_image
@@ -140,6 +148,7 @@ load_env_file "$INCOMING_ENV_FILE"
 validate_auth_values
 export IMAGE_TAG
 compose config --quiet
+require_shared_temporal
 
 previous_tag=""
 if [[ -f "$STATE_FILE" ]]; then
@@ -173,7 +182,7 @@ rollback() {
     IMAGE_TAG="$previous_tag"
     export IMAGE_TAG
     if ! compose pull; then rollback_status=1; fi
-    if ! compose up -d "${APPLICATION_SERVICES[@]}" temporal; then rollback_status=1; fi
+    if ! compose up -d "${APPLICATION_SERVICES[@]}"; then rollback_status=1; fi
     if ! PRODUCTION_ENV_FILE="$COMPOSE_ENV_FILE" "$SCRIPT_DIR/health-check.sh"; then rollback_status=1; fi
     if ! verify_running_images "$previous_tag"; then rollback_status=1; fi
     if ((rollback_status != 0)); then
@@ -202,7 +211,7 @@ fi
 compose pull
 compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
-compose up -d app-api foundry-service ai-worker capture-web office-web foundry-web temporal
+compose up -d "${APPLICATION_SERVICES[@]}"
 "$SCRIPT_DIR/health-check.sh"
 verify_running_images "$IMAGE_TAG"
 

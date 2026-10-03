@@ -21,5 +21,6 @@ exec docker compose \
   --project-name infrastructure \
   --env-file "$ENV_FILE" \
   -f "$FAMILY_ROOT/infrastructure/docker-compose.common.yml" \
+  -f "$FAMILY_ROOT/infrastructure/temporal/docker-compose.local.yml" \
   -f "$PROJECT_DIR/docker-compose.yml" \
   "$@"

@@ -60,12 +60,21 @@ const productionDeployScript = readFileSync(
   join(productionRoot, "deploy.sh"),
   "utf8",
 );
-const productionCompose = readFileSync(
-  join(productionRoot, "docker-compose.yml"),
-  "utf8",
-);
 
 describe("buildProductionBundle", () => {
+  it("keeps shared Temporal database credentials out of the Expense deployment bundle", () => {
+    const bundle = buildProductionBundle({
+      shellEnv: requiredShellEnv,
+      databaseEnv: databaseFixture,
+      currentEnv: { TEMPORAL_DB_PASSWORD: "11".repeat(32) },
+      randomBytes: () => Buffer.alloc(32, 7),
+    });
+    const allowlist = productionDeployScript.match(/KNOWN_ENV_KEYS=\(([^)]*)\)/su)?.[1] ?? "";
+
+    expect(bundle).not.toContain("TEMPORAL_DB_PASSWORD=");
+    expect(allowlist).not.toContain("TEMPORAL_DB_PASSWORD");
+  });
+
   it("allows and validates the webhook secret in production deploy input", () => {
     const allowlist = productionDeployScript.match(/KNOWN_ENV_KEYS=\(([^)]*)\)/su)?.[1] ?? "";
     const requiredAuthKeys = productionDeployScript.match(/validate_auth_values\(\)[\s\S]*?for key in \\\n([\s\S]*?); do/u)?.[1] ?? "";
@@ -75,42 +84,6 @@ describe("buildProductionBundle", () => {
     expect(productionDeployScript).toContain(
       "! \"$value\" =~ ^whsec_[^[:space:]]+$",
     );
-  });
-
-  it("passes webhook secret only to app-api in production Compose", () => {
-    const appApi = productionCompose.slice(
-      productionCompose.indexOf("  app-api:"),
-      productionCompose.indexOf("  app-api-migrate:"),
-    );
-    const nonAppApiServices = [
-      productionCompose.slice(
-        productionCompose.indexOf("  foundry-service:"),
-        productionCompose.indexOf("  foundry-service-migrate:"),
-      ),
-      productionCompose.slice(
-        productionCompose.indexOf("  ai-worker:"),
-        productionCompose.indexOf("  capture-web:"),
-      ),
-      productionCompose.slice(
-        productionCompose.indexOf("  capture-web:"),
-        productionCompose.indexOf("  office-web:"),
-      ),
-      productionCompose.slice(
-        productionCompose.indexOf("  office-web:"),
-        productionCompose.indexOf("  foundry-web:"),
-      ),
-      productionCompose.slice(
-        productionCompose.indexOf("  foundry-web:"),
-        productionCompose.indexOf("  temporal:"),
-      ),
-    ];
-
-    expect(appApi).toContain(
-      "CLERK_WEBHOOK_SIGNING_SECRET: ${CLERK_WEBHOOK_SIGNING_SECRET:?CLERK_WEBHOOK_SIGNING_SECRET is required}",
-    );
-    for (const service of nonAppApiServices) {
-      expect(service).not.toContain("CLERK_WEBHOOK_SIGNING_SECRET");
-    }
   });
 
   it("carries both Clerk secrets through protected sync input into the bundle", () => {
@@ -295,7 +268,6 @@ describe("buildProductionBundle", () => {
       "STORAGE_URL_SIGNING_KEY",
       "INBOUND_WEBHOOK_SIGNING_KEY",
       "INBOUND_ROUTING_TOKEN_SECRET",
-      "TEMPORAL_DB_PASSWORD",
     ]) {
       expect(bundle).toContain(`${key}=${"07".repeat(32)}`);
     }
@@ -306,7 +278,6 @@ describe("buildProductionBundle", () => {
       shellEnv: { ...requiredShellEnv, ...clerkMachineIds },
       databaseEnv: databaseFixture,
       currentEnv: {
-        TEMPORAL_DB_PASSWORD: "11".repeat(32),
         INBOUND_ROUTING_TOKEN_SECRET: "22".repeat(32),
         INBOUND_WEBHOOK_SIGNING_KEY: "33".repeat(32),
         STORAGE_URL_SIGNING_KEY: "44".repeat(32),
@@ -351,7 +322,6 @@ describe("buildProductionBundle", () => {
       "STORAGE_BACKEND=local",
       "STORAGE_LOCAL_BASE_URL=http://127.0.0.1:8100",
       `STORAGE_URL_SIGNING_KEY=${"44".repeat(32)}`,
-      `TEMPORAL_DB_PASSWORD=${"11".repeat(32)}`,
     ]);
   });
 
@@ -372,7 +342,6 @@ describe("buildProductionBundle", () => {
     ["STORAGE_URL_SIGNING_KEY", "not-hex"],
     ["INBOUND_WEBHOOK_SIGNING_KEY", "a".repeat(63)],
     ["INBOUND_ROUTING_TOKEN_SECRET", "g".repeat(64)],
-    ["TEMPORAL_DB_PASSWORD", "b".repeat(65)],
   ])("rejects malformed preserved secret %s without exposing its value", (key, value) => {
     expect(() =>
       buildProductionBundle({

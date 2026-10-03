@@ -149,14 +149,16 @@ await worker.run();
 **Interfaces:**
 - Produces: shared DNS endpoint `temporal:7233`, namespace `expense-tax`, and external network usable by domain workers.
 
-- [ ] Write failing shell tests requiring pinned images, private ports, PostgreSQL persistence, health checks, idempotent namespace creation, and no project credentials in Temporal container environment.
-- [ ] Confirm production database/bootstrap remains an explicit operator-only action; deployment workflow must never run `bootstrap-temporal-db.sh`.
-- [ ] Move generic Temporal server/UI configuration under `infrastructure/temporal/` and attach it to shared family network.
-- [ ] Implement idempotent namespace bootstrap for `expense-tax`; document future `stock-analysis` creation without deploying Stock code.
-- [ ] Remove Neo4j and its volume from default shared Compose; graph infrastructure remains blocked by Phase 9A evidence gate.
-- [ ] Remove Temporal server ownership from Expense production Compose while retaining its external service dependency.
-- [ ] Update health checks to query shared Temporal separately from Expense image health.
-- [ ] Run Compose config validation and shell tests.
+- [x] Write failing shell tests requiring pinned images, private ports, PostgreSQL persistence, health checks, idempotent namespace creation, and no project credentials in Temporal container environment.
+- [x] Confirm production database/bootstrap remains an explicit operator-only action; deployment workflow must never run `bootstrap-temporal-db.sh`.
+- [x] Move generic Temporal server/UI configuration under `infrastructure/temporal/` and attach it to shared family network.
+- [x] Implement idempotent namespace bootstrap for `expense-tax`; document future `stock-analysis` creation without deploying Stock code.
+- [x] Remove Neo4j and its volume from default shared Compose; graph infrastructure remains blocked by Phase 9A evidence gate.
+- [x] Remove Temporal server ownership from Expense production Compose while retaining its external service dependency.
+- [x] Update health checks to query shared Temporal separately from Expense image health.
+- [x] Run Compose config validation and shell tests.
+
+Task 6 source is verified locally. Production activation remains an approved operator-only transition; Task 7 cutover is separate.
 
 ### Task 7: Production Cutover and Python Removal
 

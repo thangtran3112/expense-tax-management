@@ -43,15 +43,12 @@ services:
     volumes:
       - expense_tax_production_storage:/tmp/expense_tax_storage
       - expense_tax_production_inbound:/tmp/expense_tax_inbound_challenges
-    depends_on:
-      temporal:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8100/health/live >/dev/null"]
       interval: 5s
       timeout: 5s
       retries: 12
-    networks: [default, database]
+    networks: [default, database, shared]
 
   app-api-migrate:
     image: ghcr.io/thangtran3112/family-app/expense-tax-app-api:${IMAGE_TAG}
@@ -91,9 +88,6 @@ services:
       CLERK_APP_SERVICE_SUBJECT: ${CLERK_APP_SERVICE_SUBJECT:?CLERK_APP_SERVICE_SUBJECT is required}
       CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:?CLERK_FOUNDRY_SERVICE_SUBJECT is required}
       FOUNDRY_DATABASE_URL: ${FOUNDRY_DATABASE_URL:?FOUNDRY_DATABASE_URL is required}
-    depends_on:
-      temporal:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8200/health/live >/dev/null"]
       interval: 5s
@@ -135,8 +129,6 @@ services:
       CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:?CLERK_FOUNDRY_SERVICE_SUBJECT is required}
       FOUNDRY_BASE_URL: http://foundry-service:8200
     depends_on:
-      temporal:
-        condition: service_healthy
       app-api:
         condition: service_healthy
       foundry-service:
@@ -146,7 +138,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-    networks: [default]
+    networks: [default, shared]
 
   capture-web:
     image: ghcr.io/thangtran3112/family-app/expense-tax-capture-web:${IMAGE_TAG}
@@ -208,35 +200,15 @@ services:
       retries: 12
     networks: [default]
 
-  temporal:
-    image: temporalio/auto-setup:1.29.1
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits: {cpus: "1.0", memory: 1G}
-    environment:
-      DB: postgres12
-      DB_PORT: "5432"
-      # Task 8 bootstrap creates both databases under expense_temporal.
-      # auto-setup must not attempt CREATE DATABASE with this least-privilege role.
-      SKIP_DB_CREATE: "true"
-      POSTGRES_USER: expense_temporal
-      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
-      POSTGRES_SEEDS: postgres
-    healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-    networks: [default, database]
-
 networks:
   default:
     name: expense-tax-production_default
   database:
     external: true
     name: postgres_default
+  shared:
+    external: true
+    name: family_shared
 
 volumes:
   expense_tax_production_storage:

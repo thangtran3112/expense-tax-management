@@ -45,7 +45,8 @@ if ((worker_ready == 0)); then
 fi
 
 for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-  if compose exec -T temporal temporal operator cluster health --address temporal:7233 >/dev/null; then
+  if docker exec family-temporal temporal operator cluster health --address temporal:7233 >/dev/null 2>&1 &&
+    docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1; then
     exit 0
   fi
   sleep "$delay"

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -19,6 +20,7 @@ const repoRoot = path.resolve(
 );
 const productionRoot = path.join(repoRoot, "deploy", "production");
 const composePath = path.join(productionRoot, "docker-compose.yml");
+const sharedTemporalPath = path.join(repoRoot, "../infrastructure/temporal/docker-compose.yml");
 
 function readProductionFile(name: string): string {
   return readFileSync(path.join(productionRoot, name), "utf8");
@@ -42,11 +44,11 @@ describe("Phase 1B production deployment boundaries", () => {
     expect(Object.keys(compose.services)).toEqual(
       expect.arrayContaining([
         ...applicationServices,
-        "temporal",
         "app-api-migrate",
         "foundry-service-migrate",
       ]),
     );
+    expect(compose.services.temporal).toBeUndefined();
     expect(compose.services.postgres).toBeUndefined();
     expect(compose.services["expense-service"]).toBeUndefined();
     expect(compose.services["temporal-ui"]).toBeUndefined();
@@ -79,8 +81,11 @@ describe("Phase 1B production deployment boundaries", () => {
     }
   });
 
-  it("keeps published services on loopback and never publishes Temporal", () => {
+  it("keeps published services and shared Temporal on loopback", () => {
     const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+      services: Record<string, { ports?: string[] }>;
+    };
+    const shared = YAML.parse(readFileSync(sharedTemporalPath, "utf8")) as {
       services: Record<string, { ports?: string[] }>;
     };
     const expectedPorts: Record<string, string> = {
@@ -94,11 +99,13 @@ describe("Phase 1B production deployment boundaries", () => {
     for (const [serviceName, port] of Object.entries(expectedPorts)) {
       expect(compose.services[serviceName].ports).toEqual([port]);
     }
-    expect(compose.services.temporal.ports).toBeUndefined();
+    expect(compose.services.temporal).toBeUndefined();
+    expect(shared.services.temporal.ports).toEqual(["127.0.0.1:7233:7233"]);
+    expect(shared.services["temporal-ui"].ports).toEqual(["127.0.0.1:8233:8080"]);
   });
 
   it("skips Temporal database creation after operator bootstrap", () => {
-    const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+    const compose = YAML.parse(readFileSync(sharedTemporalPath, "utf8")) as {
       services: Record<string, { environment?: Record<string, string> }>;
     };
 
@@ -118,7 +125,7 @@ describe("Phase 1B production deployment boundaries", () => {
     expect(composeText).not.toMatch(/POSTGRES_PASSWORD:/);
 
     for (const [serviceName, service] of Object.entries(compose.services)) {
-      if (["app-api", "app-api-migrate", "foundry-service", "foundry-service-migrate", "temporal"].includes(serviceName)) {
+      if (["app-api", "app-api-migrate", "foundry-service", "foundry-service-migrate"].includes(serviceName)) {
         expect(service.networks).toContain("database");
       } else {
         expect(service.networks).not.toContain("database");
@@ -207,8 +214,8 @@ describe("Phase 1B production deployment boundaries", () => {
     const controlFile = path.join(tempRoot, "control.env");
 
     try {
-      writeFileSync(validFile, "APP_DATABASE_URL=postgresql://app/db\nTEMPORAL_DB_PASSWORD=test\n");
-      writeFileSync(controlFile, Buffer.from("APP_DATABASE_URL=postgresql://app/db\nTEMPORAL_DB_PASSWORD=bad\x01\n", "binary"));
+      writeFileSync(validFile, "APP_DATABASE_URL=postgresql://app/db\nSTORAGE_URL_SIGNING_KEY=test\n");
+      writeFileSync(controlFile, Buffer.from("APP_DATABASE_URL=postgresql://app/db\nSTORAGE_URL_SIGNING_KEY=bad\x01\n", "binary"));
       const runValidator = (file: string) =>
         execFileSync("sh", ["-c", `od -An -v -tu1 "$1" | awk '${awkProgram}'`, "validator", file], {
           encoding: "utf8",
@@ -237,6 +244,35 @@ describe("Phase 1B production deployment boundaries", () => {
     expect(deploy).not.toContain("compose exec");
   });
 
+  it("refuses deployment while the Expense-owned Temporal server still runs", () => {
+    const deploy = readProductionFile("deploy.sh");
+    const preflight = deploy.match(/require_shared_temporal\(\) \{[\s\S]*?^\}/mu)?.[0];
+    expect(preflight).toBeDefined();
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "expense-tax-temporal-preflight-"));
+    const fakeDocker = path.join(tempRoot, "docker");
+
+    try {
+      writeFileSync(fakeDocker, `#!/usr/bin/env bash
+case "$*" in
+  "network inspect family_shared"|"exec family-temporal temporal operator cluster health --address temporal:7233"|"exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax") exit 0 ;;
+  "ps --quiet --filter label=com.docker.compose.project=expense-tax-production --filter label=com.docker.compose.service=temporal")
+    if [[ "\${LEGACY_RUNNING:-0}" == "1" ]]; then printf '%s\\n' legacy-container; fi ;;
+  *) exit 1 ;;
+esac
+`);
+      chmodSync(fakeDocker, 0o700);
+      const run = (legacyRunning: string) => execFileSync("bash", ["-c", `PROJECT_NAME=expense-tax-production\n${preflight}\ndie() { exit 1; }\nrequire_shared_temporal`], {
+        env: { ...process.env, PATH: `${tempRoot}:${process.env.PATH}`, LEGACY_RUNNING: legacyRunning },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      expect(() => run("1")).toThrow();
+      expect(() => run("0")).not.toThrow();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires regular root-owned 0600 dotenv files before and after install", () => {
     const deploy = readProductionFile("deploy.sh");
     expect(deploy).toContain("-f");
@@ -250,7 +286,9 @@ describe("Phase 1B production deployment boundaries", () => {
     const deploy = readProductionFile("deploy.sh");
     expect(deploy.indexOf("compose run --rm app-api-migrate")).toBeGreaterThan(-1);
     expect(deploy.indexOf("compose run --rm foundry-service-migrate")).toBeGreaterThan(-1);
-    expect(deploy.indexOf("app-api-migrate")).toBeLessThan(deploy.indexOf("compose up -d app-api"));
+    expect(deploy.indexOf("compose run --rm app-api-migrate")).toBeLessThan(
+      deploy.lastIndexOf('compose up -d "${APPLICATION_SERVICES[@]}"'),
+    );
     expect(deploy).toContain("deployed-image-tag");
     expect(deploy).toContain("previous_tag");
     expect(deploy).toContain("IMAGE_TAG=\"$previous_tag\"");
@@ -326,7 +364,8 @@ describe("Phase 1B production deployment boundaries", () => {
     expect(health).toContain("127.0.0.1:7301/capture");
     expect(health).toContain("127.0.0.1:7302/dashboard");
     expect(health).toContain("127.0.0.1:7303/providers");
-    expect(health).toContain("compose exec -T temporal");
+    expect(health).toContain("docker exec family-temporal temporal operator cluster health");
+    expect(health).toContain("docker exec family-temporal temporal operator namespace describe");
     expect(health).toContain("temporal operator cluster health");
     expect(health).toContain("ai-worker");
     expect(health).toContain("--status running --services");
