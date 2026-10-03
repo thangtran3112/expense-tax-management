@@ -25,8 +25,9 @@ import {
  * Proves, against real PostgreSQL:
  *   - the singleton routing row + runtime SELECT-only grant
  *   - every enqueue path stamps generation/namespace/queue from that row
- *   - FOR SHARE in an open enqueue transaction blocks `advance`'s FOR
- *     UPDATE until it commits (the actual fence, not just the schema)
+ *   - the enqueue fence's shared advisory lock blocks `advance`'s
+ *     exclusive counterpart until it commits (the actual fence, not just
+ *     the schema)
  *   - old-generation jobs keep draining to their stamped target after a
  *     cutover; new jobs get the new target
  *   - the dispatcher starts each row's workflow with its own namespace/queue
@@ -264,9 +265,9 @@ describe.skipIf(!integrationEnabled)("Task 7 Stage A dispatch routing fence", ()
     expect(row).toBe("1|default|expense-tax-ai-worker");
   });
 
-  // ---- the fence itself: FOR SHARE blocks advance's FOR UPDATE ----------
+  // ---- the fence itself: the shared advisory lock blocks advance's exclusive lock ----------
 
-  it("an open enqueue transaction holding FOR SHARE blocks advance until it commits; pre/post-advance jobs get different generations", async () => {
+  it("an open enqueue transaction holding the fence's shared advisory lock blocks advance until it commits; pre/post-advance jobs get different generations", async () => {
     const before = seedTenantWithPersonalProfile();
     const jobBefore = await runtimeDatabase.transaction().execute((transaction) =>
       createJobInTransaction(transaction, {
@@ -293,13 +294,13 @@ describe.skipIf(!integrationEnabled)("Task 7 Stage A dispatch routing fence", ()
         actorServicePrincipal: "platform-admin",
         requestId: `t7a-${runKey}-fence-holding`,
       });
-      // The FOR SHARE read inside createJobInTransaction already happened;
-      // hold this transaction open (uncommitted) to prove advance's FOR
-      // UPDATE has to wait for it.
+      // The shared advisory lock inside createJobInTransaction was already
+      // taken; hold this transaction open (uncommitted) to prove advance's
+      // exclusive lock has to wait for it.
       await heldReleased;
     });
 
-    // Give the holding transaction time to acquire its FOR SHARE lock.
+    // Give the holding transaction time to acquire its shared advisory lock.
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     let advanceSettled = false;
