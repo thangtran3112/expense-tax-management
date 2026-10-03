@@ -188,13 +188,13 @@ GOOGLE_APPLICATION_CREDENTIALS
 **Interfaces:**
 - Produces: timestamped recovery report with RPO, RTO, checks, and exact image versions.
 
-- [ ] Run monthly restore against disposable local/remote infrastructure with no production routing.
-- [ ] Run migrations only after comparing restored and image-supported schema versions.
-- [ ] Deploy recorded immutable images and verify PostgreSQL, shared Temporal, workers, APIs, and receipt retrieval.
-- [ ] Run authenticated product smoke tests before any Cloudflare cutover.
-- [ ] Record elapsed restore time and fail the drill when it exceeds two hours.
-- [ ] Perform quarterly full rehearsal including Cloudflare cutover simulation and rollback.
-- [ ] Update ROADMAP only with observed results, never planned success.
+- [x] Run monthly restore against disposable local/remote infrastructure with no production routing. (recovery-drill.sh calls restore.sh against disposable local Docker PostgreSQL; test-recovery-drill.sh proves this end to end. "Monthly" cadence itself is an operator/cron concern, not built as a scheduler here -- Task 6 already covers backup's own 12h/retry scheduling.)
+- [x] Run migrations only after comparing restored and image-supported schema versions. (restored manifest's `schema_migration_versions` compared against `RECOVERY_SUPPORTED_MIGRATION_VERSIONS`; `RECOVERY_MIGRATE_CMD` only runs on a match [or an explicit forced override]; proven in test-recovery-drill.sh scenario 4, including that the migrate command does NOT run on a mismatch.)
+- [x] Deploy recorded immutable images and verify PostgreSQL, shared Temporal, workers, APIs, and receipt retrieval. (deploy/health-check are pluggable commands recovery-drill.sh invokes; `deploy/production/health-check.sh` extended with explicit PostgreSQL [`pg_isready`] and receipt-volume-reachability checks alongside its existing API/worker/Temporal checks. **Not run with real images against a live host** -- out of this pass's "no production mutation" scope.)
+- [ ] Run authenticated product smoke tests before any Cloudflare cutover. (recovery-drill.sh has a pluggable `RECOVERY_SMOKE_TEST_CMD` hook and reports `smoke_test_passed`; no real authenticated smoke test exists to plug in without live Clerk/production credentials -- genuinely not done, not just unverified.)
+- [x] Record elapsed restore time and fail the drill when it exceeds two hours. (`elapsed_seconds`/`rto_breached`/`deadline_seconds` in the JSON report; test-recovery-drill.sh scenario 3 proves an RTO breach fails the drill even when every other step passed.)
+- [ ] Perform quarterly full rehearsal including Cloudflare cutover simulation and rollback. (explicitly operator-only; needs real Cloudflare and a real second host. Not attempted.)
+- [x] Update ROADMAP only with observed results, never planned success. (see ROADMAP.md "Backup and Restore -- Observed Results (2026-10-03)": every claim there is something this session actually ran and watched pass, with an explicit "not yet observed" list for everything operator-only.)
 
 ## Completion Evidence
 

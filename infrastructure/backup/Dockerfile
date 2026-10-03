@@ -21,10 +21,11 @@ RUN command -v tar >/dev/null \
     && command -v gcloud >/dev/null
 
 WORKDIR /
-COPY lib.sh backup.sh restore.sh /usr/local/lib/family-app-backup/
+COPY lib.sh backup.sh restore.sh recovery-drill.sh /usr/local/lib/family-app-backup/
 RUN chmod 0555 /usr/local/lib/family-app-backup/lib.sh \
       /usr/local/lib/family-app-backup/backup.sh \
-      /usr/local/lib/family-app-backup/restore.sh
+      /usr/local/lib/family-app-backup/restore.sh \
+      /usr/local/lib/family-app-backup/recovery-drill.sh
 
 # Defense in depth: root filesystem is mounted --read-only at `docker run`
 # time (see deploy/production/docker-compose.yml backup profile and

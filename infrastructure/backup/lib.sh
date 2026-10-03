@@ -44,6 +44,19 @@ validate_age_recipient() {
 
 sha256_file() { sha256sum "$1" | awk '{print $1}'; }
 
+# Parses "KEY1=VAL1,KEY2=VAL2" into {"KEY1":"VAL1","KEY2":"VAL2"}; empty
+# input yields {}. Used for BACKUP_IMAGE_TAGS/BACKUP_MIGRATION_VERSIONS
+# (backup.sh) and RECOVERY_SUPPORTED_MIGRATION_VERSIONS (recovery-drill.sh)
+# so both sides of "compare restored vs. supported schema versions" parse
+# the same shape identically.
+csv_pairs_to_json() {
+  local csv="${1:-}"
+  [[ -n "$csv" ]] || { echo '{}'; return; }
+  jq -nc --arg csv "$csv" '
+    $csv | split(",") | map(select(length > 0) | split("=") | {(.[0]): (.[1] // "")}) | add // {}
+  '
+}
+
 # Hand-checks a manifest.json's required keys/types/enums against
 # manifest.schema.json (Ruling: no ajv dependency -- see README). Shared by
 # backup.sh (validating what it is about to encrypt) and restore.sh

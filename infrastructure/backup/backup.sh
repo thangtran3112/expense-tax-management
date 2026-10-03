@@ -206,16 +206,6 @@ build_receipt_archive() {
     > "$staging/receipt-inventory.json"
 }
 
-# Parses "KEY1=VAL1,KEY2=VAL2" into {"KEY1":"VAL1","KEY2":"VAL2"}; empty
-# input yields {}. Used for BACKUP_IMAGE_TAGS / BACKUP_MIGRATION_VERSIONS.
-csv_pairs_to_json() {
-  local csv="${1:-}"
-  [[ -n "$csv" ]] || { echo '{}'; return; }
-  jq -nc --arg csv "$csv" '
-    $csv | split(",") | map(select(length > 0) | split("=") | {(.[0]): (.[1] // "")}) | add // {}
-  '
-}
-
 # Combines database-inventory.json (Task 3) and receipt-inventory.json
 # (above) into the single manifest.json this whole backup set is validated
 # and encrypted around.
