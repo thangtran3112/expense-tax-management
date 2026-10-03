@@ -6,7 +6,10 @@ import {
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   FOUNDATION_ECHO_WORKFLOW_TYPE,
   JobReferenceV1Schema,
+  LEGACY_AI_WORKER_TASK_QUEUE,
+  LEGACY_TEMPORAL_NAMESPACE,
   OCR_RECEIPT_WORKFLOW_TYPE,
+  TARGET_TEMPORAL_NAMESPACE,
   WorkflowResultSchema,
   WorkflowTypeSchema,
 } from "../src/index.js";
@@ -26,6 +29,14 @@ describe("Temporal workflow compatibility", () => {
       "ForwardedReceiptWorkflow",
       "ExpenseEnrichmentWorkflow",
     ]);
+    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
+  });
+
+  it("freezes legacy and target dispatch routing identifiers (Task 7 Stage A)", () => {
+    expect(LEGACY_AI_WORKER_TASK_QUEUE).toBe("expense-tax-ai-worker");
+    expect(LEGACY_TEMPORAL_NAMESPACE).toBe("default");
+    expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
+    // The target queue constant must keep its existing name/value.
     expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
   });
 

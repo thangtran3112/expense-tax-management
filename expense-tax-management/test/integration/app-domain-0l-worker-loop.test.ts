@@ -32,6 +32,7 @@ const WORKER_TOKEN = `test-ai-worker-token-${runKey}`;
 
 let postgresContainerId = "";
 let runtimePassword = "";
+let migratorPassword = "";
 let database: Kysely<AppDatabase>;
 let workerProcess: ChildProcess | undefined;
 let appPort = 0;
@@ -60,6 +61,44 @@ function executeSql(sql: string): string {
       "127.0.0.1",
       "--username",
       "expense_app_runtime",
+      "--dbname",
+      "expense_tax_db",
+      "--tuples-only",
+      "--no-align",
+      "--pset",
+      "footer=off",
+      "--command",
+      sql,
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+/**
+ * Task 7 Stage A: app.temporal_dispatch_routing grants the runtime role
+ * SELECT only -- migrator credentials point the singleton row's queue at
+ * this run's isolated TASK_QUEUE (namespace stays the seeded 'default',
+ * matching generation 1) so the enqueue fence doesn't collide with other
+ * suites on the real shared queue 'expense-tax-ai-worker'.
+ */
+function executeMigratorSql(sql: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "exec",
+      "-e",
+      `PGPASSWORD=${migratorPassword}`,
+      postgresContainerId,
+      "psql",
+      "-X",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "--host",
+      "127.0.0.1",
+      "--username",
+      "expense_app_migrator",
       "--dbname",
       "expense_tax_db",
       "--tuples-only",
@@ -120,11 +159,16 @@ describe.skipIf(!integrationEnabled)("Phase 0L real worker loop", () => {
     }).trim();
     runtimePassword =
       config.services.postgres?.environment?.APP_RUNTIME_DB_PASSWORD ?? "";
-    if (!postgresContainerId || !runtimePassword) {
+    migratorPassword =
+      config.services.postgres?.environment?.APP_MIGRATOR_DB_PASSWORD ?? "";
+    if (!postgresContainerId || !runtimePassword || !migratorPassword) {
       throw new Error("Phase 0L PostgreSQL prerequisites are missing");
     }
     database = createAppDatabase(
       `postgresql://expense_app_runtime:${encodeURIComponent(runtimePassword)}@127.0.0.1:5433/expense_tax_db`,
+    );
+    executeMigratorSql(
+      `UPDATE app.temporal_dispatch_routing SET task_queue = '${TASK_QUEUE}';`,
     );
 
     const serviceVerifier: TokenVerifier = {
@@ -232,6 +276,11 @@ describe.skipIf(!integrationEnabled)("Phase 0L real worker loop", () => {
       executeSql(`DELETE FROM app.tenants WHERE slug LIKE '0l-loop-${runKey}-%';`);
       executeSql(`DELETE FROM app.users WHERE primary_email LIKE '0l-loop-${runKey}-%';`);
     }
+    if (postgresContainerId && migratorPassword) {
+      executeMigratorSql(
+        `UPDATE app.temporal_dispatch_routing SET task_queue = 'expense-tax-ai-worker';`,
+      );
+    }
     await database?.destroy();
   });
 
@@ -258,7 +307,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L real worker loop", () => {
       tenantId,
       scope: { personalProfileId: profileId },
       workflowType: "FoundationEchoWorkflow",
-      taskQueue: TASK_QUEUE,
       allowedResultSchemaVersion: "foundation-echo-v1",
       actorServicePrincipal: "platform-admin",
       requestId: `0l-loop-${runKey}-create`,

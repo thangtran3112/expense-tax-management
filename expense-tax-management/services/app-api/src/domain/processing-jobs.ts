@@ -17,6 +17,7 @@ import type { AppDatabase } from "../database/types.js";
 import type { TemporalWorkflowStarter } from "../temporal/client.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
+import { readDispatchRoutingForShare } from "./dispatch-routing.js";
 import { applyOcrExtraction } from "./ocr.js";
 import {
   executeIdempotentMutation,
@@ -36,7 +37,6 @@ export interface CreateProcessingJobInput {
     | { readonly personalProfileId: string; readonly businessId?: undefined }
     | { readonly businessId: string; readonly personalProfileId?: undefined };
   readonly workflowType: WorkflowType;
-  readonly taskQueue: string;
   readonly allowedResultSchemaVersion: string;
   readonly targetAggregateType?: string;
   readonly targetAggregateId?: string;
@@ -64,6 +64,10 @@ export async function createJobInTransaction(
   const jobId = randomUUID();
   const workflowId = `job-${jobId}`;
   const now = new Date();
+  // Enqueue fence (Task 7 Stage A): every new job is stamped with the
+  // dispatch target this transaction actually observed. FOR SHARE here
+  // blocks a concurrent operator `advance` until this transaction commits.
+  const dispatchTarget = await readDispatchRoutingForShare(transaction);
   const created = await transaction
     .insertInto("app.processing_jobs")
     .values({
@@ -73,7 +77,9 @@ export async function createJobInTransaction(
       business_id: input.scope.businessId ?? null,
       workflow_type: input.workflowType,
       workflow_id: workflowId,
-      task_queue: input.taskQueue,
+      task_queue: dispatchTarget.taskQueue,
+      dispatch_generation: dispatchTarget.generation,
+      dispatch_namespace: dispatchTarget.namespace,
       run_id: null,
       status: "PENDING",
       target_aggregate_type: input.targetAggregateType ?? null,
@@ -221,6 +227,7 @@ export function createProcessingJobsDomain(
           "job.workflow_type as workflowType",
           "job.workflow_id as workflowId",
           "job.task_queue as taskQueue",
+          "job.dispatch_namespace as dispatchNamespace",
         ])
         .where("outbox.status", "=", "PENDING")
         .orderBy("outbox.created_at", "asc")
@@ -240,6 +247,7 @@ export function createProcessingJobsDomain(
             workflowType: jobReference.workflowType,
             workflowId: row.workflowId,
             taskQueue: row.taskQueue,
+            namespace: row.dispatchNamespace,
             args: [jobReference],
           });
           const now = new Date();

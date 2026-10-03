@@ -7,7 +7,7 @@ import { Pool } from "pg";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 
-function requiredMigrationDatabaseUrl(value: string | undefined): string {
+export function requiredMigrationDatabaseUrl(value: string | undefined): string {
   const migrationDatabaseUrl = value?.trim();
   if (!migrationDatabaseUrl) {
     throw new Error(

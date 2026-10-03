@@ -11,6 +11,7 @@
     "generate:openapi": "tsx scripts/generate-openapi.ts",
     "test": "APP_TENANT_TOKEN_ISSUER=https://identity.test APP_TENANT_TOKEN_AUDIENCE=expense-app APP_TENANT_JWKS_URL=https://identity.test/.well-known/jwks.json APP_SERVICE_TOKEN_ISSUER=https://services.test APP_SERVICE_TOKEN_AUDIENCE=expense-app-internal APP_SERVICE_JWKS_URL=https://services.test/.well-known/jwks.json APP_DATABASE_URL=postgresql://app-runtime.test/app APP_MIGRATION_DATABASE_URL=postgresql://app-migrator.test/app TEMPORAL_HOST=127.0.0.1:7233 TEMPORAL_NAMESPACE=default STORAGE_BACKEND=local LOCAL_STORAGE_DIR=/tmp/expense-tax-test-storage STORAGE_LOCAL_BASE_URL=http://127.0.0.1:8100 STORAGE_URL_SIGNING_KEY=test-signing-key-not-secret INBOUND_EMAIL_BASE_ADDRESS=receipts@inbound.test INBOUND_WEBHOOK_SIGNING_KEY=test-webhook-key INBOUND_ROUTING_TOKEN_SECRET=test-routing-key INBOUND_CHALLENGE_DIR=/tmp/expense-tax-inbound-test CLERK_ISSUER_URL=https://clerk.test CLERK_JWKS_URL=https://clerk.test/.well-known/jwks.json CLERK_TENANT_AUDIENCE=tenant-audience CLERK_PLATFORM_AUDIENCE=platform-audience CLERK_APP_SERVICE_AUDIENCE=app-service-audience CLERK_FOUNDRY_SERVICE_AUDIENCE=foundry-service-audience CLERK_APP_SERVICE_SUBJECT=ai-worker-app-machine CLERK_FOUNDRY_SERVICE_SUBJECT=ai-worker-foundry-machine vitest run --dir test",
     "db:migrate": "tsx src/database/migrate.ts",
+    "db:dispatch-routing": "tsx src/temporal/dispatch-routing.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src test"

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { AI_WORKER_TASK_QUEUE } from "../../packages/contracts/src/index.js";
+import { LEGACY_AI_WORKER_TASK_QUEUE } from "../../packages/contracts/src/index.js";
 import { buildApp as buildAppApi } from "../../services/app-api/src/app.js";
 import { createAppConfig } from "../../services/app-api/src/config.js";
 import { createAppDatabase } from "../../services/app-api/src/database/client.js";
@@ -38,14 +38,18 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const composeScript = path.join(repoRoot, "scripts", "compose.sh");
 const aiWorkerPython = path.join(repoRoot, "services/ai-worker/.venv/bin/python");
 const runKey = randomUUID().slice(0, 8);
-// OCR jobs ALWAYS dispatch to the shared production queue (the task queue
-// is a cross-language constant, not per-job input -- see task-queues.ts).
-// So unlike the 0L loop test (which created jobs directly with a custom
-// queue), this test's worker must poll the shared queue, and the stale
-// dev compose worker (old code, no OcrReceiptWorkflow) must be stopped
-// first or it races for our tasks and poison-fails them as unknown type.
-// beforeAll stops it; afterAll restarts it.
-const TASK_QUEUE = AI_WORKER_TASK_QUEUE;
+// Task 7 Stage A: new jobs dispatch wherever app.temporal_dispatch_routing
+// says (createJobInTransaction reads it FOR SHARE), not a bare queue
+// constant. Generation 1 (this migration's seed, and today's production
+// default) targets the legacy Python queue, so this test's worker -- a
+// stand-in for that same production Python worker -- must poll
+// LEGACY_AI_WORKER_TASK_QUEUE, the queue OCR actually dispatches to by
+// default. This is still the real shared queue (not a per-run random
+// one like the 0L loop test uses), so the stale dev compose worker (old
+// code, no OcrReceiptWorkflow) must be stopped first or it races for our
+// tasks and poison-fails them as unknown type. beforeAll stops it;
+// afterAll restarts it.
+const TASK_QUEUE = LEGACY_AI_WORKER_TASK_QUEUE;
 const WORKER_TOKEN = `test-ocr-worker-token-${runKey}`;
 const SIGNING_KEY = `0c-loop-signing-${runKey}`;
 

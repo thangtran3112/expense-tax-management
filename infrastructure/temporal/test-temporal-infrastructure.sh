@@ -47,12 +47,22 @@ assert.deepEqual(local.services.temporal.ports, ["127.0.0.1:7233:7233"]);
 assert.equal(expense.services.temporal, undefined);
 assert.equal(expense.networks.shared.external, true);
 assert.equal(expense.networks.shared.name, "family_shared");
-for (const name of ["app-api", "ai-worker"]) {
+for (const name of ["app-api", "ai-worker", "workflow-worker"]) {
   assert.ok(expense.services[name].networks.includes("shared"));
   assert.equal(expense.services[name].depends_on?.temporal, undefined);
 }
 assert.ok(expense.services["ai-worker"]);
-assert.equal(expense.services["workflow-worker"], undefined);
+// Task 7 Stage B: the TypeScript worker is now in production Compose, idle
+// on its own namespace/queue -- never the same queue as ai-worker.
+assert.ok(expense.services["workflow-worker"]);
+assert.equal(expense.services["ai-worker"].environment.TEMPORAL_NAMESPACE, "default");
+assert.equal(expense.services["ai-worker"].environment.AI_WORKER_TASK_QUEUE, "expense-tax-ai-worker");
+assert.equal(expense.services["workflow-worker"].environment.TEMPORAL_NAMESPACE, "expense-tax");
+assert.equal(expense.services["workflow-worker"].environment.AI_WORKER_TASK_QUEUE, "expense-tax-processing");
+assert.notEqual(
+  expense.services["ai-worker"].environment.AI_WORKER_TASK_QUEUE,
+  expense.services["workflow-worker"].environment.AI_WORKER_TASK_QUEUE,
+);
 assert.equal(/compose up[^\n]*\btemporal\b/.test(read("expense-tax-management/deploy/production/deploy.sh")), false,
   "Expense deployment must not start the shared Temporal server");
 assert.equal(/bootstrap-temporal-db\.sh/.test(read(".github/workflows/expense-tax-deploy.yml")), false,

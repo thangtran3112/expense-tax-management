@@ -162,13 +162,90 @@ Task 6 source is verified locally. Production activation remains an approved ope
 
 ### Task 7: Production Cutover and Python Removal
 
+Split into three stages so `dev` can release safely well before the
+TypeScript worker is production-ready. The codebase defines no Temporal
+Schedules anywhere (confirmed: no `ScheduleClient`/schedule creation call in
+`services/` as of Stage A); every schedule-pause/recreate bullet below is
+therefore a no-op until/unless schedules are introduced.
+
+**Stage A -- transactional dispatch routing fence (complete):**
+singleton `app.temporal_dispatch_routing` row (migration 017) makes the
+namespace/queue every new job dispatches to data-driven instead of a bare
+contract constant. Generation 1 seeds today's production target (namespace
+`default`, queue `expense-tax-ai-worker`), so Stage A changes no production
+behavior by itself -- it only removes the release hazard (App API no longer
+hardcodes `expense-tax-processing`). `createJobInTransaction` and
+`createEnrichmentJobInTransaction` read the row `FOR SHARE` inside the
+enqueue transaction and stamp `dispatch_generation`/`dispatch_namespace` (plus
+the existing `task_queue` column) on the job row; the dispatcher starts each
+workflow with that row's own namespace/queue, so old-generation jobs keep
+draining to their original target after a cutover. The runtime DB role has
+SELECT-only access to the routing row; only the migrator/owner role can
+`UPDATE` it. Operator commands (`services/app-api/src/temporal/dispatch-routing.ts`,
+compiled to `dist/temporal/dispatch-routing.js`, run with migration
+credentials):
+  - `status` -- read-only: current generation/namespace/queue plus
+    non-terminal-job and pending-outbox counts grouped by generation.
+  - `advance --from-generation <n>` -- one transaction, `FOR UPDATE` the
+    routing row, refuses unless the current generation equals `<n>`, then
+    sets generation `n+1` / namespace `expense-tax` / queue
+    `expense-tax-processing` (canonical contract constants only; never
+    accepts caller-supplied namespace/queue).
+
+- [x] Make dispatch routing data-driven and transactionally fenced (migration 017, enqueue fence, dispatcher namespace-per-row, operator `status`/`advance` commands, contract constants for legacy vs. target routing).
+- [ ] Inventory every production `default` namespace workflow, schedule (none exist), processing job, and dispatch-outbox row that targets the Python queue.
+
+**Stage B -- operator drain + non-production smoke + production switch:**
+
 **Files:**
 - Modify: `expense-tax-management/deploy/production/docker-compose.yml`
 - Modify: `expense-tax-management/deploy/production/deploy.sh`
 - Modify: `expense-tax-management/deploy/production/health-check.sh`
+- Modify: integration tests that spawn Python workers
+
+**Interfaces:**
+- Produces: production App API dispatching to the TypeScript worker, Python worker still running and draining.
+
+Stage B source (complete): the TypeScript worker is now part of production Compose, idle. The plan forbids running Python and TypeScript workers on the same queue; different queues are allowed, so `workflow-worker` can deploy to production polling namespace `expense-tax` / queue `expense-tax-processing` while generation 1 (Stage A's seed) keeps routing every new job to `ai-worker` (namespace `default` / queue `expense-tax-ai-worker`). The cutover itself becomes a database-only operator step (`advance`) plus a later Stage C Python removal.
+
+- [x] Add an idle `workflow-worker` service to `deploy/production/docker-compose.yml` (image `expense-tax-workflow-worker`, `0.5` CPU / `512M`, namespace `expense-tax` / queue `expense-tax-processing`, networks `[default, shared]` only, depends on healthy `app-api`/`foundry-service`, healthcheck matching `ai-worker`); leave `ai-worker` unchanged.
+- [x] Add `workflow-worker` to `deploy.sh`'s `APPLICATION_SERVICES` (image-tag verification + rollback) and to `health-check.sh`'s running-service checks.
+- [x] Fix round 1: `workflow-worker` is the *only optional* rollback service. Production's currently-recorded previous tag predates the commit that first built the `expense-tax-workflow-worker` image, so a straight rollback would try to pull/start/verify an image that doesn't exist and fail, stranding production on the broken release. `deploy.sh`'s rollback now probes `docker manifest inspect` for the previous tag's `workflow-worker` image; if missing, it stops/removes that one container and excludes it from pull/up/health-check/image-verification, while all six other services stay mandatory exactly as before (a missing image for any of them still fails the rollback). `health-check.sh`'s required-worker list is now `HEALTH_CHECK_REQUIRED_WORKERS`-configurable (default: both workers) so rollback can pass the reduced list. Safe because routing still targets generation 1 (Python) until an operator runs `advance`, which the cutover sequence below requires only after a healthy release.
+- [x] Update the boundary/image/secret-bundle tests that pinned "no TypeScript worker in production Compose" (Task 5) to the new contract.
+- [ ] Deploy shared Temporal namespace plus TypeScript worker to a non-production environment.
+- [ ] Run real App API -> Temporal -> TypeScript worker -> App callback smoke flows for OCR, forwarding, and enrichment.
+- [ ] Run `advance --from-generation <n>` against production once smoke passes; new jobs now target namespace `expense-tax` / queue `expense-tax-processing`.
+- [ ] Keep the Python worker running until every accepted old-generation workflow reaches a terminal state and no pending old-generation dispatch remains (`status` command); do not move open histories between SDKs or namespaces.
+- [ ] Reconcile failed/stuck executions individually. Cancellation, termination, or replacement requires an operator-recorded recovery decision and idempotency proof.
+- [ ] Pause old schedules (none exist today) only after the transactional fence commits, then recreate any future schedules in namespace `expense-tax` against queue `expense-tax-processing`, preserving schedule IDs/configuration but not old histories.
+- [ ] Deploy TypeScript worker, verify polling and workflow completion, then enable new schedules and dispatch.
+- [ ] Immediately before stopping the Python worker, run `status` again and prove zero non-terminal old-generation jobs, zero pending old-generation dispatches, and zero active old schedules.
+
+**Operator cutover sequence** (production Compose project `expense-tax-production`, root-only env file `/etc/expense-tax-management/production.env`, run from `expense-tax-management/deploy/production/`):
+
+a. Activate shared Temporal per `infrastructure/README.md`'s "Shared Temporal Activation" section (operator-only, separately approved).
+b. Release `dev` to `main` so the next deploy brings up `workflow-worker` idle alongside `ai-worker`.
+c. Verify TS worker polling in `expense-tax`:
+   ```bash
+   docker exec family-temporal temporal task-queue describe --address temporal:7233 --namespace expense-tax --task-queue expense-tax-processing
+   ```
+d. Check current routing:
+   ```bash
+   docker compose --project-name expense-tax-production --env-file /etc/expense-tax-management/production.env -f docker-compose.yml run --rm app-api-migrate node dist/temporal/dispatch-routing.js status
+   ```
+e. Run non-production smoke (OCR, forwarding, enrichment end to end against the TypeScript worker) if a non-production environment with shared Temporal is available.
+f. Cut new jobs over (generation shown by `status` in step d, normally `1`):
+   ```bash
+   docker compose --project-name expense-tax-production --env-file /etc/expense-tax-management/production.env -f docker-compose.yml run --rm app-api-migrate node dist/temporal/dispatch-routing.js advance --from-generation 1
+   ```
+g. Drain: repeat the `status` command from step d until it reports zero non-terminal jobs and zero pending outbox rows for the pre-advance generation, while `ai-worker` keeps running and processing them.
+h. Only then does Stage C stop and remove `ai-worker`/Python.
+
+**Stage C -- Python removal:**
+
+**Files:**
 - Modify: `expense-tax-management/services/app-api/src/config.ts`
 - Modify: `expense-tax-management/services/app-api/src/temporal/client.ts`
-- Modify: integration tests that spawn Python workers
 - Delete: `expense-tax-management/services/ai-worker/`
 - Delete: `expense-tax-management/common/python/expense-contracts/`
 - Modify: Python CI/scripts and generated-contract checks
@@ -176,18 +253,9 @@ Task 6 source is verified locally. Production activation remains an approved ope
 **Interfaces:**
 - Produces: TypeScript-only runtime with App API client and independent worker.
 
-- [ ] Inventory every production `default` namespace workflow, schedule, processing job, and dispatch-outbox row that targets the Python queue.
-- [ ] In one App PostgreSQL transaction, advance a cutover generation and close old-queue dispatch. Every enqueue/outbox write must lock/check that generation in its own transaction so no old-queue job can cross the fence.
-- [ ] Pause old schedules only after the transactional fence commits, then drain all old-generation outbox rows.
-- [ ] Keep the Python worker running until every accepted old-queue workflow reaches a terminal state and no pending dispatch can create another; do not move open histories between SDKs or namespaces.
-- [ ] Reconcile failed/stuck executions individually. Cancellation, termination, or replacement requires an operator-recorded recovery decision and idempotency proof.
-- [ ] Immediately before stopping Python worker, take the dispatch-generation lock again and prove zero open old-queue workflows, zero pending old-generation dispatches, and zero active old schedules in the same fenced window.
-- [ ] Deploy shared Temporal namespace plus TypeScript worker to a non-production environment.
-- [ ] Run real App API -> Temporal -> TypeScript worker -> App callback smoke flows for OCR, forwarding, and enrichment.
-- [ ] Recreate paused schedules in namespace `expense-tax` against queue `expense-tax-processing`, preserving schedule IDs/configuration but not old histories.
-- [ ] Switch App API to namespace `expense-tax` and queue `expense-tax-processing` only after drain and smoke success.
-- [ ] Deploy TypeScript worker, verify polling and workflow completion, then enable new schedules and dispatch.
-- [ ] Remove Python image, package, generated contracts, uv locks, Ruff/Pytest CI, and Python subprocess integration paths.
+- [ ] Delete `services/ai-worker/`, `common/python/expense-contracts/`, and Python subprocess integration paths.
+- [ ] Strip Python/uv/Ruff/Pytest lines from CI; update `check-workflow-worker-image.test.mjs` and `3c-auto-tagging` literals that assert Python-specific behavior.
+- [ ] Remove `ai-worker` from `deploy.sh`'s service array.
 - [ ] Run full contracts, services, frontends, worker, PostgreSQL integration, Compose, image, and production-boundary suites.
 - [ ] Record image tags and rollback procedure; request separate approval before production deployment.
 

@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import {
   EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
-  AI_WORKER_TASK_QUEUE,
   type JobReferenceV1,
   type ExpenseEnrichmentInputResponseV1,
   type ExpenseEnrichmentInputV1,
@@ -15,6 +14,7 @@ import { z } from "zod";
 import type { AppDatabase } from "../database/types.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
+import { readDispatchRoutingForShare } from "./dispatch-routing.js";
 import {
   toJsonValue,
   type MutationResult,
@@ -61,6 +61,10 @@ export async function createEnrichmentJobInTransaction(
   const jobId = randomUUID();
   const workflowId = `job-${jobId}`;
   const now = new Date();
+  // Enqueue fence (Task 7 Stage A): see createJobInTransaction in
+  // processing-jobs.ts for the same pattern (not reused directly here --
+  // see the module docstring on the circular-import constraint).
+  const dispatchTarget = await readDispatchRoutingForShare(transaction);
 
   const created = await transaction
     .insertInto("app.processing_jobs")
@@ -71,7 +75,9 @@ export async function createEnrichmentJobInTransaction(
       business_id: binding.scope.businessId ?? null,
       workflow_type: EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
       workflow_id: workflowId,
-      task_queue: AI_WORKER_TASK_QUEUE,
+      task_queue: dispatchTarget.taskQueue,
+      dispatch_generation: dispatchTarget.generation,
+      dispatch_namespace: dispatchTarget.namespace,
       run_id: null,
       status: "PENDING",
       target_aggregate_type: "expense",
