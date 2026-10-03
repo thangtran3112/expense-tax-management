@@ -162,6 +162,14 @@ describe.skipIf(!integrationEnabled)("Task 7 Stage A dispatch routing fence", ()
 
   afterAll(async () => {
     if (postgresContainerId && runtimePassword) {
+      // Delete this run's audit trail before its users: app_audit_events.actor_user_id
+      // is ON DELETE SET NULL, and a row whose only actor was actor_user_id
+      // (no actor_service_principal -- true for every enrichment-job audit
+      // event here) would otherwise violate app_audit_events_actor_check
+      // during the user DELETE's own cascade. Pre-existing schema
+      // interaction (migration 002), not a Task 7 Stage A concern -- just
+      // needs this cleanup ordered around it.
+      executeSql(`DELETE FROM app.app_audit_events WHERE request_id LIKE 't7a-${runKey}-%';`);
       executeSql(`DELETE FROM app.tenants WHERE slug LIKE 't7a-${runKey}-%';`);
       executeSql(`DELETE FROM app.users WHERE primary_email LIKE 't7a-${runKey}-%';`);
     }
@@ -246,6 +254,7 @@ describe.skipIf(!integrationEnabled)("Task 7 Stage A dispatch routing fence", ()
         scope: { personalProfileId: profileId },
         expenseId,
         expectedExpenseVersion: 1,
+        requestedByUserId: userId,
         requestId: `t7a-${runKey}-enrichment-create`,
       }),
     );
@@ -394,6 +403,104 @@ describe.skipIf(!integrationEnabled)("Task 7 Stage A dispatch routing fence", ()
         namespace: "expense-tax",
       }),
     );
+
+    resetRoutingToGenerationOne();
+  }, 15_000);
+
+  // ---- outbox target immutability: no path can re-enqueue an existing --
+  // ---- job under a different generation after a cutover ----------------
+
+  it("the dispatch outbox allows at most one row per job (DB-enforced), so no path can re-target a job to a new generation", () => {
+    const seed = seedTenantWithPersonalProfile();
+    // Reuse the same job id for both outbox inserts -- the unique
+    // constraint is on processing_job_dispatch_outbox.processing_job_id,
+    // not the outbox row's own id, so a duplicate is rejected regardless of
+    // how the second row's id is generated.
+    const jobId = randomUUID();
+    executeSql(`
+      INSERT INTO app.processing_jobs
+        (id, tenant_id, personal_profile_id, workflow_type, workflow_id, task_queue,
+         dispatch_generation, dispatch_namespace, status, allowed_result_schema_version,
+         input_params, version, created_at, updated_at, dispatched_at, completed_at)
+      VALUES
+        ('${jobId}', '${seed.tenantId}', '${seed.profileId}', 'FoundationEchoWorkflow',
+         'job-${jobId}', 'expense-tax-ai-worker', 1, 'default', 'PENDING', 'foundation-echo-v1',
+         '{}'::jsonb, 1, now(), now(), NULL, NULL);
+      INSERT INTO app.processing_job_dispatch_outbox
+        (id, processing_job_id, job_reference, status, attempts, created_at, dispatched_at)
+      VALUES
+        ('${randomUUID()}', '${jobId}', '{}'::jsonb, 'PENDING', 0, now(), NULL);
+    `);
+    const secondInsert = runAs(
+      "expense_app_runtime",
+      runtimePassword,
+      `INSERT INTO app.processing_job_dispatch_outbox
+         (id, processing_job_id, job_reference, status, attempts, created_at, dispatched_at)
+       VALUES
+         ('${randomUUID()}', '${jobId}', '{}'::jsonb, 'PENDING', 0, now(), NULL);`,
+    );
+    expect(secondInsert.status).not.toBe(0);
+    expect(secondInsert.stderr).toMatch(/processing_job_dispatch_outbox_job_unique|duplicate key/);
+  });
+
+  it("a crash-retry redispatch after a later generation advance still targets the job's original stamped namespace and queue", async () => {
+    const seed = seedTenantWithPersonalProfile();
+    const job = await runtimeDatabase.transaction().execute((transaction) =>
+      createJobInTransaction(transaction, {
+        tenantId: seed.tenantId,
+        scope: { personalProfileId: seed.profileId },
+        workflowType: "FoundationEchoWorkflow",
+        allowedResultSchemaVersion: "foundation-echo-v1",
+        actorServicePrincipal: "platform-admin",
+        requestId: `t7a-${runKey}-retry-create`,
+      }),
+    );
+
+    const calls: StartWorkflowInput[] = [];
+    const recordingStarter: TemporalWorkflowStarter = {
+      start: async (input) => {
+        calls.push(input);
+        return { runId: `fake-retry-run-${calls.length}` };
+      },
+      close: async () => undefined,
+    };
+    const domain = createProcessingJobsDomain(runtimeDatabase, recordingStarter);
+
+    // First dispatch (generation 1 is still current).
+    await domain.dispatchPendingJobs({ limit: 200 });
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        workflowId: job.workflowId,
+        taskQueue: "expense-tax-ai-worker",
+        namespace: "default",
+      }),
+    );
+
+    // Cut over to generation 2 *after* this job was already dispatched.
+    await advanceDispatchRouting(migratorDatabase, { fromGeneration: 1 });
+
+    // Simulate a dispatcher crash-then-retry (same scenario the existing
+    // real-Temporal redispatch test exercises): the outbox+job rows are
+    // reset to PENDING as if the start() call succeeded but the
+    // follow-up DB commit never happened. This re-enqueues the SAME
+    // job/outbox rows (not new ones -- the unique constraint above makes a
+    // new outbox row for this job impossible) after a cutover occurred.
+    executeSql(`
+      UPDATE app.processing_job_dispatch_outbox
+      SET status = 'PENDING', dispatched_at = NULL WHERE processing_job_id = '${job.id}';
+      UPDATE app.processing_jobs
+      SET status = 'PENDING', dispatched_at = NULL, run_id = NULL WHERE id = '${job.id}';
+    `);
+    await domain.dispatchPendingJobs({ limit: 200 });
+
+    // The retry must still use generation 1's target -- the job row's own
+    // stamped columns -- never the now-current generation 2 routing row.
+    const retryCalls = calls.filter((call) => call.workflowId === job.workflowId);
+    expect(retryCalls).toHaveLength(2);
+    for (const call of retryCalls) {
+      expect(call.taskQueue).toBe("expense-tax-ai-worker");
+      expect(call.namespace).toBe("default");
+    }
 
     resetRoutingToGenerationOne();
   }, 15_000);

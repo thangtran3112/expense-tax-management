@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { createAppDatabase } from "../database/client.js";
 import { requiredMigrationDatabaseUrl } from "../database/migrate.js";
 import type { AppDatabase } from "../database/types.js";
+import { acquireDispatchRoutingExclusiveLock } from "../domain/dispatch-routing.js";
 
 /**
  * Task 7 Stage A operator commands for app.temporal_dispatch_routing.
@@ -89,21 +90,22 @@ export interface AdvanceDispatchRoutingResult {
 /**
  * Advances the singleton routing row by exactly one generation, to the
  * canonical TypeScript-worker target (TARGET_TEMPORAL_NAMESPACE /
- * AI_WORKER_TASK_QUEUE -- never caller-supplied). FOR UPDATE inside one
- * transaction blocks any concurrent enqueue's FOR SHARE read
- * (readDispatchRoutingForShare) until this commits, so no job can be
- * stamped with a target that straddles the cutover. Refuses unless the
- * current generation equals fromGeneration (stale-write guard).
+ * AI_WORKER_TASK_QUEUE -- never caller-supplied). Takes the dispatch-routing
+ * fence's exclusive advisory lock inside one transaction -- the counterpart
+ * of readDispatchRoutingForShare's shared lock -- blocking any concurrent
+ * enqueue until this commits, so no job can be stamped with a target that
+ * straddles the cutover. Refuses unless the current generation equals
+ * fromGeneration (stale-write guard).
  */
 export async function advanceDispatchRouting(
   database: Kysely<AppDatabase>,
   input: AdvanceDispatchRoutingInput,
 ): Promise<AdvanceDispatchRoutingResult> {
   return database.transaction().execute(async (transaction) => {
+    await acquireDispatchRoutingExclusiveLock(transaction);
     const current = await transaction
       .selectFrom("app.temporal_dispatch_routing")
       .select("generation")
-      .forUpdate()
       .executeTakeFirstOrThrow();
     if (current.generation !== input.fromGeneration) {
       throw new Error(
