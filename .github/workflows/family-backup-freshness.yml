@@ -1,12 +1,28 @@
 name: Family Backup Freshness
 
-# Hourly RPO check (vps-backup-and-restore.md Task 6): authenticates as the
+# Daily RPO check (vps-backup-and-restore.md Task 6): authenticates as the
 # SEPARATE, list-only freshness-monitor identity (infrastructure/gcp/backup)
 # -- never the VPS writer -- and fails loudly as the backup content ages,
 # without ever reading or downloading a single backup object's content.
+#
+# Ruling (fix round 2): `dev` is this repository's default branch, so
+# merging a `schedule:` trigger activates it immediately on every push to
+# `dev` -- even before Task 1's GCP backup infrastructure is applied, and
+# even on an hourly cadence that would burn a meaningful share of the
+# owner's free GitHub Actions minutes (~720 min/month at 5 min/run) for a
+# bucket that doesn't exist yet. Changed hourly -> once daily, plus the
+# job-level `if:` below, which skips the job entirely (0 minutes consumed)
+# until an operator actually sets the GCP_BACKUP_BUCKET repository
+# variable. Cost: RPO-breach detection latency widens from ~1h to ~24h in
+# the worst case (a breach right after the daily run isn't caught until
+# the next one) -- acceptable because the RPO itself is already 24h; a
+# once-daily check still catches every breach within one RPO window, it
+# just loses the early-warning margin an hourly cadence would have given
+# at the 18h/22h thresholds. `workflow_dispatch` remains for an operator
+# to check on demand without waiting for the schedule.
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "17 14 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -17,6 +33,11 @@ jobs:
     name: Check latest backup age
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Skips entirely (0 Actions minutes consumed) until an operator sets
+    # this repository variable -- i.e. until Task 1's bucket actually
+    # exists. A manual workflow_dispatch while still unconfigured skips
+    # too, rather than running only to fail fast inside the script below.
+    if: ${{ vars.GCP_BACKUP_BUCKET != '' }}
     permissions:
       contents: read
       id-token: write
