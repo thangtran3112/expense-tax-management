@@ -218,6 +218,7 @@ under the exact `leaseId` that acquired it.
 - Create: `expense-tax-management/services/mailbox-broker/src/logging.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/database/client.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/database/migrations/001_token_vault.ts`
+- Create: `expense-tax-management/services/mailbox-broker/src/database/migrations/002_token_operations.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/token-vault.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/key-rotation.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/key-rotation-cli.ts`
@@ -237,9 +238,11 @@ under the exact `leaseId` that acquired it.
 - Create: `expense-tax-management/services/workflow-worker/test/mailbox-client.test.ts`
 - Modify: `expense-tax-management/services/workflow-worker/test/config.test.ts`
 
-**Interfaces:** `createOAuthState`, `consumeOAuthState`, `createConnectionVaultRow`, `addTokenGenerationCAS`, `destroyTokenGeneration`, `revokeTokenGenerations`, `createGmailMailboxProvider`, and `MailboxBrokerConnectionAppClient` are created here.
+**Interfaces:** `createOAuthState`, `consumeOAuthState`, `createConnectionVaultRow`, `addTokenGenerationCAS`, `destroyTokenGeneration`, `revokeTokenGenerations`, `createGmailMailboxProvider`, `MailboxBrokerConnectionAppClient`, `persistTokenOperation`, `markTokenOperationDispatched`, and `resolvePendingTokenOperations` are created here.
 
 Token vault schema (`src/token-vault.ts` + migration `001_token_vault.ts`): one row per `(connection_id, generation)` with columns `connection_id`, `generation` (int, starts at 1), `key_id` (text, identifies which AES key encrypted this row), `nonce` (12 random bytes / 96 bits, `bytea`), `ciphertext` (`bytea`), `auth_tag` (`bytea`, GCM tag), `disabled_at` (nullable), `created_at`. Unique constraint `(key_id, nonce)` across the whole table — a generated nonce collision under the same key is rejected at the database and the encrypt operation retries with a freshly generated nonce (collision probability is negligible at 96 bits, but the constraint makes reuse impossible rather than merely unlikely). AAD for every encrypt/decrypt call is the UTF-8 bytes of `${connectionId}:${keyId}:${generation}`, so ciphertext from one connection/key/generation cannot be decrypted, or silently substituted, into another's row. `addTokenGenerationCAS` always uses the current active `key_id` from `src/config.ts`'s loaded key map (see below) to encrypt; `destroyTokenGeneration`/`revokeTokenGenerations` only ever disable/delete, never decrypt-and-reencrypt in place.
+
+Token operation schema (`src/token-vault.ts` + migration `002_token_operations.ts`), for crash-safe rotation only: rotation runs as a short-lived CLI process that can be killed or crash mid-flight; without a durable record, a restarted invocation cannot tell whether an in-flight `advanceTokenGeneration` call ever committed, and (per review) could mint a second new generation while the first stays enabled forever. `rotateVaultKey` persists one `token_operations` row *before* ever calling `advanceTokenGeneration`: `operation_id` (uuid, primary key), `connection_id`, `idempotency_key` (the exact value that will be passed to `advanceTokenGeneration`), `lease_id`, `expected_connection_version`, `from_generation`, `to_generation` (the new vault row's generation — the vault row's own primary key is `(connection_id, generation)`, so this column alone identifies it), `vault_reference`, `request_id`, `advance_requested_at` (nullable timestamp, committed immediately before — never after — the `advanceTokenGeneration` HTTP request is dispatched), `status` (`'pending' | 'confirmed' | 'rejected'`), `created_at`, `resolved_at`. A partial unique index on `connection_id WHERE status = 'pending'` guarantees at most one in-flight rotation per connection at the vault-database level, independent of the App-side lease's TTL.
 
 **Key rotation — concrete protocol.** Broker config loads a map of `key_id -> key
 material` from the Expense Secret Manager bundle (deployment-time env:
@@ -263,8 +266,17 @@ background job (there is no scheduler in 3D-A):
    in `docker-compose.yml`): `docker exec <mailbox-broker-container> node
    dist/key-rotation-cli.js --retiring-key-id=<old> --new-key-id=<new>
    [--connection-id=<uuid>]` (omit `--connection-id` to rotate every connection).
-   For each active (non-disabled) row still encrypted under `--retiring-key-id`,
-   `rotateVaultKey` in `src/key-rotation.ts`:
+
+   **Every invocation resumes before it starts anything new.** `rotateVaultKey`
+   in `src/key-rotation.ts` first calls `resolvePendingTokenOperations` (optionally
+   scoped to `--connection-id`), which resolves every existing `'pending'`
+   `token_operations` row exactly as described below, *before* it looks for any
+   additional vault rows still encrypted under `--retiring-key-id`. The operator
+   always re-runs the identical command after a crash, a kill, or an
+   exhausted-retries exit — there is no separate `--resume` flag.
+
+   For each active (non-disabled) vault row still encrypted under
+   `--retiring-key-id` whose connection has no existing `'pending'` operation:
    a. decrypts the row with the retiring key;
    b. calls App's `acquireTokenOperationLease` for that connection (same lease
       primitive refresh-token rotation uses — see below — so a concurrent Gmail
@@ -272,54 +284,72 @@ background job (there is no scheduler in 3D-A):
       race each other);
    c. encrypts under `--new-key-id` as a new generation (12-byte random nonce, AAD
       `${connectionId}:${newKeyId}:${newGeneration}`), inserts the new vault row;
-   d. calls App's `advanceTokenGeneration` with the new generation/`vaultReference`
-      under the acquired lease;
-   e. on a **definitive** response confirming success — whether from the
-      original call or from a later idempotent replay of it — disables (does
-      not delete) the prior vault-row generation. `advanceTokenGeneration`
-      already cleared the lease atomically as part of its own CAS — the job
-      does **not** call `releaseTokenOperationLease` again on this path. On
-      any failure in steps (a)-(c) (before `advanceTokenGeneration` is even
-      called), it calls `releaseTokenOperationLease` without advancing,
-      leaving the prior generation untouched and the connection usable under
-      the old key.
+   d. calls `persistTokenOperation` to insert the `token_operations` row
+      (`status = 'pending'`, `advance_requested_at = NULL`) with the exact
+      `operationId`, `connectionId`, `idempotencyKey`, `leaseId`,
+      `expectedConnectionVersion`, `fromGeneration`, `toGeneration`,
+      `vaultReference`, and `requestId` it is about to send — committed to the
+      vault database before any network call. The partial unique index on
+      `connection_id WHERE status = 'pending'` makes a second, concurrently
+      started CLI invocation against the same connection fail this insert
+      (unique-violation) and skip the connection rather than racing it;
+   e. hands the persisted row to the same resolution routine used for resumed
+      operations (below).
 
-      If step (d) itself returns an **ambiguous** outcome — a network timeout
-      or connection error where no HTTP response was received at all, so the
-      job cannot tell whether App committed the advance before the response
-      was lost — it does **not** release the lease, and it does **not** start
-      a fresh rotation attempt with a new generation. Instead it re-sends the
-      exact same `advanceTokenGeneration` request (identical `leaseId`,
-      `expectedConnectionVersion`, `newGeneration`, `vaultReference`, and
-      `idempotencyKey`) with bounded exponential backoff until it receives a
-      **definitive** response:
-      - If the original call actually committed, the identical idempotency
-        key makes the retry a replay that returns the original successful
-        result (Task 2's `advanceTokenGeneration` permanent-idempotency
-        guarantee), so the job proceeds to case (e) and disables the prior
-        generation exactly once. The first new generation is the one left
-        enabled; no second generation is ever created for this attempt.
-      - If the original call never committed, the retry performs the real
-        CAS now and lands in the same success path.
-      - Only a **confirmed rejection** — a received, typed error proving the
-        advance did not and will not commit under this lease
-        (`VERSION_CONFLICT` from a stale `expectedConnectionVersion`, or
-        `IDEMPOTENCY_CONFLICT` from the same key with a different payload) —
-        is treated as failure: the job deletes the vault row it inserted for
-        the attempted generation (App never pointed to it, so nothing else
-        can reference it), then calls `releaseTokenOperationLease`.
-      - If retries are exhausted with no definitive response ever received,
-        the job exits non-zero without deleting the new row or releasing the
-        lease. This is safe to leave for operator investigation: the prior
-        generation is still active and decryptable, and re-running the CLI
-        later retries the same `advanceTokenGeneration` call under the same
-        idempotency key rather than guessing.
+   **Resolving a `'pending'` operation** (whether just persisted in step (d)/(e),
+   or found by `resolvePendingTokenOperations` on a fresh invocation after a
+   crash, a kill, or an exhausted-retries exit) always uses the row's own
+   stored `leaseId`/`expectedConnectionVersion`/`toGeneration`/`vaultReference`/
+   `requestId`/`idempotencyKey` — never freshly generated values:
+   - If `advance_requested_at` is still `NULL`, `advanceTokenGeneration` is
+     known with certainty to have never been dispatched for this operation (the
+     process died between steps (d) and (e), before any network call was
+     made). This is **not** ambiguous: the job deletes the vault row at
+     `toGeneration` (App never pointed to it), calls
+     `releaseTokenOperationLease` (idempotent: a harmless no-op if the lease
+     already expired or was never this operation's to release), and marks the
+     operation `'rejected'` — without ever calling `advanceTokenGeneration`.
+   - Otherwise — dispatching for the first time, or resuming a row whose
+     `advance_requested_at` is already set from an earlier attempt — the job
+     (re)commits `advance_requested_at = now()` *before* sending the request
+     (harmless to overwrite on a resumed row; its presence, not its exact
+     value, is what matters), then calls `advanceTokenGeneration` with bounded
+     exponential backoff until a **definitive** response arrives — the
+     identical `idempotencyKey` makes every call, first or resumed, a safe
+     replay per Task 2's permanent-idempotency guarantee (at most one commit
+     ever happens for a given operation, no matter how many process lifetimes
+     it is retried across):
+     - **Confirmed success** (direct or replayed): disables (does not delete)
+       the prior vault-row generation — an idempotent `UPDATE ... WHERE
+       disabled_at IS NULL`, safe even if a previous crashed attempt already
+       ran it — and marks the operation `'confirmed'`. `advanceTokenGeneration`
+       already cleared the lease as part of its own CAS, so this path does
+       **not** call `releaseTokenOperationLease` again. Exactly one new
+       generation is ever left enabled per operation: a resumed call replays
+       the one committed result, it never mints a second one.
+     - **Confirmed rejection** — a received, typed error proving the advance
+       did not and will not commit under this lease (`VERSION_CONFLICT` from a
+       stale `expectedConnectionVersion`, or `IDEMPOTENCY_CONFLICT` from the
+       same key with a different payload): deletes the vault row at
+       `toGeneration`, calls `releaseTokenOperationLease`, and marks the
+       operation `'rejected'`.
+     - **Still ambiguous** (retries in this invocation exhausted with no
+       definitive response ever received): the process exits non-zero leaving
+       the operation `'pending'` with `advance_requested_at` already set — the
+       prior generation stays active and decryptable, and nothing is lost,
+       because the next invocation resumes this exact operation first, using
+       the same persisted parameters, rather than guessing or starting a
+       second one.
+   On any failure in steps (a)-(c) (before any `token_operations` row is even
+   persisted in step (d)), the job calls `releaseTokenOperationLease` directly;
+   there is nothing to resume, because no operation record was ever written for
+   that attempt.
 
-      Every path above leaves at most one new vault generation enabled per
-      rotation attempt: the retry always reuses the original new-generation
-      row and idempotency key, never creates a second one.
-   The job is idempotent and resumable: re-running it only processes rows still
-   encrypted under `--retiring-key-id`; rows already migrated are skipped.
+   The job is fully idempotent and resumable across process restarts: every
+   invocation first resolves any `'pending'` operation, then processes only
+   vault rows still encrypted under `--retiring-key-id` whose connection has no
+   `'pending'` operation; rows already migrated, and connections already
+   `'confirmed'`/`'rejected'`, are skipped.
 3. **Operator verifies zero remaining references.** `node dist/key-rotation-cli.js
    --verify-retired=<old>` (or the equivalent `SELECT count(*) FROM token_vault
    WHERE key_id = $1 AND disabled_at IS NULL`) must return zero before step 4.
@@ -355,11 +385,11 @@ Separate TypeScript `MailboxAppApiClient` in `services/workflow-worker` needs **
 
 **Production wiring on the real `workflow-worker` service.** `deploy/production/docker-compose.yml` on `origin/dev` has no `workflow-worker` service yet (still `ai-worker` only). It exists today on branch `feature/task7-routing` (runtime migration Task 7; verified at `/Users/tobytran/personal/family-app/.worktrees/task7-routing/expense-tax-management/deploy/production/docker-compose.yml:148-178`), which this plan expects to merge to `dev` *before* 3D-A implementation starts — not "Stage B", a term that names an internal commit sequence on that branch, not a documented phase of `runtime-typescript-temporal-migration.md`. If `feature/task7-routing` has **not** merged by the time an implementer reaches this step, treat the `workflow-worker` service creation itself as a blocking prerequisite and coordinate with that work rather than creating a second, competing Compose entry here. Once merged, the implementer adds exactly these four new env keys to that service's existing `environment` block (its current keys — `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE: expense-tax`, `AI_WORKER_TASK_QUEUE: expense-tax-processing`, `APP_API_BASE_URL`, `FOUNDRY_BASE_URL`, `CLERK_ISSUER_URL`, `CLERK_JWKS_URL`, `CLERK_APP_SERVICE_AUDIENCE`, `CLERK_FOUNDRY_SERVICE_AUDIENCE`, `CLERK_APP_MACHINE_SECRET_KEY`, `CLERK_FOUNDRY_MACHINE_SECRET_KEY`, `CLERK_APP_SERVICE_SUBJECT`, `CLERK_FOUNDRY_SERVICE_SUBJECT` — already present, untouched by this plan): `MAILBOX_BROKER_BASE_URL: http://mailbox-broker:8300` (hardcoded Compose literal, not `${VAR:?...}` — same treatment as the existing `APP_API_BASE_URL`/`FOUNDRY_BASE_URL` literals already on that block, resolved by Docker's internal DNS), `CLERK_MAILBOX_SERVICE_AUDIENCE`, `CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY`, `CLERK_MAILBOX_WORKER_SUBJECT` (these three *are* `${VAR:?VAR is required}`, matching the block's existing `CLERK_*` entries). The base URL and the Clerk audience/secret/subject are independent concerns: the base URL is *where* the HTTP request goes, while the Clerk vars are *who the request claims to be* once it gets there. Until this wiring lands, 3D-B/C's worker-side mailbox calls have no production Compose target at all, consistent with this plan's existing "3D-B/C production activation is blocked on runtime migration Task 7 cutover" constraint; there is nothing for 3D-A to deploy on the worker side before then.
 
-- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper detection, AAD mismatch rejection (ciphertext from one connection/generation fails to decrypt under another's AAD), unique `(key_id, nonce)` enforcement with collision retry, PKCE S256, state one-time behavior, nonce transport, token-vault losing-writer cleanup (compare-and-set on generation), revoke race, refresh-token rotation calling App's lease/advance/release in order (lease acquired before vault write, `advanceTokenGeneration` called only after the new vault row is verified, prior generation disabled only after `advanceTokenGeneration` succeeds, `releaseTokenOperationLease` called instead if the vault write fails, and never called again after a confirmed-successful advance), key rotation (new key encrypts new writes, old key still decrypts its own rows during the dual-key window, the CLI resumes correctly against partially-rotated connections, retirement verification returns nonzero while any non-disabled row references the retiring key; and the three ambiguous-`advanceTokenGeneration`-timeout scenarios: **timeout-then-success reconciliation** — a retried call with the same idempotency key after the original call actually committed disables exactly one prior generation and leaves exactly one new generation enabled, never two; **timeout-then-rejection cleanup** — a retried call that returns a confirmed `VERSION_CONFLICT`/`IDEMPOTENCY_CONFLICT` deletes the unreferenced new vault row and releases the lease; and **retry idempotency** — repeated retries of the same ambiguous call, whether it committed or not, never create a second new generation or a second vault row), logger redaction, exact Clerk issuer/audience/subject/scope for both broker-accepted subjects, a negative test rejecting a tenant token or wrong subject/audience on every broker route, and worker token config (new `clerk.mailboxApp`/`clerk.mailboxBroker` blocks parse/validate like `clerk.app`/`clerk.foundry`, sharing subject/secret but differing in audience).
+- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper detection, AAD mismatch rejection (ciphertext from one connection/generation fails to decrypt under another's AAD), unique `(key_id, nonce)` enforcement with collision retry, PKCE S256, state one-time behavior, nonce transport, token-vault losing-writer cleanup (compare-and-set on generation), revoke race, refresh-token rotation calling App's lease/advance/release in order (lease acquired before vault write, `advanceTokenGeneration` called only after the new vault row is verified, prior generation disabled only after `advanceTokenGeneration` succeeds, `releaseTokenOperationLease` called instead if the vault write fails, and never called again after a confirmed-successful advance), key rotation (new key encrypts new writes, old key still decrypts its own rows during the dual-key window, the CLI resumes correctly against partially-rotated connections, retirement verification returns nonzero while any non-disabled row references the retiring key; and persisted-operation crash recovery: **crash-after-dispatch restart reconciliation** — a `token_operations` row with `advance_requested_at` already set, found `'pending'` by a freshly started process simulating a crash immediately after the original process sent `advanceTokenGeneration`, replays the identical stored request and reconciles to exactly one enabled new generation whether or not the original call actually committed; **crash-before-dispatch restart cleanup** — a `token_operations` row with `advance_requested_at` still `NULL`, found `'pending'` by a freshly started process, deletes the new vault row and releases the lease without ever calling `advanceTokenGeneration`; **concurrent second CLI blocked** — a second `rotateVaultKey` invocation against a connection with an existing `'pending'` operation fails the `token_operations` insert on its partial unique index and skips the connection instead of racing it; and **retry idempotency** — repeated resolution attempts against the same `'pending'` operation, whether ultimately confirmed or rejected, never create a second new generation or a second vault row), logger redaction, exact Clerk issuer/audience/subject/scope for both broker-accepted subjects, a negative test rejecting a tenant token or wrong subject/audience on every broker route, and worker token config (new `clerk.mailboxApp`/`clerk.mailboxBroker` blocks parse/validate like `clerk.app`/`clerk.foundry`, sharing subject/secret but differing in audience).
 - [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/oauth-state.test.ts test/token-vault.test.ts test/key-rotation.test.ts test/key-rotation-cli.test.ts test/auth.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-token-generation.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected FAIL.
 - [ ] **Step 3: Implement state.** Payload carries `keyId`, `connectionId`, `attemptId`, `sessionNonce`, `pkceVerifier`, issue/expiry, and redirect origin. Callback decrypts, validates allowlist/session/expiry, computes `sha256(state)` and `sha256(sessionNonce)`, then calls App consume CAS before exchanging code. Invalid/replayed state redirects to fixed failure page with no details; no provider exchange occurs.
 - [ ] **Step 4: Implement Gmail adapter's refresh-token rotation.** On the OAuth client's `tokens` event: call App's `acquireTokenOperationLease`; encrypt the new refresh token (12-byte random nonce, AAD-bound AES-256-GCM, new generation) and insert the vault row; call App's `advanceTokenGeneration` with the new generation/`vaultReference` under the lease; only then disable the prior vault-row generation. If the vault write fails before `advanceTokenGeneration`, call `releaseTokenOperationLease` and leave the prior generation active. Use `googleapis`, offline access, exact readonly scope, in-memory access token, and provider enum rejection for Outlook.
-- [ ] **Step 5: Implement token vault and key rotation.** Implement the vault schema/CAS/AAD invariants, `rotateVaultKey`, and `key-rotation-cli.ts`'s `--retiring-key-id`/`--new-key-id`/`--connection-id`/`--verify-retired` flags exactly as specified in Interfaces above. The CLI calls the same App lease/advance/release endpoints as refresh-token rotation, so the two rotation paths cannot race each other on the same connection.
+- [ ] **Step 5: Implement token vault, token operations, and key rotation.** Implement the vault schema/CAS/AAD invariants, migration `002_token_operations.ts`, `persistTokenOperation`/`markTokenOperationDispatched`/`resolvePendingTokenOperations`, `rotateVaultKey` (including resolve-pending-before-new-work ordering), and `key-rotation-cli.ts`'s `--retiring-key-id`/`--new-key-id`/`--connection-id`/`--verify-retired` flags exactly as specified in Interfaces above. The CLI calls the same App lease/advance/release endpoints as refresh-token rotation, so the two rotation paths cannot race each other on the same connection.
 - [ ] **Step 6: Implement `MailboxBrokerConnectionAppClient`.** Implement OAuth-attempt consume, connection completion, token-operation lease/advance/release, and revocation-state callbacks. Never create scan, candidate, upload, or structured-result routes in A. Add tests for App audience, `mailbox-broker-app` subject, and `mailbox:write` scope.
 - [ ] **Step 7: Implement broker's own inbound auth and worker's outbound credentials.** `src/auth/clerk.ts` accepts exactly the two configured subjects above; `workflow-worker/src/config.ts` gains the new `clerk.mailboxApp`/`clerk.mailboxBroker` blocks.
 - [ ] **Step 8: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/mailbox-broker typecheck && pnpm --filter @expense-tax/app-api test -- test/mailbox-token-generation.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected PASS.
