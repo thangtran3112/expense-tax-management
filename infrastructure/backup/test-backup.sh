@@ -191,8 +191,12 @@ ok "preflight rejects invalid age recipient"
 if run_preflight env $(base_env | tr '\n' ' ') FAIL_PG_ISREADY=1 >/tmp/preflight.$$ 2>&1; then
   cat /tmp/preflight.$$ >&2; fail "preflight accepted unreachable PostgreSQL"
 fi
+tail -1 /tmp/preflight.$$ | jq -e '.status == "failure" and (.reason | test("PostgreSQL"))' >/dev/null \
+  || { cat /tmp/preflight.$$ >&2; fail "die() did not emit a machine-readable failure status"; }
+grep -qi 'super-secret-password' /tmp/preflight.$$ \
+  && fail "a failure status must never echo a secret value" || true
 rm -f /tmp/preflight.$$
-ok "preflight rejects unavailable PostgreSQL"
+ok "preflight rejects unavailable PostgreSQL and emits a machine-readable failure status"
 
 if ! run_preflight env $(base_env | tr '\n' ' ') >/tmp/preflight.$$ 2>&1; then
   cat /tmp/preflight.$$ >&2; fail "preflight rejected a fully valid environment"

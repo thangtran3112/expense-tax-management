@@ -5,7 +5,16 @@
 set -euo pipefail
 
 log() { printf '%s [backup] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
-die() { log "ERROR: $*"; exit 1; }
+
+# Every die() call site in this directory passes a generic description or,
+# at most, a variable NAME/path/object-key -- never a secret VALUE (PGPASSWORD,
+# private key, or credential file content) -- so it is always safe to echo
+# that same message into the machine-readable failure status on stdout.
+die() {
+  log "ERROR: $*"
+  emit_status failure "$(jq -nc --arg reason "$*" '{reason:$reason}')"
+  exit 1
+}
 
 require_var() {
   local name="$1"
