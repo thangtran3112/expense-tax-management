@@ -8,7 +8,7 @@ Source: local `mailbox.html` (standalone, no build step) + `mailbox.css` (featur
 
 ## Scenario coverage (per task requirement)
 
-1. No connection — connect CTA + explicit Personal/business scope radio selection (default Personal, nothing pre-submits without a choice).
+1. No connection — connect CTA + explicit Personal/business scope radio selection; no scope is preselected and Connect stays disabled until one is chosen.
 2. OAuth in progress / return — "waiting on Google" (external consent window) and "finishing connection" (post-redirect confirmation) shown as two adjacent frames.
 3. Connected — account email, status chip, granted scope, default Personal/business scope, connection metadata, scan schedule (daily time/timezone/enable + manual "Scan now"), reviewer grants (empty-state base; add-reviewer reserved for 3D-B), and a reserved "Candidate review queue" placeholder so 3D-B/C can extend this layout without a redesign.
 4. Revoked / error / reauthorization-needed — three distinct `role="alert"` banners: `reauth_required` (amber), `revoked` (red), and a generic failed-attempt error (red), matching the status enum in the Phase 3D design spec (`pending/active/paused/reauth_required/disconnecting/revocation_pending/revoked`).
@@ -23,13 +23,16 @@ No real email addresses, message content, or personal data: all copy uses `owner
 - All controls are real `<button>`/`<input>`/`<select>` elements, ≥44px touch target per shared tokens.
 - "Add reviewer" is marked `aria-disabled="true"` with a `title` explaining it's reserved for 3D-B, not a dead/unlabeled control.
 
-## Open questions for owner review
+## Owner decisions (approved 2026-10-03)
 
-1. **Mailbox nav position** — placed between "Forwarding" and "Settings" in the sidebar, matching the real `nav` array in `frontend/office-web/src/components/office-shell.tsx` with one item inserted. Confirm placement (alternative: right after "Expenses", since mailbox feeds the ledger).
-2. **Mobile viewport posture** — Office is laptop-first per the rebaseline gate ("below 1024px: Capture handoff, never compressed tax UI"). This mockup still renders a usable stacked mobile layout because the task asked for mobile coverage; confirm whether `/mailbox` should actually be reachable on phones or should redirect to a Capture-side "connect from desktop" notice instead.
-3. **OAuth-in-progress real behavior** — mockup shows both "waiting" and "return" as static frames on one page for review purposes; implementation will route through an actual external redirect. Confirm no additional in-app waiting UI (e.g., polling spinner) is expected beyond what's shown.
-4. **Scope radio default** — mockup defaults to "Personal" selected. Confirm this is the right default versus requiring an explicit choice with neither pre-selected.
-5. **Candidate review placeholder sizing** — the reserved region is a single empty card. Confirm this is enough space, or whether 3D-B needs a taller/table-shaped reservation.
+1. **Scope selection** — no radio is preselected; "Connect Gmail" renders `disabled`/`aria-disabled="true"` until Personal or business is explicitly chosen.
+2. **Mailbox nav position** — stays between "Forwarding" and "Settings".
+3. **Mobile posture** — `/mailbox` is usable on phones with the responsive stacked layout; no hand-off to Capture. Sidebar helper text and the state-review card no longer imply a hand-off.
+
+## Deferred to Phase 3D-B
+
+- **Candidate review placeholder sizing** — the reserved region remains a single empty card in this base mockup. 3D-B decides whether it needs a taller/table-shaped reservation when scan history and the candidate queue are designed.
+- **OAuth-in-progress fidelity** — "waiting" and "return" remain static review frames; 3D-B/implementation may add in-app polling UI beyond what's shown here if needed.
 
 ## Sources
 
