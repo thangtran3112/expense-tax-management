@@ -32,7 +32,7 @@
       <div>
         <p class="eyebrow">Office Web · feature gate · Phase 3D-B Task 5</p>
         <h1>Review mailbox candidates.</h1>
-        <p class="lede">This region extends the connected-mailbox page approved in Phase 3D-A. Sender, subject, date, attachment metadata, and a deterministic reason are shown per candidate — never message content. Approve for ingestion, dismiss, or flag a sender to stop seeing it again.</p>
+        <p class="lede">This region extends the connected-mailbox page approved in Phase 3D-A. Sender, subject, date, attachment metadata, and a deterministic reason are shown per candidate — never message content. Approve for ingestion, skip, or mark not a receipt.</p>
       </div>
       <button class="profile"><span class="dot"></span> Tran Studio · 2025</button>
     </div>
@@ -63,7 +63,7 @@
         <h2 id="s2-heading">Scan in progress</h2>
         <div class="oauth-row">
           <span class="spinner-dot" aria-hidden="true"></span>
-          <p style="margin:0">Running since 7:00 AM — 9 of ~30 messages discovered so far. Candidates will appear below as they finish staging.</p>
+          <p style="margin:0">Running since 7:00 AM — 9 of ~30 messages discovered so far. Status updates live; the candidate list below refreshes once this run completes.</p>
         </div>
         <button class="button secondary" type="button" disabled aria-disabled="true" title="A scan is already running">Scan now</button>
         <p class="lede" style="margin:12px 0 0;font-size:12px">The scheduled run for 03 Oct 2026, 7:00 AM will be recorded as <span class="value">skipped_overlap</span> if this run is still active at that time.</p>
@@ -191,10 +191,10 @@
 
           <div class="action-row">
             <button class="button" type="button" disabled aria-disabled="true" title="Choose a scope above to enable approval">Approve for ingestion</button>
-            <button class="button secondary" type="button">Dismiss — not a receipt</button>
-            <button class="button secondary" type="button" aria-describedby="ignore-sender-note">Always ignore this sender</button>
+            <button class="button secondary" type="button">Skip</button>
+            <button class="button secondary" type="button">Not a receipt</button>
           </div>
-          <p id="ignore-sender-note" class="lede" style="margin:8px 0 0;font-size:11px">Reserved — exact future-scan behavior is an open design question below, not yet part of the canonical review actions.</p>
+          <p class="lede" style="margin:8px 0 0;font-size:11px">Skip retains this candidate for audit with no expense created; Not a receipt is the terminal training/audit outcome. Per-sender suppression ("always ignore this sender") is a future enhancement, not part of this gate.</p>
         </aside>
       </div>
     </section>
@@ -226,7 +226,7 @@
         <span class="icon" aria-hidden="true">!</span>
         <div>
           <h3>Reconnect needed</h3>
-          <p>Google requires renewed consent for owner@example.com. Scans are paused; candidates already staged below remain reviewable.</p>
+          <p>Google requires renewed consent for owner@example.com. Only scanning is blocked — candidates already staged below stay fully reviewable.</p>
           <button class="button secondary" type="button">Reconnect Gmail</button>
         </div>
       </div>
@@ -252,7 +252,7 @@
           <div class="state" style="--state:var(--warning)"><strong>Scope immutable post-ingest</strong>Once approved, scope cannot change here; corrections use existing expense move</div>
           <div class="state" style="--state:var(--danger)"><strong>Assignment needs membership</strong>Assigning an unassigned candidate requires current target-scope membership at action time</div>
           <div class="state"><strong>Single-flight scan</strong>Manual "Scan now" is disabled while a run is active; overlapping scheduled runs are skipped, never duplicated</div>
-          <div class="state" style="--state:var(--warning)"><strong>Reauth pauses discovery</strong>Paused connection stops new scans; whether already-staged review stays open is an open design question below</div>
+          <div class="state" style="--state:var(--warning)"><strong>Reauth pauses discovery only</strong>Paused connection stops new scans; already-staged candidate review and resolve actions stay open</div>
           <div class="state"><strong>Keyboard</strong>List, detail panel, scope radiogroup, and every action button operable without a mouse</div>
           <div class="state"><strong>Screen reader</strong>Group headings announce counts; alert/status regions use role="alert"/"status"</div>
           <div class="state"><strong>Mobile stacking</strong>Below ~900px, list and detail stack vertically; detail follows the selected candidate inline</div>
