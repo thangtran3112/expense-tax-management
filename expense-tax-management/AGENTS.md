@@ -26,7 +26,7 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
 - Authenticated production smoke passed 13/13.
 - Phase 3B deduplication is deployed. Phase 3C is implemented on `dev` but not deployed; Phase 3D remains unimplemented.
-- Release hazard: `dev` App API dispatches to queue `expense-tax-processing` while production Python worker polls `expense-tax-ai-worker`. Do not release `dev` to `main` until runtime migration Task 7 routing work lands.
+- Temporal dispatch routing is data-driven (Task 7 Stage A, `app.temporal_dispatch_routing`): generation 1 = legacy Python routing (namespace `default`, queue `expense-tax-ai-worker`) until an operator runs `advance` (Stage B). `dev` no longer hardcodes `expense-tax-processing` for new jobs, so the prior release hazard is resolved.
 
 ## Boundaries
 
