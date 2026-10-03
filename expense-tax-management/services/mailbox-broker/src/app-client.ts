@@ -25,6 +25,10 @@ import type {
   AdvanceTokenGenerationResult,
   ConnectedAccount,
   MailboxBrokerConnectionAppClient,
+  MailboxBrokerDiscoveryAppClient,
+  MailboxBrokerScanBindingV1,
+  MailboxCandidateMetadataStagingResultV1,
+  MailboxCandidateMetadataStagingV1,
   MailboxConnectionV1,
   TokenOperationLeaseV1,
 } from "@expense-tax/contracts";
@@ -107,6 +111,31 @@ const ConnectionResponseSchema = z.looseObject({
   status: z.string(),
 });
 
+// Phase 3D-B Task 2 -- mirrors services/app-api/src/routes/mailbox-internal.ts's
+// exact response shapes.
+const ScanBindingResponseSchema = z.strictObject({
+  scanRunId: z.uuid(),
+  connectionId: z.uuid(),
+  expectedConnectionVersion: z.number().int(),
+  currentHistoryId: z.string().nullable(),
+  currentCursorDigest: z.string(),
+  preFenceToken: z.string(),
+  nextPageSequence: z.number().int(),
+});
+
+const CandidatePagesResponseSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  scanRunId: z.uuid(),
+  pageSequence: z.number().int(),
+  candidateIds: z.array(z.uuid()),
+  counts: z.strictObject({
+    discovered: z.number().int(),
+    staged: z.number().int(),
+    review: z.number().int(),
+    failed: z.number().int(),
+  }),
+});
+
 export interface MailboxAppClientConfig {
   readonly baseUrl: string;
   readonly issuerUrl: string;
@@ -174,7 +203,7 @@ function errorCodeForStatus(status: number, bodyCode: string | undefined): Mailb
 export function createMailboxAppClient(
   config: MailboxAppClientConfig,
   options: MailboxAppClientOptions = {},
-): MailboxBrokerConnectionAppClient {
+): MailboxBrokerConnectionAppClient & MailboxBrokerDiscoveryAppClient {
   const fetchImplementation = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const tokenProvider =
@@ -356,6 +385,35 @@ export function createMailboxAppClient(
         body: { operationId: input.operationId, status: input.status },
       });
       return result as unknown as MailboxConnectionV1;
+    },
+
+    async loadScanBinding(scanRunId): Promise<MailboxBrokerScanBindingV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/scan-runs/${scanRunId}/broker-binding`,
+        method: "POST",
+        responseSchema: ScanBindingResponseSchema,
+        body: {},
+      });
+    },
+
+    async stageCandidateMetadata(
+      input: MailboxCandidateMetadataStagingV1,
+    ): Promise<MailboxCandidateMetadataStagingResultV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/scan-runs/${input.scanRunId}/candidate-pages`,
+        method: "POST",
+        responseSchema: CandidatePagesResponseSchema,
+        body: {
+          connectionId: input.connectionId,
+          expectedConnectionVersion: input.expectedConnectionVersion,
+          cursorBeforeDigest: input.cursorBeforeDigest,
+          preFenceToken: input.preFenceToken,
+          pageSequence: input.pageSequence,
+          nextHistoryId: input.nextHistoryId,
+          messages: input.messages,
+          idempotencyKey: input.idempotencyKey,
+        },
+      });
     },
   };
 }

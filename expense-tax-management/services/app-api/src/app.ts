@@ -83,10 +83,15 @@ import { registerClerkWebhookRoutes, type ClerkWebhookRouteOptions } from "./rou
 import { registerAuthCheckRoutes } from "./routes/auth-check.js";
 import { registerDuplicateMatchRoutes } from "./routes/duplicate-matches.js";
 import { registerMailboxConnectionRoutes } from "./routes/mailbox-connections.js";
+import { registerMailboxInternalRoutes } from "./routes/mailbox-internal.js";
 import {
   createMailboxConnectionsDomain,
   type MailboxConnectionsDomain,
 } from "./domain/mailbox-connections.js";
+import {
+  createMailboxScansDomain,
+  type MailboxScansDomain,
+} from "./domain/mailbox-scans.js";
 import { createMailboxBrokerClient } from "./integrations/mailbox-broker-client.js";
 import type { ClerkIdentityMappingDomain } from "./domain/clerk-identity.js";
 import {
@@ -204,6 +209,7 @@ export interface BuildAppOptions {
   readonly clerkIdentityDomain?: ClerkIdentityMappingDomain;
   readonly tagDomain?: TagDomain;
   readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
+  readonly mailboxScansDomain?: MailboxScansDomain;
 }
 
 /**
@@ -232,6 +238,22 @@ function createDisabledMailboxConnectionsDomain(): MailboxConnectionsDomain {
     advanceTokenGeneration: disabled,
     releaseTokenOperationLease: disabled,
     recordRevocation: disabled,
+  };
+}
+
+/** Same "explicitly disabled, not misconfigured" convention as
+ * createDisabledMailboxConnectionsDomain, applied to the Task 2 scan
+ * domain. */
+function createDisabledMailboxScansDomain(): MailboxScansDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    startManualScan: disabled,
+    startScheduledScan: disabled,
+    listScanRuns: disabled,
+    loadScanBinding: disabled,
+    recordCandidateMetadata: disabled,
   };
 }
 
@@ -441,19 +463,32 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           allowedRedirectOrigins: options.config.mailboxAllowedRedirectOrigins,
         })
       : createDisabledMailboxConnectionsDomain());
+  const mailboxScansDomain =
+    options.mailboxScansDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxScansDomain(database, { plansDomain })
+      : createDisabledMailboxScansDomain());
   // Always registered (same pattern as every other route group in this
   // file) so the customer-facing route is always present in the generated
   // OpenAPI spec/TS client; when the feature is disabled, every call fails
   // closed with a typed FEATURE_DISABLED (404) via
-  // createDisabledMailboxConnectionsDomain above, not a generic error.
+  // createDisabledMailboxConnectionsDomain/createDisabledMailboxScansDomain
+  // above, not a generic error.
   app.register(registerMailboxConnectionRoutes, {
     mailboxConnectionsDomain,
+    mailboxScansDomain,
     identityResolver: identityDomain,
     ...(options.config.clerk?.mailboxBrokerServiceSubject
       ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
       : {}),
     ...(options.config.clerk?.mailboxBrokerPublicBaseUrl
       ? { mailboxBrokerPublicBaseUrl: options.config.clerk.mailboxBrokerPublicBaseUrl }
+      : {}),
+  });
+  app.register(registerMailboxInternalRoutes, {
+    mailboxScansDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
       : {}),
   });
   const exportsDomain =
