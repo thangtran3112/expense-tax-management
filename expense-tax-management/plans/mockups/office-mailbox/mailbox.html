@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExpenseTax Office — Mailbox (Phase 3D-A feature gate)</title>
+<link rel="icon" href="../favicon.svg">
+<link rel="stylesheet" href="../rebaseline/shared/tokens.css">
+<link rel="stylesheet" href="mailbox.css">
+</head>
+<body class="office">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><span class="mark">O</span> ExpenseTax Office</div>
+    <nav aria-label="Office">
+      <a href="#">Dashboard</a>
+      <a href="#">Expenses</a>
+      <a href="#">Businesses</a>
+      <a href="#">Projects</a>
+      <a href="#">Tax</a>
+      <a href="#">Exports</a>
+      <a href="#">Forwarding</a>
+      <a aria-current="page" href="#main">Mailbox</a>
+      <a href="#">Settings</a>
+    </nav>
+    <small>Laptop ≥1024px<br>Small screens hand off to Capture</small>
+  </aside>
+  <main id="main">
+    <div class="topline">
+      <div>
+        <p class="eyebrow">Office Web · feature gate · Phase 3D-A Task 4</p>
+        <h1>Connect a Gmail mailbox.</h1>
+        <p class="lede">Authorize read-only access to one Gmail account, bind it to exactly one Personal or business scope, and keep status, schedule, and reauthorization visible in one place. Candidate review and scan history arrive with Phase 3D-B.</p>
+      </div>
+      <button class="profile"><span class="dot"></span> Tran Studio · 2025</button>
+    </div>
+
+    <section class="grid" aria-labelledby="s1-heading">
+      <article class="card full">
+        <p class="eyebrow scenario-label">Scenario 1 of 5 · No connection</p>
+        <h2 id="s1-heading">No mailbox connected</h2>
+        <p>Connect a Gmail account to let ExpenseTax surface receipts for review. Pick the scope that will own this connection before continuing — you cannot connect without choosing one.</p>
+        <fieldset style="border:0;padding:0;margin:14px 0 0">
+          <legend class="field-row" style="display:block;color:var(--ink);font-weight:700;margin-bottom:8px">Default Personal/business scope<span style="color:var(--danger)"> *</span></legend>
+          <div class="scope-options" role="radiogroup" aria-required="true" aria-describedby="scope-help">
+            <label class="scope-option" for="scope-personal">
+              <input type="radio" id="scope-personal" name="mailbox-scope" value="personal" checked>
+              <span><strong>Personal</strong><span>Your private profile. Only you and reviewers you explicitly grant can see mailbox data.</span></span>
+            </label>
+            <label class="scope-option" for="scope-business">
+              <input type="radio" id="scope-business" name="mailbox-scope" value="business">
+              <span><strong>Tran Studio (Business)</strong><span>Shared business profile. Visible only to members with business access.</span></span>
+            </label>
+          </div>
+        </fieldset>
+        <p id="scope-help" class="lede" style="margin:0 0 16px;font-size:13px">Exactly one scope is granted per connection. Changing scope later requires disconnecting and reauthorizing.</p>
+        <button class="button" type="button">Connect Gmail</button>
+        <p class="meta" style="margin-top:14px"><span class="chip">Requests read-only access</span><span class="chip">gmail.readonly only</span><span class="chip">No send, delete, or label changes</span></p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid" aria-labelledby="s2-heading">
+      <article class="card wide" role="status" aria-live="polite">
+        <p class="eyebrow scenario-label">Scenario 2 of 5 · OAuth in progress</p>
+        <h2 id="s2-heading">Waiting on Google</h2>
+        <div class="oauth-row">
+          <span class="spinner-dot" aria-hidden="true"></span>
+          <p style="margin:0">A Google consent window opened in a new tab. Complete sign-in and grant access to continue. This step times out after 10 minutes.</p>
+        </div>
+        <button class="button secondary" type="button" style="margin-top:14px">Cancel connection attempt</button>
+      </article>
+      <article class="card" role="status" aria-live="polite">
+        <p class="eyebrow scenario-label">Scenario 2 of 5 · OAuth return</p>
+        <h2>Finishing connection</h2>
+        <p>You're back from Google. Confirming granted scopes and activating the connection…</p>
+        <div class="oauth-progress" aria-hidden="true"><span></span></div>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid" aria-labelledby="s3-heading">
+      <article class="card full">
+        <p class="eyebrow scenario-label">Scenario 3 of 5 · Connected</p>
+        <h2 id="s3-heading">Connected mailbox</h2>
+        <div class="account-row">
+          <span class="avatar" aria-hidden="true">G</span>
+          <div>
+            <p style="margin:0;font-weight:700">owner@example.com</p>
+            <p class="meta" style="margin-top:6px"><span class="chip ok">Active</span><span class="chip">Gmail · read-only</span><span class="chip">Scope: Personal</span></p>
+          </div>
+        </div>
+        <div style="margin-top:18px">
+          <div class="field-row"><label>Connected since</label><span class="value">02 Sep 2026</span></div>
+          <div class="field-row"><label>Granted scope</label><span class="value">https://www.googleapis.com/auth/gmail.readonly</span></div>
+          <div class="field-row"><label>Default scope</label><span class="value">Personal</span></div>
+          <div class="field-row"><label>Last scan</label><span class="value">02 Oct 2026, 7:02 AM</span></div>
+          <div class="field-row"><label>Next scan</label><span class="value">03 Oct 2026, 7:00 AM</span></div>
+        </div>
+        <button class="button danger" type="button" style="margin-top:16px">Disconnect</button>
+      </article>
+
+      <article class="card wide">
+        <h2>Scan schedule</h2>
+        <div class="field-row"><label for="scan-time">Daily scan time</label><input id="scan-time" class="value" type="time" value="07:00"></div>
+        <div class="field-row"><label for="scan-tz">Timezone</label><select id="scan-tz"><option selected>America/Los_Angeles</option></select></div>
+        <div class="field-row"><label for="scan-enabled">Enabled</label><input id="scan-enabled" type="checkbox" checked aria-describedby="scan-enabled-help"></div>
+        <p id="scan-enabled-help" class="lede" style="margin:0 0 14px;font-size:12px">Overlapping runs are skipped automatically; a manual run never races the scheduled one.</p>
+        <button class="button secondary" type="button">Scan now</button>
+      </article>
+      <article class="card">
+        <h2>Reviewer grants</h2>
+        <p>No reviewers added. Owners can grant read-only review access to this connection's scope.</p>
+        <button class="button secondary" type="button" aria-disabled="true" title="Reserved for Phase 3D-B review workflow">Add reviewer</button>
+      </article>
+      <article class="card full placeholder-card">
+        <h2>Candidate review queue</h2>
+        <p>Reserved layout region. Scan runs, staged candidates, and ingest/skip/not-receipt actions arrive with Phase 3D-B and extend this same page.</p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s4-heading">
+      <p class="eyebrow scenario-label">Scenario 4 of 5 · Needs attention</p>
+      <h2 id="s4-heading" style="margin-bottom:14px">Reauthorization, revocation, and error states</h2>
+      <div class="banner warn" role="alert">
+        <span class="icon" aria-hidden="true">!</span>
+        <div>
+          <h3>Reconnect needed</h3>
+          <p>Google requires renewed consent for owner@example.com. Receipt scans are paused until you reconnect.</p>
+          <button class="button secondary" type="button">Reconnect Gmail</button>
+        </div>
+      </div>
+      <div class="banner bad" role="alert">
+        <span class="icon" aria-hidden="true">×</span>
+        <div>
+          <h3>Connection revoked</h3>
+          <p>Access to owner@example.com was revoked on 12 Sep 2026. Historical scan metadata remains for audit; reconnect to resume.</p>
+          <button class="button secondary" type="button">Start new connection</button>
+        </div>
+      </div>
+      <div class="banner bad" role="alert">
+        <span class="icon" aria-hidden="true">×</span>
+        <div>
+          <h3>Couldn't reach Google</h3>
+          <p>The last connection attempt failed before completing. No account was linked and no access was granted.</p>
+          <button class="button secondary" type="button">Try again</button>
+        </div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s5-heading">
+      <p class="eyebrow scenario-label">Scenario 5 of 5 · Disconnect confirmation</p>
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="s5-heading" aria-describedby="s5-desc">
+        <h2 id="s5-heading">Disconnect Gmail?</h2>
+        <p id="s5-desc">This immediately revokes ExpenseTax's access to <strong>owner@example.com</strong>. Already-ingested expenses are not deleted. Minimal scan history remains for audit and duplicate prevention.</p>
+        <div class="actions">
+          <button class="button secondary" type="button">Cancel</button>
+          <button class="button danger" type="button">Disconnect</button>
+        </div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid">
+      <article class="card full">
+        <h2>State + boundary review</h2>
+        <div class="state-grid">
+          <div class="state"><strong>Below 1024px</strong>Stacked single column; Capture remains primary capture surface</div>
+          <div class="state" style="--state:var(--danger)"><strong>Unauthorized profile</strong>No existence oracle on cross-scope connection IDs</div>
+          <div class="state" style="--state:var(--danger)"><strong>Revoked mid-session</strong>Read/mutation access removed even with cached data</div>
+          <div class="state"><strong>Keyboard</strong>Scope choice, schedule controls, and dialog operable without a mouse</div>
+          <div class="state"><strong>Screen reader</strong>Alert banners and dialog announce via role="alert"/"alertdialog"</div>
+          <div class="state" style="--state:var(--warning)"><strong>Reauth required</strong>Scans pause; no silent scope downgrade</div>
+          <div class="state"><strong>No token values</strong>Page never renders access/refresh tokens or raw Google IDs</div>
+          <div class="state"><strong>Forbidden surface</strong>No candidate content, sender, or subject on this base page</div>
+        </div>
+      </article>
+    </section>
+  </main>
+</div>
+<nav class="mobile-nav" aria-label="Office, mobile">
+  <a href="#">Dashboard</a>
+  <a href="#">Expenses</a>
+  <a aria-current="page" href="#main">Mailbox</a>
+  <a href="#">Settings</a>
+</nav>
+</body>
+</html>

@@ -1,0 +1,38 @@
+/* Office Mailbox feature gate — extends ../rebaseline/shared/tokens.css */
+.scenario-label { margin: 0 0 6px; }
+.scope-options { display: grid; gap: 10px; margin: 14px 0 18px; max-width: 520px; }
+.scope-option { display: flex; gap: 10px; align-items: flex-start; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: rgba(0, 0, 0, .14); cursor: pointer; }
+.scope-option input[type="radio"] { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--accent); flex: 0 0 auto; }
+.scope-option strong { display: block; font-size: 14px; }
+.scope-option span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.scope-option:has(input:checked) { border-color: var(--accent); background: rgba(216, 243, 106, .08); }
+.scope-option:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.banner { display: flex; gap: 12px; align-items: flex-start; padding: 16px; border-radius: 14px; border: 1px solid var(--line); margin-bottom: 12px; }
+.banner:last-child { margin-bottom: 0; }
+.banner.warn { border-color: rgba(242, 184, 75, .5); background: rgba(242, 184, 75, .08); }
+.banner.bad { border-color: rgba(255, 107, 107, .5); background: rgba(255, 107, 107, .08); }
+.banner .icon { width: 24px; height: 24px; flex: 0 0 auto; border-radius: 99px; display: grid; place-items: center; font-weight: 800; font-size: 12px; border: 1px solid currentColor; }
+.banner.warn .icon { color: var(--warning); }
+.banner.bad .icon { color: var(--danger); }
+.banner h3 { margin: 0 0 4px; font-size: 14px; color: var(--ink); }
+.banner p { margin: 0 0 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.field-row { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; margin: 9px 0; font-size: 13px; }
+.field-row label { color: var(--muted); }
+.field-row .value { color: var(--ink); }
+.placeholder-card { border: 1px dashed var(--line); background: transparent; color: var(--muted); }
+.placeholder-card h2 { color: var(--muted); }
+.button.danger { background: var(--danger); color: #2a0b0b; }
+.button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.dialog { max-width: 460px; margin: 0 auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; background: var(--surface-2); box-shadow: var(--shadow); }
+.dialog .actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+.account-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.avatar { width: 42px; height: 42px; border-radius: 99px; display: grid; place-items: center; background: var(--surface-2); font-weight: 800; flex: 0 0 auto; }
+.oauth-progress { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 12px; max-width: 320px; }
+.oauth-progress span { display: block; height: 100%; width: 62%; background: var(--accent); }
+.spinner-dot { width: 10px; height: 10px; border-radius: 99px; background: var(--accent); box-shadow: 0 0 0 6px rgba(216, 243, 106, .15); flex: 0 0 auto; margin-top: 4px; }
+.oauth-row { display: flex; gap: 10px; }
+.scenario-divider { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+@media (max-width: 820px) {
+  .field-row { grid-template-columns: 1fr; }
+  .scope-options { max-width: none; }
+}

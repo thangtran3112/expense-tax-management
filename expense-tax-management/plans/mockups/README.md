@@ -44,4 +44,8 @@ Every folder now carries `mobile-375.png`, `tablet-768.png`, `desktop-1440.png`,
 
 **Review:** approved by Toby Tran on 2026-09-09. See `rebaseline/REVIEW.md`.
 
+## Feature-Specific Gates
+
+- [ ] **Office mailbox gate -> Phase 3D-A Task 4**: connect/account/status/schedule/reviewer base for the connected-Gmail mailbox page; 1440/768/375 renders. **Status: pending owner approval.** See `office-mailbox/REVIEW.md` and `office-mailbox/NOTES.md`.
+
 > Historical note: 30 legacy PNGs passed structural checks on 2026-09-06. That evidence does not approve the new three-application architecture.
