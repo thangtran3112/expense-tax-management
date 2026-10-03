@@ -324,6 +324,98 @@ else
   [[ "$(jq -r .parent_full_backup_id <<< "$mode_json")" == "run-3" ]] || fail "determine_mode: a new full's parent is itself"
   ok "determine_mode: a new calendar month starts a new full backup chain"
 
+  # ---------------------------------------------------------------------
+  # Part E: upload_backup_set/advance_marker naming + precondition logic
+  # (Task 5). age and gcloud are stubbed here -- this proves OUR orchestration
+  # (object naming/prefix, creation-only precondition, marker merge, no
+  # leftover ciphertext). The real age round trip (generate a temporary
+  # identity, encrypt, decrypt, compare every checksum) against a
+  # directory-backed fake GCS is proven in test-backup-docker.sh, which has
+  # a real `age` binary in the pinned image.
+  # ---------------------------------------------------------------------
+  fake_bucket="$d/fake-bucket"; mkdir -p "$fake_bucket"
+  upload_stub_dir="$d/upload-stubs"; mkdir -p "$upload_stub_dir"
+  cat > "$upload_stub_dir/age" <<'SH'
+#!/usr/bin/env bash
+# Identity transform (ignores -r): proves plumbing, not cryptography.
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat > "$out"
+SH
+  chmod +x "$upload_stub_dir/age"
+  cat > "$upload_stub_dir/gcloud" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+bucket_root="$fake_bucket"
+if [[ "\$1" == "storage" && "\$2" == "cp" ]]; then
+  shift 2
+  src=""; dest=""
+  for a in "\$@"; do
+    case "\$a" in --if-generation-match=*) : ;; *) if [[ -z "\$src" ]]; then src="\$a"; else dest="\$a"; fi ;; esac
+  done
+  key="\${dest#gs://*/}"
+  target="\$bucket_root/\$key"
+  if [[ -e "\$target" ]]; then echo "precondition failed: already exists" >&2; exit 1; fi
+  mkdir -p "\$(dirname "\$target")"
+  cp "\$src" "\$target"
+  date +%s%N > "\$target.generation"
+elif [[ "\$1 \$2 \$3" == "storage objects describe" ]]; then
+  dest="\$4"
+  key="\${dest#gs://*/}"
+  cat "\$bucket_root/\$key.generation"
+else
+  echo "unsupported fake gcloud invocation: \$*" >&2
+  exit 1
+fi
+SH
+  chmod +x "$upload_stub_dir/gcloud"
+
+  (
+    export PATH="$upload_stub_dir:$PATH"
+    export BACKUP_GCS_URI="gs://fbk-test-bucket" BACKUP_CIPHERTEXT_DIR="$d/ciphertext"
+    export AGE_RECIPIENT="age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
+    mkdir -p "$BACKUP_CIPHERTEXT_DIR"
+
+    upload_json=$(upload_backup_set "$staging" full "$(epoch_of 2026-01-15T00:00:00Z)" run-upload-full)
+    echo "$upload_json" | jq -e '.object_uri | test("^gs://fbk-test-bucket/monthly/2026/01/.*\\.tar\\.age$")' >/dev/null \
+      || { echo "$upload_json" >&2; fail "full mode must upload under monthly/YYYY/MM/"; }
+    [[ -z "$(ls -A "$BACKUP_CIPHERTEXT_DIR")" ]] || fail "ciphertext dir must be empty after a successful upload"
+
+    upload_json2=$(upload_backup_set "$staging" daily "$(epoch_of 2026-01-15T00:00:00Z)" run-upload-daily)
+    echo "$upload_json2" | jq -e '.object_uri | test("^gs://fbk-test-bucket/daily/2026/01/15/.*\\.tar\\.age$")' >/dev/null \
+      || { echo "$upload_json2" >&2; fail "daily mode must upload under daily/YYYY/MM/DD/"; }
+
+    # Identical staging + identical cutoff + identical mode -> identical
+    # ciphertext -> identical object key: the creation-only precondition
+    # must reject the retry rather than silently overwrite it.
+    # Subshell: upload_backup_set calls die() -> exit on failure (an explicit
+    # exit, unlike a nonzero return, is not contained by `if`) which would
+    # otherwise terminate this whole sourced test script, not just the check.
+    if ( upload_backup_set "$staging" full "$(epoch_of 2026-01-15T00:00:00Z)" run-upload-full-retry ) >/tmp/retry.$$ 2>&1; then
+      cat /tmp/retry.$$ >&2
+      rm -f /tmp/retry.$$
+      fail "a colliding object key must be rejected by the creation-only precondition"
+    fi
+    rm -f /tmp/retry.$$
+    [[ -z "$(find "$BACKUP_CIPHERTEXT_DIR" -name '*.age' 2>/dev/null)" ]] \
+      || fail "a rejected upload must not leave ciphertext behind"
+  )
+  ok "upload_backup_set: full->monthly/, daily->daily/, and a colliding key is rejected with no leftover ciphertext"
+
+  marker="$d/advance-marker.json"
+  : > "$marker"
+  advance_marker "$marker" "$(epoch_of 2026-01-15T00:00:00Z)" "2026-01-15T00:00:00Z" \
+    '{"mode":"full","parent_full_backup_id":"run-upload-full"}' run-upload-full \
+    '{"object_uri":"gs://fbk-test-bucket/monthly/2026/01/x.tar.age","generation":"123"}'
+  jq -e '.last_full_period == "2026-01" and .parent_full_backup_id == "run-upload-full" and .object_uri == "gs://fbk-test-bucket/monthly/2026/01/x.tar.age" and .generation == "123"' \
+    "$marker" >/dev/null || { cat "$marker" >&2; fail "advance_marker did not merge mode/upload fields correctly"; }
+  ok "advance_marker merges mode and upload fields into the marker"
+
   # Tamper with a dumped file after the manifest was built: validate_manifest
   # must reject it rather than encrypt/upload a mismatched checksum.
   echo 'tampered' >> "$staging/dumps/db1.dump"
@@ -336,5 +428,5 @@ else
   rm -f /tmp/validate_tamper.$$
   ok "validate_manifest rejects a checksum mismatch before encryption"
 
-  printf '\n%d checks passed (Part A+B+C+D)\n' "$PASS"
+  printf '\n%d checks passed (Part A+B+C+D+E)\n' "$PASS"
 fi

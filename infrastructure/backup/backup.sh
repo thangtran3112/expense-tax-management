@@ -296,17 +296,112 @@ validate_manifest() {
   log "manifest validated: mode=$(jq -r .mode "$manifest") databases=$(jq -r '.databases|length' "$manifest") receipts=$(jq -r '.receipts.file_count' "$manifest")"
 }
 
+# Removes any leftover *.age file in BACKUP_CIPHERTEXT_DIR -- called both at
+# startup (a prior run crashed mid-encryption or mid-upload) and from the
+# EXIT trap below (this run itself fails after creating one). A successful
+# run always rm -f's its own final ciphertext right after upload succeeds
+# (see upload_backup_set), so BACKUP_CIPHERTEXT_DIR holds nothing once a
+# run completes cleanly -- any *.age file surviving to the next startup is,
+# by construction, leftover from an incomplete run (whether it died during
+# encryption as *.partial.age or during upload after being renamed to its
+# final name) and safe to delete: this directory never holds plaintext.
+remove_ciphertext_partials() {
+  find "$BACKUP_CIPHERTEXT_DIR" -maxdepth 1 -name '*.age' -delete 2>/dev/null || true
+}
+
+date_part() {
+  local epoch="$1" fmt="$2"
+  date -u -d "@$epoch" +"$fmt" 2>/dev/null || date -u -r "$epoch" +"$fmt"
+}
+
+# Streams ONE deterministic plaintext tar (manifest + globals + dumps +
+# receipts.tar, everything already staged in tmpfs) straight through
+# `age -r $AGE_RECIPIENT` into $partial on persistent storage. Plaintext
+# bytes exist only in the pipe between the two processes; disk only ever
+# sees ciphertext.
+encrypt_archive() {
+  local staging="$1" partial="$2"
+  tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+    -cf - -C "$staging" manifest.json globals.sql dumps receipts.tar \
+    | age -r "$AGE_RECIPIENT" -o "$partial" \
+    || { rm -f "$partial"; die "encryption failed"; }
+  [[ -s "$partial" ]] || die "ciphertext partial is empty"
+}
+
+# Encrypts, renames the ciphertext partial atomically (same directory, same
+# filesystem) into its final immutable name, and uploads it with a
+# creation-only precondition so a retry or name collision can never replace
+# an existing object. Ruling: "mode" (this run's receipt strategy) doubles
+# as the upload's retention tier -- full backups are complete,
+# self-sufficient snapshots and land under monthly/ (365-day retention,
+# Task 1); daily deltas depend on their parent full and land under daily/
+# (30-day retention) -- rather than introducing a second, independent
+# classification. Cost if wrong: a daily delta could outlive the full
+# backup it depends on, or vice versa; both prefixes' lifecycle rules are
+# owned by the same Task 1 Terraform and can be re-tuned together.
+upload_backup_set() {
+  local staging="$1" mode="$2" current_cutoff_epoch="$3" run_id="$4"
+  local partial="$BACKUP_CIPHERTEXT_DIR/${run_id}.partial.age"
+  encrypt_archive "$staging" "$partial"
+
+  local sha short_sha prefix ts final_local object_key dest generation bytes manifest_sha
+  sha=$(sha256_file "$partial")
+  short_sha="${sha:0:12}"
+  ts=$(date_part "$current_cutoff_epoch" %Y%m%dT%H%M%SZ)
+  if [[ "$mode" == "full" ]]; then
+    prefix="monthly/$(date_part "$current_cutoff_epoch" %Y)/$(date_part "$current_cutoff_epoch" %m)"
+  else
+    prefix="daily/$(date_part "$current_cutoff_epoch" %Y)/$(date_part "$current_cutoff_epoch" %m)/$(date_part "$current_cutoff_epoch" %d)"
+  fi
+  object_key="${prefix}/${ts}-${BACKUP_HOST_ID}-${short_sha}.tar.age"
+  final_local="$BACKUP_CIPHERTEXT_DIR/${object_key//\//_}"
+  mv -f "$partial" "$final_local"
+
+  dest="$BACKUP_GCS_URI/$object_key"
+  gcloud storage cp --if-generation-match=0 "$final_local" "$dest" >/dev/null \
+    || { rm -f "$final_local"; die "upload failed or object already exists: $object_key"; }
+  generation=$(gcloud storage objects describe "$dest" --format='value(generation)')
+  bytes=$(stat -c%s "$final_local" 2>/dev/null || stat -f%z "$final_local")
+  manifest_sha=$(sha256_file "$staging/manifest.json")
+
+  rm -f "$final_local"
+  jq -nc --arg uri "$dest" --arg generation "$generation" --argjson bytes "$bytes" --arg manifest_sha "$manifest_sha" \
+    '{object_uri:$uri, generation:$generation, encrypted_bytes:$bytes, manifest_sha256:$manifest_sha}'
+}
+
+# Advances the marker to exactly current_cutoff -- never wall-clock-now,
+# never the latest observed receipt mtime -- and only after upload_json
+# proves the encrypted upload already succeeded. Ruling: last_full_period
+# is unconditionally this run's calendar month, for full AND daily alike --
+# daily only ever happens when determine_mode() already found the marker's
+# last_full_period equal to the current month, so recomputing it here is
+# equivalent and needs no separate "mode" branch.
+advance_marker() {
+  local marker_file="$1" current_cutoff_epoch="$2" cutoff_iso="$3" mode_json="$4" run_id="$5" upload_json="$6"
+  local parent
+  parent=$(jq -r '.parent_full_backup_id' <<< "$mode_json")
+  jq -n --argjson cutoff_epoch "$current_cutoff_epoch" --arg cutoff_iso "$cutoff_iso" \
+    --arg last_full_period "$(date_part "$current_cutoff_epoch" %Y-%m)" \
+    --arg parent "$parent" --arg run_id "$run_id" --argjson upload "$upload_json" \
+    '{cutoff_epoch:$cutoff_epoch, cutoff:$cutoff_iso, last_full_period:$last_full_period,
+      parent_full_backup_id:$parent, run_id:$run_id} * $upload' \
+    > "$marker_file.tmp"
+  mv -f "$marker_file.tmp" "$marker_file"
+}
+
 main() {
   preflight
   [[ "${BACKUP_PREFLIGHT_ONLY:-0}" == 1 ]] && { log "BACKUP_PREFLIGHT_ONLY=1: stopping after preflight"; return 0; }
   acquire_single_flight_lock
+  remove_ciphertext_partials
 
-  local staging="${BACKUP_STAGING_DIR:-/staging}/run-$$"
+  # `staging` is deliberately NOT `local`: the EXIT trap below must still
+  # reach it even after main() itself has returned (e.g. on the
+  # BACKUP_DUMP_ONLY/BACKUP_MANIFEST_ONLY test-hook early-returns), and a
+  # bare "$staging" under `set -u` would otherwise be unbound at that point.
+  staging="${BACKUP_STAGING_DIR:-/staging}/run-$$"
   mkdir -p "$staging"
-  # ${staging:-} (not "$staging"): this trap can still fire after main()
-  # returns, once `staging` the local variable is out of scope -- under
-  # `set -u` a bare "$staging" would then itself fail as unbound.
-  trap 'rm -rf "${staging:-}"' EXIT
+  trap 'rm -rf "${staging:-}"; remove_ciphertext_partials' EXIT
 
   dump_globals "$staging"
   local databases
@@ -351,7 +446,10 @@ main() {
     return 0
   fi
 
-  die "backup.sh: encrypt/upload pipeline not yet reached (Task 5 in progress)"
+  local upload_json
+  upload_json=$(upload_backup_set "$staging" "$mode" "$current_cutoff_epoch" "$run_id")
+  advance_marker "$marker_file" "$current_cutoff_epoch" "$cutoff_iso" "$mode_json" "$run_id" "$upload_json"
+  emit_status success "$upload_json"
 }
 
 # Only run main when executed directly (as the container ENTRYPOINT or by

@@ -89,6 +89,15 @@ docker run --rm -v "$PWD/infrastructure/backup:/mnt:ro" koalaman/shellcheck:stab
   a manifest shape drifts from the schema file without a hard failure —
   mitigated by `manifest.schema.json` staying hand-readable and the
   hand-checks covering every field it declares.
+- **A run's receipt mode doubles as its upload retention tier.** `full`
+  receipt backups (complete, self-sufficient snapshots) upload under
+  `monthly/YYYY/MM/` (365-day retention, Task 1); `daily` deltas (which
+  depend on the full backup they diff against) upload under
+  `daily/YYYY/MM/DD/` (30-day retention). This reuses one classification
+  instead of introducing a second, independent one. Cost if wrong: a daily
+  delta could outlive the full backup it depends on; both prefixes'
+  lifecycle rules live in the same Task 1 Terraform and can be re-tuned
+  together.
 - **`flock` contention is skipped (not faked) on non-Linux dev machines.**
   `flock(1)` is util-linux; it is not present on stock macOS. Production
   and CI (GitHub Actions `ubuntu-latest`) are both Linux, where it is

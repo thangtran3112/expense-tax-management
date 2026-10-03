@@ -220,3 +220,116 @@ manifest5="$WORKDIR/dump-out-5/manifest.json"
 log "PASS: a receipt arriving after the frozen cutoff is deferred to the next run"
 
 log "PASS: Task 4 receipt capture + manifest proof (full/daily/unchanged/new-month/boundary)"
+
+# ---------------------------------------------------------------------------
+# Task 5: real age round trip (temporary identity) + directory-backed fake
+# GCS transport, end to end through the full backup.sh pipeline (no
+# BACKUP_DUMP_ONLY/BACKUP_MANIFEST_ONLY test hook this time).
+# ---------------------------------------------------------------------------
+log "generating a temporary age identity (real age-keygen, pinned image)"
+docker run --rm --entrypoint age-keygen fbk-test-backup:local >"$WORKDIR/identity.txt" 2>/dev/null
+age_recipient=$(grep '# public key:' "$WORKDIR/identity.txt" | awk '{print $NF}')
+[[ -n "$age_recipient" ]] || fail "could not parse a public key out of age-keygen output"
+
+fake_bucket_dir="$WORKDIR/fake-bucket"
+mkdir -p "$fake_bucket_dir"
+cat > "$WORKDIR/fake-gcloud.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+bucket_root=/fake-bucket
+if [[ "$1" == "storage" && "$2" == "cp" ]]; then
+  shift 2
+  src=""; dest=""
+  for a in "$@"; do
+    case "$a" in --if-generation-match=*) : ;; *) if [[ -z "$src" ]]; then src="$a"; else dest="$a"; fi ;; esac
+  done
+  key="${dest#gs://*/}"
+  target="$bucket_root/$key"
+  if [[ -e "$target" ]]; then echo "precondition failed: already exists" >&2; exit 1; fi
+  mkdir -p "$(dirname "$target")"
+  cp "$src" "$target"
+  date +%s%N > "$target.generation"
+elif [[ "$1 $2 $3" == "storage objects describe" ]]; then
+  dest="$4"
+  key="${dest#gs://*/}"
+  cat "$bucket_root/$key.generation"
+else
+  echo "unsupported fake gcloud invocation: $*" >&2
+  exit 1
+fi
+SH
+chmod +x "$WORKDIR/fake-gcloud.sh"
+
+log "clearing receipts/state from the Task 4 scenarios above for a clean Task 5 run"
+rm -f "$WORKDIR/state/last-success.json"
+rm -f "$WORKDIR/receipts"/*.pdf
+echo real-receipt-bytes > "$WORKDIR/receipts/receipt-1.pdf"
+
+log "running the FULL backup.sh pipeline (real age, directory-backed fake GCS)"
+docker run --rm --network "$NET" \
+  --read-only --tmpfs /staging:size=256m \
+  -v "$WORKDIR/pgpass:/run/secrets/pgpass:ro" \
+  -v "$WORKDIR/creds.json:/run/secrets/creds.json:ro" \
+  -v "$WORKDIR/state:/state" \
+  -v "$WORKDIR/ciphertext:/ciphertext" \
+  -v "$WORKDIR/receipts:/receipts:ro" \
+  -v "$fake_bucket_dir:/fake-bucket" \
+  -v "$WORKDIR/fake-gcloud.sh:/usr/local/bin/gcloud:ro" \
+  -e PGHOST="$PG" -e PGPORT=5432 -e PGUSER=postgres \
+  -e PGPASSWORD_FILE=/run/secrets/pgpass \
+  -e BACKUP_GCS_URI=gs://fbk-test-bucket \
+  -e BACKUP_HOST_ID=fbk-test-host \
+  -e AGE_RECIPIENT="$age_recipient" \
+  -e RECEIPT_STORAGE_DIR=/receipts \
+  -e BACKUP_STATE_DIR=/state \
+  -e BACKUP_CIPHERTEXT_DIR=/ciphertext \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/creds.json \
+  fbk-test-backup:local >"$WORKDIR/backup-full.log" 2>&1 \
+  || { cat "$WORKDIR/backup-full.log" >&2; fail "full backup.sh pipeline exited nonzero"; }
+cat "$WORKDIR/backup-full.log" >&2
+
+[[ -z "$(find "$WORKDIR/ciphertext" -name '*.age' 2>/dev/null)" ]] \
+  || fail "no ciphertext should remain locally after a successful upload"
+
+marker="$WORKDIR/state/last-success.json"
+[[ -s "$marker" ]] || fail "marker file was not written after a successful run"
+object_uri=$(jq -r .object_uri "$marker")
+[[ "$object_uri" == gs://fbk-test-bucket/* ]] || fail "marker object_uri has an unexpected shape: $object_uri"
+uploaded_key="${object_uri#gs://fbk-test-bucket/}"
+uploaded_file="$fake_bucket_dir/$uploaded_key"
+[[ -f "$uploaded_file" ]] || fail "uploaded object is missing from the fake bucket: $uploaded_key"
+
+log "decrypting the uploaded object with the temporary private identity"
+docker run --rm \
+  -v "$uploaded_file:/in.age:ro" \
+  -v "$WORKDIR/identity.txt:/identity.txt:ro" \
+  -v "$WORKDIR/decrypted:/out" \
+  --entrypoint age fbk-test-backup:local \
+  -d -i /identity.txt -o /out/plaintext.tar /in.age \
+  >/dev/null 2>&1 || fail "decryption with the matching private identity failed"
+mkdir -p "$WORKDIR/untarred"
+tar -xf "$WORKDIR/decrypted/plaintext.tar" -C "$WORKDIR/untarred"
+
+[[ -f "$WORKDIR/untarred/manifest.json" ]] || fail "decrypted archive is missing manifest.json"
+decrypted_manifest="$WORKDIR/untarred/manifest.json"
+
+while IFS=$'\t' read -r name sha; do
+  f="$WORKDIR/untarred/$name"
+  [[ -f "$f" ]] || fail "decrypted archive is missing manifest-referenced file: $name"
+  actual=$(sha256sum "$f" | awk '{print $1}')
+  [[ "$actual" == "$sha" ]] || fail "decrypted $name checksum does not match manifest.json"
+done < <(jq -r '.files[] | [.name, .sha256] | @tsv' "$decrypted_manifest")
+
+# Receipt bytes are not duplicated at the plaintext tar's top level -- they
+# are inside receipts.tar (checked against manifest.json's receipts.sha256
+# below); per-file receipt paths were already proven against the live
+# receipts dir in the Task 4 section above.
+mkdir -p "$WORKDIR/untarred-receipts"
+tar -xf "$WORKDIR/untarred/receipts.tar" -C "$WORKDIR/untarred-receipts"
+receipts_sha_recorded=$(jq -r '.receipts.sha256' "$decrypted_manifest")
+receipts_sha_actual=$(sha256sum "$WORKDIR/untarred/receipts.tar" | awk '{print $1}')
+[[ "$receipts_sha_recorded" == "$receipts_sha_actual" ]] || fail "decrypted receipts.tar checksum does not match manifest.json"
+[[ -f "$WORKDIR/untarred-receipts/receipt-1.pdf" ]] || fail "decrypted receipts.tar is missing the seeded receipt file"
+[[ "$(cat "$WORKDIR/untarred-receipts/receipt-1.pdf")" == "real-receipt-bytes" ]] || fail "decrypted receipt content does not match what was backed up"
+
+log "PASS: Task 5 real age round trip -- every manifest checksum verified after decrypt"
