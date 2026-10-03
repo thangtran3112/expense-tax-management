@@ -148,6 +148,15 @@ daily_object_uri=$(jq -r .object_uri "$WORKDIR/state/last-success.json")
 [[ "$daily_object_uri" != "$full_object_uri" ]] || fail "second run produced the same object as the first"
 log "daily delta set: $daily_object_uri"
 
+log "seeding one more receipt and running backup.sh a third time (produces a SECOND daily delta)"
+sleep 3
+echo daily-receipt-2-bytes > "$WORKDIR/src-receipts/daily-receipt-2.pdf"
+run_backup_against_source >"$WORKDIR/backup-daily2.log" 2>&1 \
+  || { cat "$WORKDIR/backup-daily2.log" >&2; fail "second daily backup against source failed"; }
+daily_object_uri_2=$(jq -r .object_uri "$WORKDIR/state/last-success.json")
+[[ "$daily_object_uri_2" != "$daily_object_uri" ]] || fail "third run produced the same object as the second"
+log "second daily delta set: $daily_object_uri_2"
+
 log "starting empty DESTINATION PostgreSQL 17 ($DST_PG)"
 start_pg "$DST_PG"
 
@@ -210,8 +219,50 @@ log "verifying receipts from BOTH the full set and the daily delta are present w
 log "PASS: full + daily receipts both present with correct bytes"
 
 report_line=$(grep '"status":"restored"' "$WORKDIR/restore.log")
-echo "$report_line" | jq -e '.status == "restored" and .receipts_verified == true and (.databases | length) == 5' >/dev/null \
+echo "$report_line" | jq -e '.status == "restored" and .receipts_verified == true and (.databases | length) == 6' >/dev/null \
   || fail "restore.sh's final report is missing or has the wrong shape: $report_line"
 log "PASS: restore.sh emitted a final machine-readable verification report"
 
-log "PASS: Task 7 end-to-end restore proof (seeded source -> empty destination, full + daily delta)"
+attempt_restore_with_deltas() {
+  # attempt_restore_with_deltas DAILY_URIS_CSV WORK_SUBDIR
+  docker run --rm --network "$NET" \
+    -v "$WORKDIR/pgpass:/run/secrets/pgpass:ro" \
+    -v "$WORKDIR/creds.json:/run/secrets/creds.json:ro" \
+    -v "$WORKDIR/identity.txt:/run/secrets/identity.txt:ro" \
+    -v "$WORKDIR/fake-bucket:/fake-bucket:ro" \
+    -v "$WORKDIR/fake-gcloud.sh:/usr/local/bin/gcloud:ro" \
+    -v "$WORKDIR/dst-receipts:/receipts" \
+    -e PGHOST="$DST_PG" -e PGPORT=5432 -e PGUSER=postgres \
+    -e PGPASSWORD_FILE=/run/secrets/pgpass \
+    -e RESTORE_AGE_IDENTITY_FILE=/run/secrets/identity.txt \
+    -e RESTORE_GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/creds.json \
+    -e RESTORE_OBJECT_URI="$full_object_uri" \
+    -e RESTORE_DAILY_OBJECT_URIS="$1" \
+    -e RESTORE_WORK_DIR="/restore-work-$2" \
+    -e RECEIPT_RESTORE_DIR=/receipts \
+    -e RESTORE_CONFIRM_DESTRUCTIVE=yes-destroy-existing-data \
+    --entrypoint /usr/local/lib/family-app-backup/restore.sh \
+    fbk-test-backup:local
+}
+
+log "rejecting a REVERSED delta chain (later delta listed before the earlier one)"
+if attempt_restore_with_deltas "${daily_object_uri_2},${daily_object_uri}" reversed \
+  >"$WORKDIR/restore-reversed.log" 2>&1; then
+  cat "$WORKDIR/restore-reversed.log" >&2
+  fail "restore.sh accepted a reversed delta chain"
+fi
+grep -qi "out of order or a duplicate" "$WORKDIR/restore-reversed.log" \
+  || { cat "$WORKDIR/restore-reversed.log" >&2; fail "rejection did not report the expected ordering reason"; }
+log "PASS: restore.sh rejects a reversed delta chain"
+
+log "rejecting a DUPLICATE delta (the same object listed twice)"
+if attempt_restore_with_deltas "${daily_object_uri},${daily_object_uri}" duplicate \
+  >"$WORKDIR/restore-duplicate.log" 2>&1; then
+  cat "$WORKDIR/restore-duplicate.log" >&2
+  fail "restore.sh accepted a duplicate delta"
+fi
+grep -qi "out of order or a duplicate" "$WORKDIR/restore-duplicate.log" \
+  || { cat "$WORKDIR/restore-duplicate.log" >&2; fail "rejection did not report the expected ordering reason"; }
+log "PASS: restore.sh rejects a duplicate delta"
+
+log "PASS: Task 7 end-to-end restore proof (seeded source -> empty destination, full + daily delta, reversed/duplicate rejection)"

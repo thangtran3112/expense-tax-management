@@ -30,6 +30,13 @@ preflight() {
   pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1 \
     || die "destination PostgreSQL is not reachable at $PGHOST:$PGPORT"
 
+  # gcloud (and every client library it shells out to) reads
+  # GOOGLE_APPLICATION_CREDENTIALS, not RESTORE_GOOGLE_APPLICATION_CREDENTIALS
+  # -- without this, a real restore run with only the documented contract
+  # authenticates as whatever ambient credential happens to be on the
+  # operator's machine (or none at all), never the one actually supplied.
+  export GOOGLE_APPLICATION_CREDENTIALS="$RESTORE_GOOGLE_APPLICATION_CREDENTIALS"
+
   [[ ! -e "$RESTORE_WORK_DIR" || -z "$(ls -A "$RESTORE_WORK_DIR" 2>/dev/null)" ]] \
     || die "RESTORE_WORK_DIR already exists and is not empty: $RESTORE_WORK_DIR"
   mkdir -p "$RESTORE_WORK_DIR"
@@ -116,17 +123,29 @@ decrypt_and_extract() {
 # that happens to contain the substring "already exists" would be masked;
 # worth revisiting if that ever actually occurs.
 restore_globals() {
-  local globals_file="$1" stderr_file
+  local globals_file="$1" stderr_file psql_status=0
   stderr_file=$(mktemp)
-  if ! psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -v ON_ERROR_STOP=0 \
-    -f "$globals_file" >/dev/null 2>"$stderr_file"; then
-    # Only ERROR lines matter here; NOTICE/WARNING noise is expected and
-    # must not itself be mistaken for an unreviewed conflict.
-    if grep -E 'ERROR' "$stderr_file" | grep -qvE 'already exists'; then
-      cat "$stderr_file" >&2
-      rm -f "$stderr_file"
-      die "globals restore hit an unexpected error (not just role/tablespace conflicts)"
-    fi
+  # Capture psql's own exit status, but do NOT gate the stderr inspection
+  # on it: with ON_ERROR_STOP=0, psql keeps processing past a failed
+  # statement and still exits 0 -- its exit code alone cannot tell "every
+  # statement succeeded" from "some statements errored and were ignored
+  # except for the already-exists ones we allow". The stderr check below
+  # ALWAYS runs, fixing a prior bug where it only ran inside `if ! psql`
+  # and therefore never ran at all for the common ON_ERROR_STOP=0 case.
+  psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -v ON_ERROR_STOP=0 \
+    -f "$globals_file" >/dev/null 2>"$stderr_file" || psql_status=$?
+
+  # Only ERROR lines matter here; NOTICE/WARNING noise is expected and
+  # must not itself be mistaken for an unreviewed conflict.
+  if grep -E 'ERROR' "$stderr_file" | grep -qvE 'already exists'; then
+    cat "$stderr_file" >&2
+    rm -f "$stderr_file"
+    die "globals restore hit an unexpected error (not just role/tablespace conflicts)"
+  fi
+  if [[ "$psql_status" != 0 ]]; then
+    cat "$stderr_file" >&2
+    rm -f "$stderr_file"
+    die "globals restore (psql) exited nonzero ($psql_status) with no explanatory ERROR line"
   fi
   rm -f "$stderr_file"
   log "globals restored (role/tablespace conflicts with an existing cluster are expected and tolerated)"
@@ -177,8 +196,19 @@ main() {
   done < <(jq -r '.databases[]' "$full_dir/manifest.json")
   restore_receipts_from_set "$full_dir"
 
-  local expected_parent n=0 uri delta_dir
+  # Ruling: "gap-free" is enforced as "strictly increasing and duplicate-free",
+  # not "every calendar day between full and selected point is present" --
+  # restore.sh only ever sees the URIs the operator supplies, and cannot
+  # independently enumerate what else exists in the bucket. A strictly
+  # increasing, duplicate-free, common-parent chain is exactly what
+  # prevents the failure mode this review flagged: reversed or duplicated
+  # deltas landing the restore on an older or inconsistent state. Cost if
+  # wrong: an operator could still supply an incomplete (but correctly
+  # ordered) chain; that is caught instead by restore_verify()'s row-count
+  # report, which a human reviews before trusting the restore.
+  local expected_parent n=0 uri delta_dir prev_cutoff_epoch delta_cutoff_epoch
   expected_parent=$(jq -r .run_id "$full_dir/manifest.json")
+  prev_cutoff_epoch=$(jq -r '.cutoff | fromdateiso8601' "$full_dir/manifest.json")
   if [[ -n "${RESTORE_DAILY_OBJECT_URIS:-}" ]]; then
     while IFS= read -r uri; do
       [[ -n "$uri" ]] || continue
@@ -190,6 +220,10 @@ main() {
         || die "RESTORE_DAILY_OBJECT_URIS entry $n is not a daily delta: $uri"
       [[ "$(jq -r .parent_full_backup_id "$delta_dir/manifest.json")" == "$expected_parent" ]] \
         || die "RESTORE_DAILY_OBJECT_URIS entry $n does not chain to the restored full backup (parent_full_backup_id mismatch)"
+      delta_cutoff_epoch=$(jq -r '.cutoff | fromdateiso8601' "$delta_dir/manifest.json")
+      (( delta_cutoff_epoch > prev_cutoff_epoch )) \
+        || die "RESTORE_DAILY_OBJECT_URIS entry $n is out of order or a duplicate (cutoff must strictly increase from the previous entry)"
+      prev_cutoff_epoch="$delta_cutoff_epoch"
       while IFS= read -r db; do
         [[ -n "$db" ]] || continue
         restore_database_dump "$db" "$delta_dir/dumps/$db.dump"
