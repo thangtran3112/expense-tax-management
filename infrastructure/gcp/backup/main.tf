@@ -43,6 +43,13 @@ resource "google_storage_bucket" "backup" {
     is_locked        = true
   }
 
+  # with_state = "ANY" (fix round 1, Important #7): versioning is enabled
+  # above, so a deleted/replaced live object does not free its bytes --
+  # it becomes a noncurrent/archived generation instead. The default
+  # lifecycle condition state is LIVE only; without ANY here, an archived
+  # generation past its age threshold would never actually be deleted,
+  # so "daily/monthly retention" would only ever apply to the live
+  # pointer, not the ciphertext bytes themselves.
   lifecycle_rule {
     action {
       type = "Delete"
@@ -50,6 +57,7 @@ resource "google_storage_bucket" "backup" {
     condition {
       age            = 30
       matches_prefix = ["daily/"]
+      with_state     = "ANY"
     }
   }
 
@@ -60,6 +68,7 @@ resource "google_storage_bucket" "backup" {
     condition {
       age            = 365
       matches_prefix = ["monthly/"]
+      with_state     = "ANY"
     }
   }
 }
@@ -98,7 +107,7 @@ resource "google_storage_bucket_iam_member" "backup_writer_creator" {
 # apply fails fast on a missing data source, not a silent security gap.
 data "google_iam_workload_identity_pool" "github" {
   project                   = var.project_id
-  workload_identity_pool_id = "expense-tax-github"
+  workload_identity_pool_id = var.wif_pool_id
 }
 
 resource "google_iam_workload_identity_pool_provider" "backup_freshness" {

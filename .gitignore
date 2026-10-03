@@ -252,6 +252,10 @@ public/swe-worker-*.js
 **/*.tfstate.*
 **/crash.log
 **/crash.*.log
+**/*.auto.tfvars
+**/*.auto.tfvars.json
+**/terraform.tfvars
+**/terraform.tfvars.json
 
 # Local agent planning and code graph state
 /docs/superpowers/

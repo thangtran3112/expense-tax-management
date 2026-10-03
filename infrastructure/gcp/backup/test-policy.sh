@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_TF="$SCRIPT_DIR/main.tf"
+VARIABLES_TF="$SCRIPT_DIR/variables.tf"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
@@ -26,6 +27,15 @@ awk '/matches_prefix = \["daily\/"\]/{print prev} {prev=$0}' /tmp/backup_bucket_
   || fail "daily/ lifecycle rule must expire after 30 days"
 awk '/matches_prefix = \["monthly\/"\]/{print prev} {prev=$0}' /tmp/backup_bucket_block.$$ | grep -Fq 'age            = 365' \
   || fail "monthly/ lifecycle rule must expire after 365 days"
+
+# with_state = "ANY": versioning is enabled, so without this a deleted/
+# replaced live object's ARCHIVED generation would never actually be
+# removed by these age-based rules (the default condition state is LIVE
+# only) -- backup ciphertext could be retained indefinitely.
+awk '/matches_prefix = \["daily\/"\]/{getline; print}' /tmp/backup_bucket_block.$$ | grep -Fq 'with_state     = "ANY"' \
+  || fail "daily/ lifecycle rule must set with_state = \"ANY\" to also expire archived/noncurrent generations"
+awk '/matches_prefix = \["monthly\/"\]/{getline; print}' /tmp/backup_bucket_block.$$ | grep -Fq 'with_state     = "ANY"' \
+  || fail "monthly/ lifecycle rule must set with_state = \"ANY\" to also expire archived/noncurrent generations"
 rm -f /tmp/backup_bucket_block.$$
 
 grep -Fq 'resource "google_service_account" "backup_writer"' "$MAIN_TF" || fail "missing the VPS writer service account"
@@ -46,4 +56,21 @@ grep -Fq 'resource "google_iam_workload_identity_pool_provider" "backup_freshnes
 grep -Fq 'resource "google_storage_bucket_iam_member" "backup_writer_creator"' "$MAIN_TF" || fail "missing writer IAM binding"
 grep -Fq 'resource "google_storage_bucket_iam_member" "backup_freshness_reader"' "$MAIN_TF" || fail "missing freshness-monitor IAM binding"
 
-echo "PASS: backup bucket policy checks (uniform access, no public access, versioning, 7-day locked retention, daily/monthly lifecycle, object-creator-only writer, separate list-only freshness-monitor identity, no writer key in state)"
+# No real production identifiers committed as variable defaults: an
+# unparameterized `terraform apply` must not be able to silently target
+# the real project/bucket/WIF pool. Each of these must be declared with
+# NO `default =` line anywhere in its own variable block.
+test -f "$VARIABLES_TF" || fail "variables.tf is missing"
+for var_name in project_id bucket_name github_repository wif_pool_id; do
+  awk -v v="variable \"${var_name}\"" '
+    $0 ~ v { capturing = 1 }
+    capturing { print }
+    capturing && /^}/ { capturing = 0 }
+  ' "$VARIABLES_TF" > /tmp/backup_var_block.$$
+  [[ -s /tmp/backup_var_block.$$ ]] || fail "variables.tf is missing a \"${var_name}\" variable block"
+  grep -Eq '^\s*default\s*=' /tmp/backup_var_block.$$ \
+    && fail "variable \"${var_name}\" must have no default -- a real identifier must never be committed as one"
+  rm -f /tmp/backup_var_block.$$
+done
+
+echo "PASS: backup bucket policy checks (uniform access, no public access, versioning, 7-day locked retention with ANY-state daily/monthly lifecycle, object-creator-only writer, separate list-only freshness-monitor identity, no writer key in state, no real identifiers as variable defaults)"

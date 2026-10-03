@@ -69,6 +69,29 @@ machine with real GCP credentials.
   This keeps "who can currently read backup content" at zero outside an
   active, deliberate restore window.
 
+## Required variables (no defaults)
+
+Fix round 1 (Important #6): `project_id`, `bucket_name`,
+`github_repository`, and `wif_pool_id` have **no default** -- each names
+a real, project-specific resource, and a default would let an
+unparameterized `terraform apply` silently target production.
+`terraform validate` (which this repo runs automatically) does not need
+concrete values; `plan`/`apply` (operator-only, explicit approval
+required) do. Supply them via an **untracked** tfvars file:
+
+```bash
+# infrastructure/gcp/backup/terraform.tfvars (gitignored -- see **/.terraform/
+# and this directory's own entry if one is added; never commit this file)
+project_id        = "expense-tax-tobytran-2026"
+bucket_name       = "expense-tax-tobytran-2026-backups"
+github_repository = "thangtran3112/family-app"
+wif_pool_id       = "expense-tax-github"
+```
+
+or pass each as `-var`. `region`/`location`/`freshness_workflow_file`/
+`freshness_workflow_ref` keep sensible generic defaults since they do not
+themselves identify a specific project, bucket, or repository.
+
 ## Commands actually run (by this implementation, and by CI)
 
 ```bash
