@@ -176,6 +176,26 @@ describe("mailbox-broker routes", () => {
   }
 
   // ------------------------------------------------------------------ //
+  // Health — Phase 3D-A Task 5: deploy/production/health-check.sh polls
+  // this loopback endpoint once the broker joins the production Compose.
+  // ------------------------------------------------------------------ //
+
+  describe("GET /health/live", () => {
+    it("returns ok with no authentication required", async () => {
+      const { app } = await createTestApp();
+
+      const response = await app.inject({ method: "GET", url: "/health/live" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        status: "ok",
+        service: "mailbox-broker",
+        version: "test",
+      });
+    });
+  });
+
+  // ------------------------------------------------------------------ //
   // Internal start route — exact M2M auth
   // ------------------------------------------------------------------ //
 
