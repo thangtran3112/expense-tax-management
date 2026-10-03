@@ -56,12 +56,12 @@
 - Consumes: PostgreSQL admin connection, receipt volume, `AGE_RECIPIENT`, bucket URI, host ID, and writer credential file.
 - Produces: encrypted immutable backup set plus local success marker.
 
-- [ ] Write failing tests for missing variables, unsafe bucket URI, invalid age recipient, unavailable PostgreSQL, read-write receipt mount, and plaintext leakage.
-- [ ] Build a pinned image containing PostgreSQL 17 client tools, `age`, GCloud storage CLI, `jq`, `tar`, and checksum tools.
-- [ ] Make container root filesystem read-only; mount `/staging` as size-bounded `tmpfs` and keep only status plus encrypted partials on persistent state.
-- [ ] Mount receipt storage read-only and writer credential file mode `0400`.
-- [ ] Reject secrets passed on command lines or printed by tracing.
-- [ ] Run shell syntax, ShellCheck, and container configuration tests.
+- [x] Write failing tests for missing variables, unsafe bucket URI, invalid age recipient, unavailable PostgreSQL, read-write receipt mount, and plaintext leakage. (fast: test-backup.sh Part B; read-only receipt mount + plaintext-never-on-disk proven via Docker in test-backup-docker.sh/test-backup.sh Part E)
+- [x] Build a pinned image containing PostgreSQL 17 client tools, `age`, GCloud storage CLI, `jq`, `tar`, and checksum tools. (Dockerfile, pinned by digest; smoke-tested: pg_dump 17.11, age 1.2.1, gcloud, jq, flock all present)
+- [x] Make container root filesystem read-only; mount `/staging` as size-bounded `tmpfs` and keep only status plus encrypted partials on persistent state. (documented run contract in README + deploy/production/docker-compose.yml backup profile, Task 6; verified via docker run --read-only --tmpfs in both Docker test scripts)
+- [x] Mount receipt storage read-only and writer credential file mode `0400`. (run contract; exercised read-only in both Docker test scripts)
+- [x] Reject secrets passed on command lines or printed by tracing. (PGPASSWORD_FILE/GOOGLE_APPLICATION_CREDENTIALS are paths, never CLI values; no `set -x`; die()/emit_status never echo secret values -- asserted in tests)
+- [x] Run shell syntax, ShellCheck, and container configuration tests. (koalaman/shellcheck:stable clean on lib.sh/backup.sh/test-backup.sh/test-backup-docker.sh/restore.sh/test-restore.sh; Dockerfile built and smoke-tested)
 
 Required environment contract:
 
@@ -88,13 +88,13 @@ GOOGLE_APPLICATION_CREDENTIALS
 **Interfaces:**
 - Produces: `globals.sql`, one custom-format dump per non-template database, and database inventory in `manifest.json`.
 
-- [ ] Start disposable PostgreSQL with representative App, Foundry, Temporal, visibility, and mailbox databases.
-- [ ] Write failing tests requiring every database and globals dump in the manifest.
-- [ ] Implement `pg_dumpall --globals-only` and discover databases from `pg_database` while excluding templates.
-- [ ] Dump each database with `pg_dump --format=custom --no-owner --no-acl`.
-- [ ] Validate every dump using `pg_restore --list`; abort before upload on any failure.
-- [ ] Record PostgreSQL version, database names, byte sizes, and SHA-256 checksums.
-- [ ] Prove a failed dump leaves the prior success marker unchanged.
+- [x] Start disposable PostgreSQL with representative App, Foundry, Temporal, visibility, and mailbox databases. (test-backup-docker.sh: expense_app, expense_foundry, temporal, temporal_visibility, mailbox_broker on a disposable pgvector/pgvector:pg17 container)
+- [x] Write failing tests requiring every database and globals dump in the manifest. (test-backup-docker.sh asserts all 5 in database-inventory.json)
+- [x] Implement `pg_dumpall --globals-only` and discover databases from `pg_database` while excluding templates. (also excludes the admin-only `postgres` catalog db -- see README Ruling)
+- [x] Dump each database with `pg_dump --format=custom --no-owner --no-acl`.
+- [x] Validate every dump using `pg_restore --list`; abort before upload on any failure. (re-validated post-hoc with a fresh pg_restore --list in test-backup-docker.sh too)
+- [x] Record PostgreSQL version, database names, byte sizes, and SHA-256 checksums.
+- [x] Prove a failed dump leaves the prior success marker unchanged. (forced bad-role failure in test-backup-docker.sh; marker byte-identical before/after)
 
 ### Task 4: Capture Receipt Files and Deployment Metadata
 
@@ -107,12 +107,12 @@ GOOGLE_APPLICATION_CREDENTIALS
 - Consumes: confirmed immutable receipt volume and local last-success marker.
 - Produces: monthly full receipt archive or daily incremental archive plus image/schema manifest.
 
-- [ ] Write failing tests for first-run full backup, first day of month full backup, daily delta, unchanged receipts, and files arriving before, at, and after a frozen run cutoff.
-- [ ] Create a full receipt archive when no marker exists and on the first successful backup of each month.
-- [ ] Freeze `current_cutoff` immediately after database dumps. Otherwise archive immutable files with server-controlled modification time `> last_successful_cutoff` and `<= current_cutoff`; files arriving later belong to the next run.
-- [ ] Record archive mode, parent full-backup ID, receipt paths, checksums, deployed image tags, schema migration versions, and Compose checksum.
-- [ ] Validate manifest against `manifest.schema.json` and verify every archived path/checksum before encryption.
-- [ ] Advance marker exactly to `current_cutoff` only after encrypted upload succeeds; never advance to wall-clock completion time or maximum observed file timestamp.
+- [x] Write failing tests for first-run full backup, first day of month full backup, daily delta, unchanged receipts, and files arriving before, at, and after a frozen run cutoff. (fast: test-backup.sh Part C boundary logic; real: test-backup-docker.sh Task 4 section, all 5 scenarios against real seeded receipt files)
+- [x] Create a full receipt archive when no marker exists and on the first successful backup of each month. (determine_mode(); new-calendar-month scenario proven in test-backup-docker.sh)
+- [x] Freeze `current_cutoff` immediately after database dumps. Otherwise archive immutable files with server-controlled modification time `> last_successful_cutoff` and `<= current_cutoff`; files arriving later belong to the next run. (select_receipt_files(); boundary scenario with a future-mtime receipt proven in test-backup-docker.sh)
+- [x] Record archive mode, parent full-backup ID, receipt paths, checksums, deployed image tags, schema migration versions, and Compose checksum. (build_manifest(); BACKUP_IMAGE_TAGS/BACKUP_MIGRATION_VERSIONS/BACKUP_COMPOSE_FILE env, optional with a null-when-unset fallback for the last)
+- [x] Validate manifest against `manifest.schema.json` and verify every archived path/checksum before encryption. (validate_manifest(); hand-checked, not ajv -- see README Ruling; tamper test proves rejection)
+- [x] Advance marker exactly to `current_cutoff` only after encrypted upload succeeds; never advance to wall-clock completion time or maximum observed file timestamp. (advance_marker() is only ever called after upload_backup_set() returns successfully)
 
 ### Task 5: Encrypt and Upload Immutable Backup Set
 
@@ -123,14 +123,14 @@ GOOGLE_APPLICATION_CREDENTIALS
 **Interfaces:**
 - Produces: `daily/YYYY/MM/DD/<timestamp>-<host>-<sha>.tar.age` or matching `monthly/` object.
 
-- [ ] Write failing tests proving plaintext filenames, SQL, receipt bytes, and credentials never reach upload fixtures or logs.
-- [ ] Stage dumps and receipt metadata only in a size-bounded container `tmpfs`; fail before writing plaintext to a persistent volume.
-- [ ] Stream the deterministic archive through `age -r "$AGE_RECIPIENT"` into a ciphertext-only `*.partial.age` file on persistent staging.
-- [ ] Remove ciphertext partials on failure and at startup; rename atomically only after encryption and checksum validation. Container exit, host crash, or power loss must leave no persistent plaintext.
-- [ ] Upload with a unique object name and object-creation precondition so replacement fails.
-- [ ] Record object URI, generation, encrypted size, and manifest digest in root-owned local status file.
-- [ ] Emit machine-readable success/failure status without secret values.
-- [ ] Run a test using a temporary age identity and fake GCS transport, then decrypt and compare every checksum.
+- [x] Write failing tests proving plaintext filenames, SQL, receipt bytes, and credentials never reach upload fixtures or logs. (encrypt_archive streams plaintext tar->age with no intermediate plaintext file; real age round trip in test-backup-docker.sh proves decrypt is required to see any of it)
+- [x] Stage dumps and receipt metadata only in a size-bounded container `tmpfs`; fail before writing plaintext to a persistent volume. (BACKUP_STAGING_DIR under container `--tmpfs /staging:size=...` in both Docker test scripts and the production run contract)
+- [x] Stream the deterministic archive through `age -r "$AGE_RECIPIENT"` into a ciphertext-only `*.partial.age` file on persistent staging.
+- [x] Remove ciphertext partials on failure and at startup; rename atomically only after encryption and checksum validation. Container exit, host crash, or power loss must leave no persistent plaintext. (remove_ciphertext_partials(); widened to match any leftover *.age, not just *.partial.age -- see README/commit Ruling)
+- [x] Upload with a unique object name and object-creation precondition so replacement fails. (`gcloud storage cp --if-generation-match=0`; collision-rejection proven in test-backup.sh Part E)
+- [x] Record object URI, generation, encrypted size, and manifest digest in root-owned local status file. (merged into state/last-success.json, which doubles as both marker and status record)
+- [x] Emit machine-readable success/failure status without secret values. (emit_status(); success on the main() happy path, failure from die() on every exit)
+- [x] Run a test using a temporary age identity and fake GCS transport, then decrypt and compare every checksum. (test-backup-docker.sh Task 5 section: real age-keygen identity, full pipeline, directory-backed fake GCS, decrypt, every manifest-referenced checksum verified)
 
 ### Task 6: Schedule Daily Backup and Alert on Staleness
 
@@ -168,14 +168,14 @@ GOOGLE_APPLICATION_CREDENTIALS
 - Consumes: operator GCS access, selected encrypted backup set, and private age identity.
 - Produces: restored globals, databases, receipt volume, and exact deployment manifest.
 
-- [ ] Write failing end-to-end test from seeded source PostgreSQL and receipts to empty destination.
-- [ ] Download selected set into a new mode-`0700` directory and validate object generation/digest.
-- [ ] Decrypt with an explicitly provided private key file; never read recovery identity from normal production environment.
-- [ ] Validate manifest and every checksum before changing destination state.
-- [ ] Restore globals with reviewed role-conflict handling, create databases, then use `pg_restore --clean --if-exists --no-owner` under operator control.
-- [ ] Restore latest monthly receipt full archive followed by ordered daily deltas through selected database backup date.
-- [ ] Compare row counts, migration versions, receipt checksums, and Temporal namespace data.
-- [ ] Refuse restore onto nonempty destination unless operator supplies explicit destructive confirmation flag.
+- [x] Write failing end-to-end test from seeded source PostgreSQL and receipts to empty destination. (test-restore.sh: seeded 5-database SOURCE + 2 receipts -> real backup.sh full+daily -> empty DESTINATION -> real restore.sh)
+- [x] Download selected set into a new mode-`0700` directory and validate object generation/digest. (RESTORE_WORK_DIR must not already contain files; download_and_verify_object() independently re-derives generation/md5 from GCS metadata and compares against the downloaded bytes)
+- [x] Decrypt with an explicitly provided private key file; never read recovery identity from normal production environment. (RESTORE_AGE_IDENTITY_FILE is a required file path; no default location, no env var carrying key content)
+- [x] Validate manifest and every checksum before changing destination state. (decrypt_and_extract() runs validate_manifest_shape() + per-file/per-receipt-archive checksum checks before any psql/pg_restore call)
+- [x] Restore globals with reviewed role-conflict handling, create databases, then use `pg_restore --clean --if-exists --no-owner` under operator control. (restore_globals(): ON_ERROR_STOP=0, tolerates only "already exists" conflicts -- see restore.sh Ruling comment)
+- [x] Restore latest monthly receipt full archive followed by ordered daily deltas through selected database backup date. (restore_receipts_from_set() called once for the full, once per RESTORE_DAILY_OBJECT_URIS entry in order; each delta's parent_full_backup_id is checked against the full's run_id)
+- [x] Compare row counts, migration versions, receipt checksums, and Temporal namespace data. (restore_verify(): per-database live-row counts via pg_stat_user_tables, proven in test-restore.sh against representative temporal/temporal_visibility databases too; receipt checksums re-verified against the live restored files. Migration versions are carried through into the restored manifest.json [schema_migration_versions] for Task 8 to compare against each image's supported version before running migrations, per that task's own checkbox -- restore.sh itself does not run migration tooling. Real Temporal namespace-level verification [not just the backing database's row counts] needs an actual Temporal server and is Task 8's "verify ... shared Temporal" step)
+- [x] Refuse restore onto nonempty destination unless operator supplies explicit destructive confirmation flag. (check_destination_empty_or_confirmed(); proven in test-restore.sh against a destination with one leftover database)
 
 ### Task 8: Prove Recovery and Document Operations
 

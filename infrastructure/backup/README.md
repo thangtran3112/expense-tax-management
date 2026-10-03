@@ -14,10 +14,34 @@ Architecture context: [`ARCHITECTURE.md`](../../expense-tax-management/plans/ARC
 | `lib.sh` | Shared validation/logging/status-JSON/locking helpers. Sourced only. |
 | `backup.sh` | Entrypoint: preflight → dump → receipt capture → manifest → encrypt → upload. |
 | `manifest.schema.json` | Documented contract for `manifest.json` (hand-checked by `backup.sh`/tests; see Ruling below). |
-| `restore.sh` | Operator-run restore onto an empty destination. |
+| `restore.sh` | Operator-run restore onto an empty destination. Ships in the same pinned image as `backup.sh` (same `pg_restore`/`age`/`gcloud`), invoked with `--entrypoint restore.sh`. |
 | `test-backup.sh` | **Fast, Docker-free.** Wired into `pnpm ci:test` via `check:vps-backup-infrastructure`. |
 | `test-backup-docker.sh` | **Slow, Docker.** Full dump→encrypt→upload→decrypt round trip against a disposable PostgreSQL 17 + fake-GCS. Not wired into CI. Run manually (below). |
-| `test-restore.sh` | **Slow, Docker.** End-to-end seeded-source → empty-destination restore proof. Not wired into CI. Run manually (below). |
+| `test-restore.sh` | **Slow, Docker.** End-to-end seeded-source → empty-destination restore proof (full backup + one ordered daily delta). Not wired into CI. Run manually (below). |
+
+## `restore.sh` environment contract
+
+```text
+PGHOST / PGPORT / PGUSER / PGPASSWORD_FILE   Destination (empty/disposable) cluster admin connection
+RESTORE_AGE_IDENTITY_FILE                     Private age identity FILE PATH -- never a default location, never key content in an env var
+RESTORE_GOOGLE_APPLICATION_CREDENTIALS        Operator's temporary, read-capable GCS credentials
+RESTORE_OBJECT_URI                            gs://bucket/.../*.tar.age -- the monthly FULL set to restore
+RESTORE_WORK_DIR                              Fresh (must not already contain files), mode-0700 scratch directory
+RECEIPT_RESTORE_DIR                           Destination receipt volume directory
+
+RESTORE_DAILY_OBJECT_URIS     Optional comma list of daily delta object URIs, in order, applied after the full
+RESTORE_EXPECTED_GENERATION   Optional: pin the full object's expected GCS generation (defense against a stale/wrong URI)
+RESTORE_CONFIRM_DESTRUCTIVE   Must be exactly "yes-destroy-existing-data" to proceed if the destination already holds
+                               any non-template database or any receipt file
+```
+
+Refuses to run against a non-empty destination without the destructive
+confirmation flag; decrypts only with an explicitly supplied identity file;
+validates every checksum (via the same `manifest.schema.json` contract
+`backup.sh` writes against) before touching destination state; and ends
+with a machine-readable `{"status":"restored", databases:[...], ...}`
+report after independently re-verifying every restored database's row
+count and every restored receipt's checksum.
 
 ## Environment contract
 
