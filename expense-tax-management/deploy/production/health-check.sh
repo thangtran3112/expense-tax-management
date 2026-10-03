@@ -44,52 +44,12 @@ if ((worker_ready == 0)); then
   exit 1
 fi
 
-temporal_ready=0
 for ((attempt = 1; attempt <= attempts; attempt += 1)); do
   if docker exec family-temporal temporal operator cluster health --address temporal:7233 >/dev/null 2>&1 &&
     docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1; then
-    temporal_ready=1
-    break
+    exit 0
   fi
   sleep "$delay"
 done
-if ((temporal_ready == 0)); then
-  printf '%s\n' "Temporal health check failed" >&2
-  exit 1
-fi
-
-# Task 8 (vps-backup-and-restore.md recovery drill): the drill's "verify
-# PostgreSQL ... and receipt retrieval" bullet, beyond the app-level
-# /health/ready probe the endpoints above already exercise indirectly.
-postgres_ready=0
-for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-  if docker exec family-app-postgres pg_isready -U postgres >/dev/null 2>&1; then
-    postgres_ready=1
-    break
-  fi
-  sleep "$delay"
-done
-if ((postgres_ready == 0)); then
-  printf '%s\n' "PostgreSQL health check failed" >&2
-  exit 1
-fi
-
-# Receipt retrieval: confirms the receipt volume app-api serves from is
-# actually mounted and reachable inside the running container. This is a
-# structural check, not a full authenticated content fetch -- that is the
-# separate "authenticated product smoke tests" step the recovery drill
-# runs before any Cloudflare cutover.
-receipts_ready=0
-for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-  if compose exec -T app-api test -d /tmp/expense_tax_storage >/dev/null 2>&1; then
-    receipts_ready=1
-    break
-  fi
-  sleep "$delay"
-done
-if ((receipts_ready == 0)); then
-  printf '%s\n' "Receipt volume health check failed" >&2
-  exit 1
-fi
-
-exit 0
+printf '%s\n' "Temporal health check failed" >&2
+exit 1

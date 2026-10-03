@@ -29,10 +29,15 @@ Architecture context: [`ARCHITECTURE.md`](../../expense-tax-management/plans/ARC
 See also [`../vps/README.md`](../vps/README.md) "Backup (opt-in)" for how
 `40-backup.sh` installs these units onto a real VPS, and
 [`../../.github/workflows/family-backup-freshness.yml`](../../.github/workflows/family-backup-freshness.yml)
-for the hourly off-host staleness check (18h warn / 22h page / 24h RPO
-breach), which authenticates as Task 1's separate, list-only
-freshness-monitor identity -- never the VPS writer, and never able to read
-backup content.
+for the daily off-host staleness check (18h warn / 22h page / 24h RPO
+breach; `workflow_dispatch` for an on-demand run), which authenticates as
+Task 1's separate, list-only freshness-monitor identity -- never the VPS
+writer, and never able to read backup content. Ruling: daily, not
+hourly -- `dev` is this repository's default branch, so a scheduled
+workflow activates the moment this merges, before Task 1's bucket even
+exists; the job itself also skips entirely (0 Actions minutes) until the
+`GCP_BACKUP_BUCKET` repository variable is set. See the workflow file's
+own comment for the RPO detection-latency tradeoff this accepts.
 
 ## `restore.sh` environment contract
 
