@@ -128,7 +128,7 @@ require_shared_temporal() {
   docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1 || die "expense-tax Temporal namespace is unavailable"
 }
 
-APPLICATION_SERVICES=(app-api foundry-service ai-worker capture-web office-web foundry-web)
+APPLICATION_SERVICES=(app-api foundry-service ai-worker workflow-worker capture-web office-web foundry-web)
 verify_running_images() {
   local expected_tag=$1 service container_id actual_image
   for service in "${APPLICATION_SERVICES[@]}"; do

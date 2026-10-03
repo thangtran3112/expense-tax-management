@@ -44,6 +44,19 @@ if ((worker_ready == 0)); then
   exit 1
 fi
 
+workflow_worker_ready=0
+for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+  if compose ps --status running --services | awk '$1 == "workflow-worker" { found=1 } END { exit found ? 0 : 1 }'; then
+    workflow_worker_ready=1
+    break
+  fi
+  sleep "$delay"
+done
+if ((workflow_worker_ready == 0)); then
+  printf '%s\n' "workflow-worker is not running" >&2
+  exit 1
+fi
+
 for ((attempt = 1; attempt <= attempts; attempt += 1)); do
   if docker exec family-temporal temporal operator cluster health --address temporal:7233 >/dev/null 2>&1 &&
     docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1; then

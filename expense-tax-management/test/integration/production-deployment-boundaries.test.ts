@@ -27,7 +27,7 @@ function readProductionFile(name: string): string {
 }
 
 describe("Phase 1B production deployment boundaries", () => {
-  it("defines exactly six immutable GHCR application images and no legacy database", () => {
+  it("defines exactly seven immutable GHCR application images and no legacy database", () => {
     const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
       services: Record<string, Record<string, unknown>>;
       networks: Record<string, { external?: boolean; name?: string }>;
@@ -36,6 +36,7 @@ describe("Phase 1B production deployment boundaries", () => {
       "app-api",
       "foundry-service",
       "ai-worker",
+      "workflow-worker",
       "capture-web",
       "office-web",
       "foundry-web",
@@ -176,7 +177,7 @@ describe("Phase 1B production deployment boundaries", () => {
       "${CLERK_WEBHOOK_SIGNING_SECRET:?CLERK_WEBHOOK_SIGNING_SECRET is required}",
     );
 
-    for (const serviceName of ["foundry-service", "ai-worker", "capture-web", "office-web", "foundry-web"]) {
+    for (const serviceName of ["foundry-service", "ai-worker", "workflow-worker", "capture-web", "office-web", "foundry-web"]) {
       expect(compose.services[serviceName].environment).not.toHaveProperty(
         "CLERK_WEBHOOK_SIGNING_SECRET",
       );
@@ -376,12 +377,14 @@ esac
     expect(composePath).toContain("deploy/production/docker-compose.yml");
   });
 
-  it("keeps ai-worker liveness explicit and rollback-gated", () => {
+  it("keeps ai-worker and workflow-worker liveness explicit and rollback-gated", () => {
     const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
       services: Record<string, { healthcheck?: { test?: string[] } }>;
     };
-    const workerHealthcheck = compose.services["ai-worker"].healthcheck;
-    expect(workerHealthcheck?.test?.join(" ") ?? "").toContain("kill -0 1");
+    for (const serviceName of ["ai-worker", "workflow-worker"]) {
+      const workerHealthcheck = compose.services[serviceName].healthcheck;
+      expect(workerHealthcheck?.test?.join(" ") ?? "").toContain("kill -0 1");
+    }
 
     const deploy = readProductionFile("deploy.sh");
     expect(deploy).toContain("health-check.sh");
@@ -428,5 +431,77 @@ esac
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("deploys the TypeScript workflow worker idle on expense-tax/expense-tax-processing, never on the database network", () => {
+    const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+      services: Record<
+        string,
+        {
+          image?: string;
+          environment?: Record<string, string>;
+          networks?: string[];
+          deploy?: { resources?: { limits?: { cpus?: string; memory?: string } } };
+          depends_on?: Record<string, { condition?: string }>;
+          healthcheck?: { test?: string[] };
+        }
+      >;
+    };
+    const worker = compose.services["workflow-worker"];
+    expect(worker).toBeDefined();
+    expect(worker.image).toBe(
+      "ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${IMAGE_TAG}",
+    );
+    expect(worker.deploy?.resources?.limits).toEqual({ cpus: "0.5", memory: "512M" });
+
+    // Idle by construction: generation 1 (Task 7 Stage A seed) routes new
+    // jobs to namespace default / queue expense-tax-ai-worker (ai-worker).
+    // This worker polls expense-tax / expense-tax-processing and receives
+    // no work until an operator runs `advance`.
+    expect(worker.environment?.TEMPORAL_HOST).toBe("temporal:7233");
+    expect(worker.environment?.TEMPORAL_NAMESPACE).toBe("expense-tax");
+    expect(worker.environment?.AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
+    expect(worker.environment?.APP_API_BASE_URL).toBe("http://app-api:8100");
+    expect(worker.environment?.FOUNDRY_BASE_URL).toBe("http://foundry-service:8200");
+
+    for (const key of [
+      "CLERK_ISSUER_URL",
+      "CLERK_JWKS_URL",
+      "CLERK_APP_SERVICE_AUDIENCE",
+      "CLERK_APP_MACHINE_SECRET_KEY",
+      "CLERK_APP_SERVICE_SUBJECT",
+      "CLERK_FOUNDRY_SERVICE_AUDIENCE",
+      "CLERK_FOUNDRY_MACHINE_SECRET_KEY",
+      "CLERK_FOUNDRY_SERVICE_SUBJECT",
+    ]) {
+      expect(worker.environment?.[key]).toBe(`\${${key}:?${key} is required}`);
+    }
+
+    expect(worker.networks).toEqual(["default", "shared"]);
+    expect(worker.depends_on?.["app-api"]?.condition).toBe("service_healthy");
+    expect(worker.depends_on?.["foundry-service"]?.condition).toBe("service_healthy");
+
+    // ai-worker (namespace default / queue expense-tax-ai-worker) must stay
+    // exactly as Stage A left it -- Stage B never changes the Python side.
+    const pythonWorker = compose.services["ai-worker"];
+    expect(pythonWorker.environment?.TEMPORAL_NAMESPACE).toBe("default");
+    expect(pythonWorker.environment?.AI_WORKER_TASK_QUEUE).toBe("expense-tax-ai-worker");
+  });
+
+  it("includes workflow-worker in deploy.sh's image-tag verification and rollback set", () => {
+    const deploy = readProductionFile("deploy.sh");
+    const servicesMatch = deploy.match(/APPLICATION_SERVICES=\(([^)]*)\)/);
+    expect(servicesMatch).not.toBeNull();
+    const services = (servicesMatch?.[1] ?? "").trim().split(/\s+/);
+    expect(services).toContain("workflow-worker");
+  });
+
+  it("requires workflow-worker running in health-check.sh, same pattern as ai-worker", () => {
+    const health = readProductionFile("health-check.sh");
+    expect(health).toContain("workflow-worker");
+    const workerChecks = [...health.matchAll(/\$1 == "([a-z-]+)" \{ found=1 \}/g)].map(
+      (match) => match[1],
+    );
+    expect(workerChecks).toEqual(expect.arrayContaining(["ai-worker", "workflow-worker"]));
   });
 });

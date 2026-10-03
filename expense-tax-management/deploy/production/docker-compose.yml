@@ -140,6 +140,43 @@ services:
       retries: 12
     networks: [default, shared]
 
+  # Task 7 Stage B: idle until an operator runs `dispatch-routing advance`.
+  # Generation 1 (Stage A's seed) routes new jobs to namespace default /
+  # queue expense-tax-ai-worker (ai-worker above); this worker polls
+  # namespace expense-tax / queue expense-tax-processing and receives no
+  # work until the cutover. Never share a queue with ai-worker.
+  workflow-worker:
+    image: ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${IMAGE_TAG}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+    environment:
+      TEMPORAL_HOST: temporal:7233
+      TEMPORAL_NAMESPACE: expense-tax
+      AI_WORKER_TASK_QUEUE: expense-tax-processing
+      APP_API_BASE_URL: http://app-api:8100
+      FOUNDRY_BASE_URL: http://foundry-service:8200
+      CLERK_ISSUER_URL: ${CLERK_ISSUER_URL:?CLERK_ISSUER_URL is required}
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:?CLERK_JWKS_URL is required}
+      CLERK_APP_SERVICE_AUDIENCE: ${CLERK_APP_SERVICE_AUDIENCE:?CLERK_APP_SERVICE_AUDIENCE is required}
+      CLERK_FOUNDRY_SERVICE_AUDIENCE: ${CLERK_FOUNDRY_SERVICE_AUDIENCE:?CLERK_FOUNDRY_SERVICE_AUDIENCE is required}
+      CLERK_APP_MACHINE_SECRET_KEY: ${CLERK_APP_MACHINE_SECRET_KEY:?CLERK_APP_MACHINE_SECRET_KEY is required}
+      CLERK_FOUNDRY_MACHINE_SECRET_KEY: ${CLERK_FOUNDRY_MACHINE_SECRET_KEY:?CLERK_FOUNDRY_MACHINE_SECRET_KEY is required}
+      CLERK_APP_SERVICE_SUBJECT: ${CLERK_APP_SERVICE_SUBJECT:?CLERK_APP_SERVICE_SUBJECT is required}
+      CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:?CLERK_FOUNDRY_SERVICE_SUBJECT is required}
+    depends_on:
+      app-api:
+        condition: service_healthy
+      foundry-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [default, shared]
+
   capture-web:
     image: ghcr.io/thangtran3112/family-app/expense-tax-capture-web:${IMAGE_TAG}
     restart: unless-stopped

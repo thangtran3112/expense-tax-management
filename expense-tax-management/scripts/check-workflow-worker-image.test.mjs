@@ -33,7 +33,25 @@ test("worker joins immutable main-only image builds while Python stays available
     dockerfile: "expense-tax-management/services/workflow-worker/Dockerfile",
   });
   assert.ok(images.some(({ image }) => image === "expense-tax-ai-worker"));
-  assert.doesNotMatch(readPackage("deploy/production/docker-compose.yml"), /expense-tax-workflow-worker:/);
+});
+
+test("Task 7 Stage B: production Compose starts workflow-worker idle on expense-tax/expense-tax-processing", () => {
+  const compose = YAML.parse(readPackage("deploy/production/docker-compose.yml"));
+  const worker = compose.services["workflow-worker"];
+  assert.ok(worker, "production Compose must define a workflow-worker service");
+  assert.equal(
+    worker.image,
+    "ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${IMAGE_TAG}",
+  );
+  assert.equal(worker.environment.TEMPORAL_NAMESPACE, "expense-tax");
+  assert.equal(worker.environment.AI_WORKER_TASK_QUEUE, "expense-tax-processing");
+  assert.deepEqual(worker.networks, ["default", "shared"]);
+
+  // Stage A's generation-1 seed (namespace default / queue
+  // expense-tax-ai-worker) is unchanged -- ai-worker must still receive it.
+  const pythonWorker = compose.services["ai-worker"];
+  assert.equal(pythonWorker.environment.TEMPORAL_NAMESPACE, "default");
+  assert.equal(pythonWorker.environment.AI_WORKER_TASK_QUEUE, "expense-tax-ai-worker");
 });
 
 test("required quality commands include worker checks and image boundary", () => {
