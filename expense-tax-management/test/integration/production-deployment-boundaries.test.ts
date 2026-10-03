@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -496,12 +497,197 @@ esac
     expect(services).toContain("workflow-worker");
   });
 
-  it("requires workflow-worker running in health-check.sh, same pattern as ai-worker", () => {
+  it("requires both workers running in health-check.sh via a configurable, both-by-default list", () => {
     const health = readProductionFile("health-check.sh");
-    expect(health).toContain("workflow-worker");
-    const workerChecks = [...health.matchAll(/\$1 == "([a-z-]+)" \{ found=1 \}/g)].map(
-      (match) => match[1],
+    expect(health).toContain("HEALTH_CHECK_REQUIRED_WORKERS");
+    expect(health).toMatch(/HEALTH_CHECK_REQUIRED_WORKERS:-ai-worker workflow-worker/);
+    expect(health).toMatch(/\$1 == worker \{ found=1 \}/);
+    expect(health).not.toContain('$1 == "ai-worker"');
+    expect(health).not.toContain('$1 == "workflow-worker"');
+  });
+});
+
+describe("Task 7 Stage B fix round 1: rollback treats workflow-worker as the only optional service", () => {
+  const deployScript = readProductionFile("deploy.sh");
+  const composeFile = path.join(productionRoot, "docker-compose.yml");
+
+  function extractFunction(source: string, name: string): string {
+    const match = source.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?^\\}`, "mu"));
+    if (!match) throw new Error(`could not extract function: ${name}`);
+    return match[0];
+  }
+
+  function extractArray(source: string, name: string): string {
+    const match = source.match(new RegExp(`^${name}=\\([^)]*\\)`, "mu"));
+    if (!match) throw new Error(`could not extract array: ${name}`);
+    return match[0];
+  }
+
+  /**
+   * Runs the REAL rollback() (plus the real helper functions it calls and
+   * the real health-check.sh it shells out to) against a fake `docker` and
+   * `curl` on PATH, mirroring the existing require_shared_temporal
+   * extraction-and-eval technique above. previousTag selects which fixture
+   * scenario the fake docker simulates (see FAKE_DOCKER env below).
+   */
+  function runRollback(options: {
+    readonly workflowWorkerImageExists: boolean;
+    readonly pullShouldFailFor?: string;
+  }): { readonly status: number; readonly stderr: string; readonly stateDir: string } {
+    const composeFn = extractFunction(deployScript, "compose");
+    const workflowWorkerImageExistsFn = extractFunction(deployScript, "workflow_worker_image_exists");
+    const verifyRunningImagesFn = extractFunction(deployScript, "verify_running_images");
+    const rollbackFn = extractFunction(deployScript, "rollback");
+    const applicationServices = extractArray(deployScript, "APPLICATION_SERVICES");
+
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "expense-tax-rollback-"));
+    const stateDir = path.join(tempRoot, "state");
+    const fakeBin = path.join(tempRoot, "bin");
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(fakeBin, { recursive: true });
+
+    const fakeDocker = path.join(fakeBin, "docker");
+    writeFileSync(
+      fakeDocker,
+      `#!/usr/bin/env bash
+set -euo pipefail
+STATE_DIR="\${FAKE_DOCKER_STATE_DIR:?}"
+case "\$1" in
+  manifest)
+    case "\$3" in
+      *expense-tax-workflow-worker:*)
+        [[ "\${WORKFLOW_WORKER_IMAGE_EXISTS:-1}" == "1" ]] && exit 0 || exit 1 ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  compose)
+    shift
+    while [[ "\$1" != "pull" && "\$1" != "up" && "\$1" != "ps" && "\$1" != "rm" ]]; do shift; done
+    sub="\$1"; shift
+    case "\$sub" in
+      pull)
+        for svc in "\$@"; do
+          case ",\${PULL_SHOULD_FAIL_FOR:-}," in
+            *",\$svc,"*) printf 'fake pull failed for %s\\n' "\$svc" >&2; exit 1 ;;
+          esac
+        done
+        printf '%s\\n' "\$@" >> "\$STATE_DIR/pull-args"
+        exit 0 ;;
+      up)
+        for arg in "\$@"; do
+          [[ "\$arg" == "-d" ]] && continue
+          printf '%s\\n' "\$arg" >> "\$STATE_DIR/up-args"
+          printf '%s\\n' "\$arg" >> "\$STATE_DIR/running-services"
+        done
+        exit 0 ;;
+      ps)
+        if [[ "\${1:-}" == "-q" ]]; then
+          svc="\$2"
+          grep -qx "\$svc" "\$STATE_DIR/running-services" 2>/dev/null && printf 'fake-container-%s\\n' "\$svc"
+          exit 0
+        fi
+        sort -u "\$STATE_DIR/running-services" 2>/dev/null || true
+        exit 0 ;;
+      rm)
+        svc="\${*: -1}"
+        if [[ -f "\$STATE_DIR/running-services" ]]; then
+          grep -vx "\$svc" "\$STATE_DIR/running-services" > "\$STATE_DIR/running-services.tmp" 2>/dev/null || true
+          mv "\$STATE_DIR/running-services.tmp" "\$STATE_DIR/running-services" 2>/dev/null || true
+        fi
+        printf '%s\\n' "\$svc" >> "\$STATE_DIR/rm-args"
+        exit 0 ;;
+    esac
+    ;;
+  inspect)
+    container_id="\${*: -1}"
+    svc="\${container_id#fake-container-}"
+    printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    exit 0 ;;
+  exec) exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
     );
-    expect(workerChecks).toEqual(expect.arrayContaining(["ai-worker", "workflow-worker"]));
+    chmodSync(fakeDocker, 0o700);
+    const fakeCurl = path.join(fakeBin, "curl");
+    writeFileSync(fakeCurl, "#!/usr/bin/env bash\nexit 0\n");
+    chmodSync(fakeCurl, 0o700);
+
+    const script = `
+set -Eeuo pipefail
+PROJECT_NAME=expense-tax-production
+SCRIPT_DIR="${productionRoot}"
+COMPOSE_FILE="${composeFile}"
+COMPOSE_ENV_FILE=/dev/null
+INCOMING_ENV_FILE=/dev/null
+TARGET_ENV_FILE=/dev/null
+had_target=0
+env_backup=/dev/null
+previous_tag="0000000000000000000000000000000000000000"
+${applicationServices}
+${composeFn}
+${workflowWorkerImageExistsFn}
+${verifyRunningImagesFn}
+${rollbackFn}
+rollback 1
+`;
+    const env: Record<string, string> = {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      FAKE_DOCKER_STATE_DIR: stateDir,
+      WORKFLOW_WORKER_IMAGE_EXISTS: options.workflowWorkerImageExists ? "1" : "0",
+      HEALTH_CHECK_ATTEMPTS: "1",
+      HEALTH_CHECK_DELAY_SECONDS: "0",
+    };
+    if (options.pullShouldFailFor) env.PULL_SHOULD_FAIL_FOR = options.pullShouldFailFor;
+
+    const result = spawnSync("bash", ["-c", script], {
+      env,
+      encoding: "utf8",
+    });
+    return { status: result.status ?? 1, stderr: result.stderr ?? "", stateDir };
+  }
+
+  function recorded(stateDir: string, file: string): string[] {
+    try {
+      return readFileSync(path.join(stateDir, file), "utf8")
+        .split("\n")
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  it("rolls back all seven services when the previous tag's workflow-worker image exists", () => {
+    const { stderr, stateDir } = runRollback({ workflowWorkerImageExists: true });
+    expect(recorded(stateDir, "pull-args").sort()).toEqual(
+      [...extractArray(deployScript, "APPLICATION_SERVICES").matchAll(/[a-z-]+/g)]
+        .map((m) => m[0])
+        .filter((name) => name !== "APPLICATION_SERVICES")
+        .sort(),
+    );
+    expect(recorded(stateDir, "rm-args")).toEqual([]);
+    expect(stderr).toContain(`rollback verified at prior image tag`);
+    expect(stderr).not.toContain("rollback failed");
+  });
+
+  it("rolls back six services and stops workflow-worker when the previous tag predates its image", () => {
+    const { stderr, stateDir } = runRollback({ workflowWorkerImageExists: false });
+    const pulled = recorded(stateDir, "pull-args");
+    expect(pulled).not.toContain("workflow-worker");
+    expect(pulled.sort()).toEqual(
+      [...extractArray(deployScript, "APPLICATION_SERVICES").matchAll(/[a-z-]+/g)]
+        .map((m) => m[0])
+        .filter((name) => name !== "APPLICATION_SERVICES" && name !== "workflow-worker")
+        .sort(),
+    );
+    expect(recorded(stateDir, "rm-args")).toContain("workflow-worker");
+    expect(stderr).toContain("rollback verified at prior image tag");
+    expect(stderr).not.toContain("rollback failed");
+  });
+
+  it("fails rollback when a mandatory service's previous-tag image is missing", () => {
+    const { stderr } = runRollback({ workflowWorkerImageExists: true, pullShouldFailFor: "app-api" });
+    expect(stderr).toContain("rollback failed after original deployment failure");
   });
 });

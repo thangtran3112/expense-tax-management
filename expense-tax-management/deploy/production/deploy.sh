@@ -130,8 +130,10 @@ require_shared_temporal() {
 
 APPLICATION_SERVICES=(app-api foundry-service ai-worker workflow-worker capture-web office-web foundry-web)
 verify_running_images() {
-  local expected_tag=$1 service container_id actual_image
-  for service in "${APPLICATION_SERVICES[@]}"; do
+  local expected_tag=$1
+  shift
+  local services=("$@") service container_id actual_image
+  for service in "${services[@]}"; do
     container_id=$(compose ps -q "$service")
     [[ -n "$container_id" ]] || { printf 'missing running container: %s\n' "$service" >&2; return 1; }
     actual_image=$(docker inspect --format '{{.Config.Image}}' "$container_id")
@@ -140,6 +142,19 @@ verify_running_images() {
       return 1
     }
   done
+}
+
+# workflow-worker is the only optional rollback service: production's
+# currently-recorded previous_tag can predate the Task 7 Stage B commit
+# that first built its image (main had no workflow-worker image before
+# then), so a straight rollback would `compose pull`/`up` a nonexistent
+# image and fail, stranding production on the broken release. Routing
+# still targets generation 1 (Python, ai-worker) until an operator runs
+# `advance`, so a rollback that omits workflow-worker entirely is safe --
+# every other service stays mandatory exactly as before.
+workflow_worker_image_exists() {
+  local tag=$1
+  docker manifest inspect "ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${tag}" >/dev/null 2>&1
 }
 
 validate_env_file "$INCOMING_ENV_FILE"
@@ -181,10 +196,23 @@ rollback() {
     printf 'Deployment failed; restoring prior image tag\n' >&2
     IMAGE_TAG="$previous_tag"
     export IMAGE_TAG
-    if ! compose pull; then rollback_status=1; fi
-    if ! compose up -d "${APPLICATION_SERVICES[@]}"; then rollback_status=1; fi
-    if ! PRODUCTION_ENV_FILE="$COMPOSE_ENV_FILE" "$SCRIPT_DIR/health-check.sh"; then rollback_status=1; fi
-    if ! verify_running_images "$previous_tag"; then rollback_status=1; fi
+
+    local rollback_services=("${APPLICATION_SERVICES[@]}") required_workers="ai-worker workflow-worker"
+    if ! workflow_worker_image_exists "$previous_tag"; then
+      printf 'workflow-worker has no image for tag %s; rolling back without it\n' "$previous_tag" >&2
+      rollback_services=()
+      local service
+      for service in "${APPLICATION_SERVICES[@]}"; do
+        [[ "$service" == "workflow-worker" ]] || rollback_services+=("$service")
+      done
+      required_workers="ai-worker"
+      compose rm --force --stop workflow-worker || true
+    fi
+
+    if ! compose pull "${rollback_services[@]}"; then rollback_status=1; fi
+    if ! compose up -d "${rollback_services[@]}"; then rollback_status=1; fi
+    if ! HEALTH_CHECK_REQUIRED_WORKERS="$required_workers" PRODUCTION_ENV_FILE="$COMPOSE_ENV_FILE" "$SCRIPT_DIR/health-check.sh"; then rollback_status=1; fi
+    if ! verify_running_images "$previous_tag" "${rollback_services[@]}"; then rollback_status=1; fi
     if ((rollback_status != 0)); then
       printf 'rollback failed after original deployment failure (status %s)\n' "$status" >&2
     else
@@ -213,7 +241,7 @@ compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
 compose up -d "${APPLICATION_SERVICES[@]}"
 "$SCRIPT_DIR/health-check.sh"
-verify_running_images "$IMAGE_TAG"
+verify_running_images "$IMAGE_TAG" "${APPLICATION_SERVICES[@]}"
 
 tmp_state=$(mktemp "$state_dir/.deployed-image-tag.XXXXXX")
 printf '%s\n' "$IMAGE_TAG" >"$tmp_state"
