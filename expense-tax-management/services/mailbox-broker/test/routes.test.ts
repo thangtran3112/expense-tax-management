@@ -13,14 +13,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp, type BuildAppOptions } from "../src/app.js";
 import type { BrokerConfig, InboundAuthConfig } from "../src/config.js";
 import type { MailboxBrokerConnectionAppClient, MailboxProviderAdapter } from "../src/contracts.js";
+import { createBeginTicket } from "../src/begin-ticket.js";
 import { createOAuthState, type VaultKeyMap } from "../src/oauth-state.js";
 import { SESSION_NONCE_COOKIE } from "../src/routes/oauth.js";
 import { createFakeClerkIssuer, createVaultKeyMap } from "../src/test-doubles.js";
+import type { GoogleAuthorizationUrlBuilder } from "../src/google-authorization-url.js";
 
 const AUDIENCE = "mch_mailboxServiceAudience";
 const APP_API_SUBJECT = "app-api-mailbox";
 const WORKER_SUBJECT = "workflow-worker-mailbox";
 const ALLOWED_ORIGIN = "https://expense-office.test";
+/** Fix round 2: the fake stands in for a trusted-config Google URL builder -- never client-supplied. */
+const GOOGLE_AUTH_ORIGIN = "https://accounts.google.test/o/oauth2/v2/auth";
+
+const fakeBuildGoogleAuthorizationUrl: GoogleAuthorizationUrlBuilder = (input) => {
+  const params = new URLSearchParams({
+    client_id: "fake-client-id",
+    state: input.state,
+    code_challenge: input.codeChallenge,
+  });
+  return `${GOOGLE_AUTH_ORIGIN}?${params.toString()}`;
+};
 
 function fakeProviderAdapter(): MailboxProviderAdapter & {
   createAuthorizationUrl: ReturnType<typeof vi.fn>;
@@ -28,8 +41,13 @@ function fakeProviderAdapter(): MailboxProviderAdapter & {
   revoke: ReturnType<typeof vi.fn>;
 } {
   return {
+    // The fake embeds a `state` query param (any opaque string) so the
+    // internal start route's extractStateParam/begin-ticket minting has
+    // something to wrap -- not a real encrypted state blob; tests that
+    // exercise the actual /oauth/google/begin flow build a real one via
+    // createOAuthState + createBeginTicket directly instead.
     createAuthorizationUrl: vi.fn(async (input: { attemptId: string }) => ({
-      authorizationUrl: `https://accounts.google.test/auth?attempt=${input.attemptId}`,
+      authorizationUrl: `https://accounts.google.test/auth?attempt=${input.attemptId}&state=fake-state-${input.attemptId}`,
       stateDigest: "a".repeat(64),
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
     })),
@@ -142,6 +160,7 @@ describe("mailbox-broker routes", () => {
       providerAdapter,
       allowedRedirectOrigins: [ALLOWED_ORIGIN],
       inboundKeyResolver: issuer.keyResolver,
+      buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
       ...overrides,
     });
     apps.add(app);
@@ -474,30 +493,29 @@ describe("mailbox-broker routes", () => {
   // ------------------------------------------------------------------ //
 
   describe("GET /oauth/google/begin", () => {
-    function fakeGoogleAuthorizationUrl(state: string): string {
-      return `https://accounts.google.test/o/oauth2/auth?state=${encodeURIComponent(state)}&client_id=fake`;
-    }
-
-    it("sets the HttpOnly session-nonce cookie and redirects to the exact authorizationUrl", async () => {
-      const { app, vaultKeys } = await createTestApp();
-      const sessionNonce = "a".repeat(32);
-      const state = createOAuthState({
+    function realState(vaultKeys: VaultKeyMap, overrides: { readonly sessionNonce?: string; readonly ttlSeconds?: number } = {}) {
+      return createOAuthState({
         connectionId: randomUUID(),
         attemptId: randomUUID(),
-        sessionNonce,
+        sessionNonce: overrides.sessionNonce ?? "a".repeat(32),
         redirectOrigin: ALLOWED_ORIGIN,
-        ttlSeconds: 600,
+        ttlSeconds: overrides.ttlSeconds ?? 600,
         vaultKeys,
       });
-      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+    }
 
-      const response = await app.inject({
-        method: "GET",
-        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
-      });
+    it("builds the Google URL itself from trusted config, sets the HttpOnly cookie, and redirects there", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const sessionNonce = "a".repeat(32);
+      const state = realState(vaultKeys, { sessionNonce });
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys });
+
+      const response = await app.inject({ method: "GET", url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers.location).toBe(authorizationUrl);
+      expect(response.headers.location).toBe(
+        fakeBuildGoogleAuthorizationUrl({ state: state.state, codeChallenge: state.codeChallenge }),
+      );
       const setCookie = String(response.headers["set-cookie"]);
       expect(setCookie).toContain(`${SESSION_NONCE_COOKIE}=${sessionNonce}`);
       expect(setCookie).toContain("HttpOnly");
@@ -505,56 +523,90 @@ describe("mailbox-broker routes", () => {
       expect(setCookie).toContain("SameSite=Lax");
     });
 
-    it("rejects a nonce that doesn't match the state's embedded digest", async () => {
+    // Fix round 2 (Important) — the old design accepted a client-supplied
+    // `authorizationUrl` and redirected to it verbatim (open redirect).
+    // There is no longer any such parameter to mutate, but this proves it
+    // structurally: an attacker-controlled `authorizationUrl`/`host`
+    // alongside a valid `ticket` is silently ignored -- the redirect
+    // destination is always the broker's own trusted-config URL.
+    it("host mutation rejected: ignores an attacker-supplied authorizationUrl/host, redirecting only to the broker-built URL", async () => {
       const { app, vaultKeys } = await createTestApp();
-      const state = createOAuthState({
-        connectionId: randomUUID(),
-        attemptId: randomUUID(),
-        sessionNonce: "a".repeat(32),
-        redirectOrigin: ALLOWED_ORIGIN,
-        ttlSeconds: 600,
-        vaultKeys,
-      });
-      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+      const sessionNonce = "a".repeat(32);
+      const state = realState(vaultKeys, { sessionNonce });
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys });
 
       const response = await app.inject({
         method: "GET",
-        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${"b".repeat(32)}`,
+        url:
+          `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` +
+          `&authorizationUrl=${encodeURIComponent("https://evil.test/phish")}` +
+          `&host=evil.test&state=attacker-state`,
       });
 
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).not.toContain("evil.test");
+      expect(response.headers.location).toBe(
+        fakeBuildGoogleAuthorizationUrl({ state: state.state, codeChallenge: state.codeChallenge }),
+      );
+    });
+
+    it("rejects a missing ticket", async () => {
+      const { app } = await createTestApp();
+      const response = await app.inject({ method: "GET", url: "/oauth/google/begin" });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("rejects a forged/garbage ticket", async () => {
+      const { app } = await createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?ticket=${encodeURIComponent("not-a-real-ticket")}`,
+      });
       expect(response.statusCode).toBe(400);
       expect(response.headers["set-cookie"]).toBeUndefined();
     });
 
-    it("rejects an expired state", async () => {
+    it("rejects a ticket built from a different (unknown) vault key", async () => {
       const { app, vaultKeys } = await createTestApp();
       const sessionNonce = "a".repeat(32);
-      const state = createOAuthState({
-        connectionId: randomUUID(),
-        attemptId: randomUUID(),
-        sessionNonce,
-        redirectOrigin: ALLOWED_ORIGIN,
-        ttlSeconds: -1,
-        vaultKeys,
-      });
-      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+      const state = realState(vaultKeys, { sessionNonce });
+      const otherVaultKeys = createVaultKeyMap();
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys: otherVaultKeys });
 
-      const response = await app.inject({
-        method: "GET",
-        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
-      });
-
+      const response = await app.inject({ method: "GET", url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` });
       expect(response.statusCode).toBe(400);
     });
 
-    it("rejects an authorizationUrl with no state query parameter", async () => {
-      const { app } = await createTestApp();
+    it("rejects an expired ticket (tight-expiry replay bound)", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const sessionNonce = "a".repeat(32);
+      const state = realState(vaultKeys, { sessionNonce });
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys, ttlSeconds: -1 });
 
-      const response = await app.inject({
-        method: "GET",
-        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent("https://accounts.google.test/o/oauth2/auth?client_id=fake")}&nonce=${"a".repeat(32)}`,
-      });
+      const response = await app.inject({ method: "GET", url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` });
+      expect(response.statusCode).toBe(400);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    });
 
+    it("rejects a ticket whose nonce doesn't match the wrapped state's embedded digest", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const state = realState(vaultKeys, { sessionNonce: "a".repeat(32) });
+      // Ticket is itself validly minted/decryptable, but wraps a nonce
+      // that doesn't match this state's own embedded digest.
+      const ticket = createBeginTicket({ state: state.state, sessionNonce: "b".repeat(32), vaultKeys });
+
+      const response = await app.inject({ method: "GET", url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` });
+      expect(response.statusCode).toBe(400);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    });
+
+    it("rejects an expired state even with a fresh, validly-signed ticket", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const sessionNonce = "a".repeat(32);
+      const state = realState(vaultKeys, { sessionNonce, ttlSeconds: -1 });
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys });
+
+      const response = await app.inject({ method: "GET", url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}` });
       expect(response.statusCode).toBe(400);
     });
 
@@ -575,6 +627,7 @@ describe("mailbox-broker routes", () => {
         providerAdapter: fakeProviderAdapter(),
         allowedRedirectOrigins: [ALLOWED_ORIGIN],
         inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
       });
       apps.add(app);
       const sessionNonce = "a".repeat(32);
@@ -586,11 +639,11 @@ describe("mailbox-broker routes", () => {
         ttlSeconds: 600,
         vaultKeys,
       });
-      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+      const ticket = createBeginTicket({ state: state.state, sessionNonce, vaultKeys });
 
       const response = await app.inject({
         method: "GET",
-        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
+        url: `/oauth/google/begin?ticket=${encodeURIComponent(ticket)}`,
       });
 
       expect(response.statusCode).toBe(400);

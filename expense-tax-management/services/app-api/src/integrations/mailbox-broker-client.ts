@@ -45,6 +45,13 @@ const OAuthStartResponseSchema = z.strictObject({
   authorizationUrl: z.string().trim().min(1),
   stateDigest: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.string().trim().min(1),
+  /**
+   * Fix round 2 (Important) -- the broker's opaque, short-lived begin
+   * ticket (`services/mailbox-broker/src/begin-ticket.ts`). App API never
+   * decrypts or inspects it; it only forwards it, wrapped into a link to
+   * the broker's own `/oauth/google/begin`, to Office.
+   */
+  beginTicket: z.string().trim().min(1),
 });
 
 export interface MailboxBrokerClientConfig {
@@ -65,7 +72,7 @@ export interface MailboxBrokerClientOptions {
 }
 
 export interface MailboxBrokerClient {
-  startOAuth(input: OAuthStartInput): Promise<OAuthStartResult>;
+  startOAuth(input: OAuthStartInput): Promise<OAuthStartResult & { readonly beginTicket: string }>;
 }
 
 async function withAbort<T>(

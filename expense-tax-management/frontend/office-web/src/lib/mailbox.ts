@@ -13,6 +13,8 @@
  * mere messenger: it never creates, stores, or transports the nonce
  * itself, so there is no cookie-handling code left in this module at all.
  */
+import type { Scope } from "@expense-tax/contracts";
+
 import type { ClerkGetToken } from "./clerk";
 import { startMailboxConnection, type StartMailboxConnectionInput } from "./api";
 import type { OfficeSession } from "./session";
@@ -55,17 +57,22 @@ export interface ConnectMailboxGoogleOptions {
   readonly timezone?: string;
   readonly redirectOrigin?: string;
   readonly requestId?: string;
-  readonly client?: Parameters<typeof startMailboxConnection>[4];
+  readonly client?: Parameters<typeof startMailboxConnection>[5];
 }
 
 /**
- * Calls App API's google/start route. The returned `authorizationUrl` is
- * the mailbox broker's own `/oauth/google/begin?...` link (not Google's
- * URL directly) -- the browser must navigate there first so the broker's
- * origin can set its session-nonce cookie before redirecting to Google.
+ * Calls App API's google/start route for the given `scope` -- fix round 2:
+ * explicit, not derived from `session.scope`, since the approved mockup
+ * requires letting the user pick among every scope they're authorized
+ * for, not just whichever one the Office session happens to be viewing.
+ * The returned `authorizationUrl` is the mailbox broker's own
+ * `/oauth/google/begin?...` link (not Google's URL directly) -- the
+ * browser must navigate there first so the broker's origin can set its
+ * session-nonce cookie before redirecting to Google.
  */
 export async function connectMailboxGoogle(
   session: OfficeSession,
+  scope: Scope,
   getToken: ClerkGetToken,
   organizationId: string | null | undefined,
   options: ConnectMailboxGoogleOptions = {},
@@ -77,5 +84,5 @@ export async function connectMailboxGoogle(
     requestId: options.requestId ?? crypto.randomUUID(),
   };
 
-  return startMailboxConnection(session, input, getToken, organizationId, options.client);
+  return startMailboxConnection(session, scope, input, getToken, organizationId, options.client);
 }

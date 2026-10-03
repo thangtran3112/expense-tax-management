@@ -12,6 +12,7 @@ import type { FastifyError, FastifyInstance } from "fastify";
 import { ServiceAuthError } from "./auth/clerk.js";
 import { MailboxAppClientError } from "./app-client.js";
 import { OAuthStateInvalidError } from "./oauth-state.js";
+import { BeginTicketInvalidError } from "./begin-ticket.js";
 
 interface ErrorEnvelope {
   readonly error: {
@@ -38,6 +39,11 @@ export function registerErrorHandlers(app: FastifyInstance): void {
 
     if (error instanceof OAuthStateInvalidError) {
       reply.code(400).send(errorEnvelope("OAUTH_STATE_INVALID", error.message, request.id));
+      return;
+    }
+
+    if (error instanceof BeginTicketInvalidError) {
+      reply.code(400).send(errorEnvelope("BEGIN_TICKET_INVALID", error.message, request.id));
       return;
     }
 

@@ -38,6 +38,7 @@ const START_RESULT = {
   authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=abc",
   stateDigest: "a".repeat(64),
   expiresAt: "2026-09-12T00:10:00.000Z",
+  beginTicket: "bt1.key-1.nonce-fake.ciphertext-fake",
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

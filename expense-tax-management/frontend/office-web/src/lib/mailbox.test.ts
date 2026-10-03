@@ -45,7 +45,7 @@ describe("connectMailboxGoogle", () => {
     };
     const getToken = vi.fn().mockResolvedValue("office-token");
 
-    const result = await connectMailboxGoogle(personalSession, getToken, "org_123", {
+    const result = await connectMailboxGoogle(personalSession, personalSession.scope, getToken, "org_123", {
       client: client as never,
       redirectOrigin: "https://expense-office.test",
       requestId: "request-1",
@@ -64,8 +64,9 @@ describe("connectMailboxGoogle", () => {
       }),
     };
     const getToken = vi.fn().mockResolvedValue("office-token");
+    const businessScope = { kind: "business" as const, businessId: "business-9" };
 
-    await connectMailboxGoogle(personalSession, getToken, "org_123", {
+    await connectMailboxGoogle(personalSession, businessScope, getToken, "org_123", {
       client: client as never,
       redirectOrigin: "https://expense-office.test",
       requestId: "request-2",
@@ -77,7 +78,7 @@ describe("connectMailboxGoogle", () => {
       expect.objectContaining({
         params: { path: { tenantId: "tenant-1" } },
         body: {
-          scope: { kind: "personal", profileId: "profile-1" },
+          scope: businessScope,
           redirectOrigin: "https://expense-office.test",
           timezone: expect.any(String),
           localScanTime: "07:30",

@@ -1,4 +1,4 @@
-import { createAppApiClient, type DuplicateResolutionAction, type SuggestionResolveRequest } from "@expense-tax/contracts";
+import { createAppApiClient, type DuplicateResolutionAction, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
 import type { OfficeSession } from "./session";
 import { getAppAuthorization, type ClerkGetToken } from "./clerk";
 
@@ -575,8 +575,15 @@ export interface StartMailboxConnectionInput {
   readonly requestId: string;
 }
 
+/**
+ * Fix round 2 (Important) -- `scope` is explicit, not derived from
+ * `session.scope`: the approved mockup requires offering every scope the
+ * user is authorized for (Personal and each authorized business), not
+ * just whichever one the current Office session happens to be viewing.
+ */
 export async function startMailboxConnection(
   session: OfficeSession,
+  scope: Scope,
   input: StartMailboxConnectionInput,
   getToken: ClerkGetToken,
   organizationId: string | null | undefined,
@@ -586,7 +593,7 @@ export async function startMailboxConnection(
   const result = await api.POST("/api/v1/tenants/{tenantId}/mailbox-connections/google/start", {
     params: { path: { tenantId: session.tenantId } },
     headers: await getAppAuthorization(getToken, organizationId),
-    body: { scope: session.scope, ...input },
+    body: { scope, ...input },
   });
   if (!result.data) {
     throw new MailboxConnectionError("Mailbox connection unavailable", result.response?.status);
@@ -594,30 +601,56 @@ export async function startMailboxConnection(
   return result.data;
 }
 
+function mailboxScopeQuery(scope: Scope) {
+  return scope.kind === "personal" ? { profileId: scope.profileId } : { businessId: scope.businessId };
+}
+
 /**
  * Fix round 1 (Important) -- the minimal authenticated, scope-authorized
  * read the Office mailbox page needs to render real connect/connected/
- * needs-attention/revoked states instead of static scaffolding.
+ * needs-attention/revoked states instead of static scaffolding. `scope` is
+ * explicit (fix round 2) for the same reason as `startMailboxConnection`.
  */
 export async function fetchMailboxConnection(
   session: OfficeSession,
+  scope: Scope,
   getToken: ClerkGetToken,
   organizationId: string | null | undefined,
   client?: AppApiClient,
 ) {
   const api = client ?? createAppApiClient(session.apiBaseUrl);
-  const query =
-    session.scope.kind === "personal"
-      ? { profileId: session.scope.profileId }
-      : { businessId: session.scope.businessId };
   const result = await api.GET("/api/v1/tenants/{tenantId}/mailbox-connections/google", {
-    params: { path: { tenantId: session.tenantId }, query },
+    params: { path: { tenantId: session.tenantId }, query: mailboxScopeQuery(scope) },
     headers: await getAppAuthorization(getToken, organizationId),
   });
   if (!result.data) {
     throw new MailboxConnectionError("Mailbox connection status unavailable", result.response?.status);
   }
   return result.data.connection;
+}
+
+/**
+ * Fix round 2 (Important) -- the authorized scope choices for the
+ * mailbox-connect picker: every active business the user's current
+ * session can see, via the same `GET .../businesses` route other
+ * tenant-wide listings use. Archived businesses are excluded (not an
+ * authorized choice for a new connection).
+ */
+export async function fetchAuthorizedBusinesses(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/businesses", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Business list unavailable", result.response?.status);
+  }
+  return result.data.items.filter((business) => business.status === "active");
 }
 
 // ------------------------------------------------------------------ //

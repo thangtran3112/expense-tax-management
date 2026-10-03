@@ -17,6 +17,7 @@ import type { CreateServiceVerifierOptions } from "./auth/clerk.js";
 import { registerConnectionRoutes } from "./routes/connections.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
 import type { MailboxBrokerConnectionAppClient, MailboxProviderAdapter } from "./contracts.js";
+import type { GoogleAuthorizationUrlBuilder } from "./google-authorization-url.js";
 import { SENSITIVE_LOG_PATHS } from "./logging.js";
 
 type LoggerOption = Exclude<FastifyServerOptions["logger"], undefined>;
@@ -29,6 +30,15 @@ export interface BuildAppOptions {
   readonly allowedRedirectOrigins: readonly string[];
   readonly sessionNonceCookieName?: string;
   readonly expectedCallbackHost?: string;
+  /**
+   * Fix round 2 (Important) -- builds the Google authorization URL from
+   * trusted server config at `/oauth/google/begin` time; never a
+   * client-supplied URL. Required (not defaulted) so every test and the
+   * real `server.ts` must supply one explicitly -- there is no safe
+   * default that doesn't need real Google client credentials.
+   */
+  readonly buildGoogleAuthorizationUrl: GoogleAuthorizationUrlBuilder;
+  readonly beginTicketTtlSeconds?: number;
   /** Test-only: substitutes the real remote JWKS fetch (see test-doubles.ts's `createFakeClerkIssuer`). */
   readonly inboundKeyResolver?: CreateServiceVerifierOptions["keyResolver"];
 }
@@ -87,6 +97,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     allowedRedirectOrigins: options.allowedRedirectOrigins,
     ...(options.sessionNonceCookieName ? { sessionNonceCookieName: options.sessionNonceCookieName } : {}),
     ...(options.expectedCallbackHost ? { expectedCallbackHost: options.expectedCallbackHost } : {}),
+    buildGoogleAuthorizationUrl: options.buildGoogleAuthorizationUrl,
+    ...(options.beginTicketTtlSeconds !== undefined
+      ? { beginTicketTtlSeconds: options.beginTicketTtlSeconds }
+      : {}),
     appApiStartGuard: createGuard("app-api", ["oauth:start"]),
   });
 

@@ -137,7 +137,7 @@ function createFakeDomain(): MailboxConnectionsDomain {
         completedAt: null,
       },
       authorizationUrl: "https://accounts.google.test/o/oauth2/auth?state=fake",
-      sessionNonce: "c".repeat(64),
+      beginTicket: "bt1.key-1.fake-nonce.fake-ciphertext",
     })),
     getConnection: vi.fn(async () => null),
     consumeOAuthState: vi.fn(async () => ({
@@ -250,7 +250,7 @@ describe("mailbox routes — real registration through buildApp", () => {
       expect(mailboxConnectionsDomain.startConnection).toHaveBeenCalledOnce();
       const body = response.json() as { authorizationUrl: string };
       expect(body.authorizationUrl.startsWith("https://expense-mailbox.test/oauth/google/begin?")).toBe(true);
-      expect(body.authorizationUrl).toContain("nonce=");
+      expect(body.authorizationUrl).toContain("ticket=");
     });
 
     it("rejects a request with no token", async () => {

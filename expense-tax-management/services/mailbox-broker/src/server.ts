@@ -3,6 +3,7 @@ import { createMailboxAppClient } from "./app-client.js";
 import { brokerConfigFromEnv } from "./config.js";
 import { createVaultDatabase } from "./database/client.js";
 import { createGmailMailboxProvider } from "./google-mailbox.js";
+import { createGoogleAuthorizationUrlBuilder } from "./google-authorization-url.js";
 
 function requiredEnvironmentValue(key: string): string {
   const value = process.env[key]?.trim();
@@ -39,19 +40,32 @@ const appClient = createMailboxAppClient({
   credentials: config.outboundApp.credentials,
 });
 
+const googleClientId = requiredEnvironmentValue("GOOGLE_OAUTH_CLIENT_ID");
+const googleClientSecret = requiredEnvironmentValue("GOOGLE_OAUTH_CLIENT_SECRET");
+const googleRedirectUri = requiredEnvironmentValue("GOOGLE_OAUTH_REDIRECT_URI");
+
 const providerAdapter = createGmailMailboxProvider({
-  clientId: requiredEnvironmentValue("GOOGLE_OAUTH_CLIENT_ID"),
-  clientSecret: requiredEnvironmentValue("GOOGLE_OAUTH_CLIENT_SECRET"),
-  redirectUri: requiredEnvironmentValue("GOOGLE_OAUTH_REDIRECT_URI"),
+  clientId: googleClientId,
+  clientSecret: googleClientSecret,
+  redirectUri: googleRedirectUri,
   vaultKeys: config.vault,
   database,
   appClient,
+});
+
+// Fix round 2: the begin route builds the Google authorization URL itself
+// from this same trusted config -- never a client-supplied URL.
+const buildGoogleAuthorizationUrl = createGoogleAuthorizationUrlBuilder({
+  clientId: googleClientId,
+  clientSecret: googleClientSecret,
+  redirectUri: googleRedirectUri,
 });
 
 const app = buildApp({
   config,
   appClient,
   providerAdapter,
+  buildGoogleAuthorizationUrl,
   allowedRedirectOrigins: requiredCommaListEnvironmentValue("MAILBOX_ALLOWED_REDIRECT_ORIGINS"),
   ...(process.env.MAILBOX_CALLBACK_HOST?.trim()
     ? { expectedCallbackHost: process.env.MAILBOX_CALLBACK_HOST.trim() }

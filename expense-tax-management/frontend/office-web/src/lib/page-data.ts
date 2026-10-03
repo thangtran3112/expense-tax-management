@@ -1,4 +1,6 @@
-import { fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchTags, fetchTaxReport } from "./api";
+import type { Scope } from "@expense-tax/contracts";
+
+import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
 import type { OfficeSession } from "./session";
 
@@ -54,12 +56,26 @@ export function loadTags(
 
 /**
  * Fix round 1 (Important) -- the real connection-status read the Office
- * mailbox page needs instead of static scaffolding.
+ * mailbox page needs instead of static scaffolding. `scope` is explicit
+ * (fix round 2), not derived from `session.scope` -- see api.ts.
  */
 export function loadMailboxConnection(
+  session: OfficeSession,
+  scope: Scope,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchMailboxConnection(session, scope, getToken, organizationId);
+}
+
+/**
+ * Fix round 2 (Important) -- the authorized scope choices (Personal, when
+ * known, plus every active business) for the mailbox-connect picker.
+ */
+export function loadAuthorizedBusinesses(
   session: OfficeSession,
   getToken: ClerkGetToken,
   organizationId: string | null | undefined,
 ) {
-  return fetchMailboxConnection(session, getToken, organizationId);
+  return fetchAuthorizedBusinesses(session, getToken, organizationId);
 }

@@ -12,6 +12,9 @@ import {
   mergeTags,
   fetchCurrentUser,
   fetchTenantMembership,
+  fetchAuthorizedBusinesses,
+  fetchMailboxConnection,
+  startMailboxConnection,
 } from "./api";
 import type { OfficeSession } from "./session";
 
@@ -431,5 +434,70 @@ describe("tenant membership role lookup", () => {
     const role = await fetchTenantMembership(businessSession, "user-2", getToken, "org_123", client as never);
 
     expect(role).toBe("member");
+  });
+});
+
+// -------------------------------------------------------------------- //
+// Fix round 2 (Important) -- mailbox scope-picker data sources
+// -------------------------------------------------------------------- //
+
+describe("fetchAuthorizedBusinesses", () => {
+  it("returns only active businesses, excluding archived ones", async () => {
+    const client = {
+      GET: vi.fn().mockResolvedValue({
+        data: {
+          items: [
+            { id: "biz-1", name: "Tran Studio", status: "active" },
+            { id: "biz-2", name: "Old Shop", status: "archived" },
+          ],
+        },
+      }),
+    };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+
+    const result = await fetchAuthorizedBusinesses(businessSession, getToken, "org_123", client as never);
+
+    expect(client.GET).toHaveBeenCalledWith(
+      "/api/v1/tenants/{tenantId}/businesses",
+      expect.objectContaining({ params: { path: { tenantId: "tenant-1" } } }),
+    );
+    expect(result).toEqual([{ id: "biz-1", name: "Tran Studio", status: "active" }]);
+  });
+});
+
+describe("startMailboxConnection / fetchMailboxConnection — explicit scope, not session.scope", () => {
+  it("startMailboxConnection sends the explicitly passed scope, even when it differs from session.scope", async () => {
+    const client = { POST: vi.fn().mockResolvedValue({ data: { connection: {}, attempt: {}, authorizationUrl: "u" } }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+    const otherScope = { kind: "business" as const, businessId: "biz-9" };
+
+    await startMailboxConnection(
+      businessSession,
+      otherScope,
+      { redirectOrigin: "https://office.test", timezone: "UTC", localScanTime: "07:00", requestId: "r1" },
+      getToken,
+      "org_123",
+      client as never,
+    );
+
+    expect(client.POST).toHaveBeenCalledWith(
+      "/api/v1/tenants/{tenantId}/mailbox-connections/google/start",
+      expect.objectContaining({ body: expect.objectContaining({ scope: otherScope }) }),
+    );
+  });
+
+  it("fetchMailboxConnection queries by the explicitly passed scope", async () => {
+    const client = { GET: vi.fn().mockResolvedValue({ data: { connection: null } }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+    const personalScope = { kind: "personal" as const, profileId: "profile-7" };
+
+    await fetchMailboxConnection(businessSession, personalScope, getToken, "org_123", client as never);
+
+    expect(client.GET).toHaveBeenCalledWith(
+      "/api/v1/tenants/{tenantId}/mailbox-connections/google",
+      expect.objectContaining({
+        params: { path: { tenantId: "tenant-1" }, query: { profileId: "profile-7" } },
+      }),
+    );
   });
 });

@@ -102,6 +102,9 @@ function fakeBrokerClient(): MailboxBrokerClient & { startOAuth: ReturnType<type
     authorizationUrl: `https://accounts.google.test/auth?attempt=${input.attemptId}`,
     stateDigest: createHash("sha256").update(`state:${input.attemptId}`).digest("hex"),
     expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    // Fix round 2: opaque broker-minted begin ticket -- this fake's value
+    // is never decrypted by anything in this file, only passed through.
+    beginTicket: `fake-begin-ticket-${input.attemptId}`,
   }));
   return { startOAuth };
 }
@@ -253,9 +256,12 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
   // function itself -- Office JavaScript cannot securely bind the browser
   // to an OAuth attempt via a cookie it sets itself (host-only on the
   // Office origin, never reaches the broker's callback origin, and can't
-  // be HttpOnly). It is returned once (StartConnectionResult.sessionNonce,
-  // for the route layer to build the broker's begin-ticket URL), passed
-  // to the broker raw, and persisted only as its sha256 digest.
+  // be HttpOnly). Fix round 2: it is no longer returned to the caller at
+  // all (not even on StartConnectionResult) -- the broker wraps it into
+  // its own opaque begin ticket (StartConnectionResult.beginTicket). This
+  // test inspects the raw value the domain passed to the broker (captured
+  // by the fake) to confirm it's real entropy, passed raw, and persisted
+  // only as its sha256 digest.
   it("generates the session nonce itself, passes it raw to the broker, and persists only its sha256 digest", async () => {
     const broker = fakeBrokerClient();
     const domain = createDomain(broker);
@@ -263,28 +269,31 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
 
     const result = await domain.startConnection(input);
 
-    expect(result.sessionNonce).toMatch(/^[a-f0-9]{64}$/);
-    expect(broker.startOAuth).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionNonce: result.sessionNonce }),
-    );
-    const expectedDigest = createHash("sha256").update(result.sessionNonce).digest("hex");
+    expect(result.beginTicket).toBeTruthy();
+    expect(broker.startOAuth).toHaveBeenCalledOnce();
+    const sentNonce = (broker.startOAuth.mock.calls[0]?.[0] as { sessionNonce: string }).sessionNonce;
+    expect(sentNonce).toMatch(/^[a-f0-9]{64}$/);
+    const expectedDigest = createHash("sha256").update(sentNonce).digest("hex");
     expect(result.attempt.sessionNonceDigest).toBe(expectedDigest);
     const storedRow = runtimeSql(
       `SELECT session_nonce_digest FROM app.mailbox_oauth_attempts WHERE id = '${result.attempt.id}'`,
     );
     expect(storedRow).toBe(expectedDigest);
-    expect(storedRow).not.toContain(result.sessionNonce);
+    expect(storedRow).not.toContain(sentNonce);
   });
 
   it("generates a different session nonce for two distinct (non-replay) start calls", async () => {
-    const domain = createDomain();
-    const first = await domain.startConnection(
+    const broker = fakeBrokerClient();
+    const domain = createDomain(broker);
+    await domain.startConnection(
       startInput({ tenantId: TENANT_ID_2, scope: { kind: "personal", profileId: PROFILE_ID_2 } }),
     );
-    const second = await domain.startConnection(
+    await domain.startConnection(
       startInput({ tenantId: TENANT_ID_3, scope: { kind: "personal", profileId: PROFILE_ID_3 } }),
     );
-    expect(first.sessionNonce).not.toBe(second.sessionNonce);
+    const firstNonce = (broker.startOAuth.mock.calls[0]?.[0] as { sessionNonce: string }).sessionNonce;
+    const secondNonce = (broker.startOAuth.mock.calls[1]?.[0] as { sessionNonce: string }).sessionNonce;
+    expect(firstNonce).not.toBe(secondNonce);
   });
 
   it("creates a pending connection and attempt, returning the broker's authorizationUrl", async () => {

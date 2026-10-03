@@ -6,23 +6,26 @@
  * Task 2) already calls; guarded for the "app-api" caller only, scope
  * "oauth:start".
  *
- * `GET /oauth/google/begin` -- public (Fix round 1, Critical). The ONLY
- * place the browser touches the broker's own origin before Google, so it's
- * the only place the broker can legally set a cookie that its own later
- * `/oauth/google/callback` will receive back (cookies are origin-scoped --
- * a cookie set by Office JavaScript on the Office origin is a host-only
- * cookie that never reaches the broker's callback origin, and JavaScript
- * can't set `HttpOnly` anyway). App API's customer-facing start route now
- * returns this URL (wrapping the real Google `authorizationUrl` + the raw
- * session nonce) instead of the raw Google URL directly; Office merely
- * navigates the browser here. This route re-validates the embedded OAuth
- * `state` via the exact same `consumeOAuthState` the callback itself uses
- * (stateless, no DB row -- calling it here and again at the callback is
- * safe and intentional) before trusting anything in the query string, so
- * it cannot be used as an open redirect: a `state` that doesn't decrypt,
- * hasn't expired, doesn't match the supplied nonce's digest, or whose
- * embedded redirect origin isn't on the allowlist is rejected before any
- * cookie is set or redirect issued.
+ * `GET /oauth/google/begin` -- public (Fix round 1, Critical; redesigned
+ * fix round 2, Important). The ONLY place the browser touches the
+ * broker's own origin before Google, so it's the only place the broker
+ * can legally set a cookie that its own later `/oauth/google/callback`
+ * will receive back (cookies are origin-scoped -- a cookie set by Office
+ * JavaScript on the Office origin is a host-only cookie that never
+ * reaches the broker's callback origin, and JavaScript can't set
+ * `HttpOnly` anyway).
+ *
+ * Fix round 2: this route used to accept a client-supplied
+ * `authorizationUrl` query parameter and redirect to it verbatim after
+ * validating only the `state` extracted from it -- an open redirect (any
+ * caller holding a valid `state` could redirect the browser anywhere by
+ * substituting a different URL) and a capability replayable for the
+ * full ~10-minute OAuth attempt window. It now accepts only an opaque,
+ * broker-minted, short-lived (60s) `ticket` (`begin-ticket.ts`) wrapping
+ * the real `state` + raw session nonce, and **builds the Google
+ * authorization URL itself** from trusted server-side config
+ * (`google-authorization-url.ts`) -- the client supplies nothing that
+ * influences the redirect destination at all.
  *
  * `GET /oauth/google/callback` -- public, no service auth (Google redirects
  * the end user's browser here). Calls App API's one-time state-consume CAS
@@ -37,9 +40,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
+import { createHash } from "node:crypto";
+
 import type { ServiceGuard } from "../plugins/auth.js";
 import type { MailboxBrokerConnectionAppClient, MailboxProviderAdapter } from "../contracts.js";
 import { consumeOAuthState, type VaultKeyMap } from "../oauth-state.js";
+import { consumeBeginTicket, createBeginTicket } from "../begin-ticket.js";
+import type { GoogleAuthorizationUrlBuilder } from "../google-authorization-url.js";
 
 export const SESSION_NONCE_COOKIE = "mailbox_oauth_nonce";
 
@@ -53,6 +60,14 @@ export interface OAuthRouteOptions {
   readonly expectedCallbackHost?: string;
   /** Guards the internal start route: caller "app-api", scope "oauth:start". */
   readonly appApiStartGuard: ServiceGuard;
+  /**
+   * Fix round 2 (Important) -- builds the Google authorization URL from
+   * trusted server config; the begin route never trusts a client-supplied
+   * URL. See `google-authorization-url.ts`.
+   */
+  readonly buildGoogleAuthorizationUrl: GoogleAuthorizationUrlBuilder;
+  /** Begin-ticket TTL in seconds; defaults to 60 (begin-ticket.ts's own default) if omitted. */
+  readonly beginTicketTtlSeconds?: number;
 }
 
 function readCookie(header: string | undefined, name: string): string | undefined {
@@ -81,6 +96,8 @@ const StartResponseSchema = z.strictObject({
   authorizationUrl: z.string().trim().min(1),
   stateDigest: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.string().trim().min(1),
+  /** Fix round 2: opaque, short-lived begin-ticket -- see `begin-ticket.ts`. */
+  beginTicket: z.string().trim().min(1),
 });
 
 const CallbackQuerySchema = z.object({
@@ -88,15 +105,23 @@ const CallbackQuerySchema = z.object({
   state: z.string().trim().min(1),
 });
 
+// Fix round 2: only an opaque ticket -- no authorizationUrl, no nonce.
+// Extra/forged query params (e.g. a would-be `authorizationUrl=https://evil.test`)
+// are silently ignored by this non-strict schema; nothing in the request
+// besides `ticket` ever influences the redirect destination.
 const BeginQuerySchema = z.object({
-  authorizationUrl: z.string().trim().min(1),
-  nonce: z.string().trim().min(16).max(512),
+  ticket: z.string().trim().min(1),
 });
 
 function requestError(statusCode: number, message: string): Error {
   const error = new Error(message) as Error & { statusCode: number };
   error.statusCode = statusCode;
   return error;
+}
+
+/** Local copy of oauth-state.ts's private helper (not exported there) -- PKCE S256 code_challenge. */
+function sha256Base64Url(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
 }
 
 function sessionNonceCookie(cookieName: string, value: string, maxAgeSeconds: number): string {
@@ -143,7 +168,21 @@ export async function registerOAuthRoutes(
       if (!allowedOrigins.has(request.body.redirectOrigin)) {
         throw requestError(400, "redirect origin not allowed");
       }
-      return options.providerAdapter.createAuthorizationUrl(request.body);
+      const started = await options.providerAdapter.createAuthorizationUrl(request.body);
+      // Extract the exact `state` just embedded in the Google URL so the
+      // begin ticket can carry it -- never re-create a new state here;
+      // App API's `mailbox_oauth_attempts.state_digest` row was already
+      // computed against this one.
+      const state = extractStateParam(started.authorizationUrl);
+      const beginTicket = createBeginTicket({
+        state,
+        sessionNonce: request.body.sessionNonce,
+        vaultKeys: options.vaultKeys,
+        ...(options.beginTicketTtlSeconds !== undefined
+          ? { ttlSeconds: options.beginTicketTtlSeconds }
+          : {}),
+      });
+      return { ...started, beginTicket };
     },
   );
 
@@ -151,22 +190,32 @@ export async function registerOAuthRoutes(
     "/oauth/google/begin",
     { schema: { querystring: BeginQuerySchema } },
     async (request, reply) => {
-      const state = extractStateParam(request.query.authorizationUrl);
+      // Decrypts the ticket and checks its own short expiry first
+      // (BeginTicketInvalidError -> 400, errors.ts). Only on success do we
+      // even look at the real OAuth state.
+      const { state, sessionNonce } = consumeBeginTicket(request.query.ticket, options.vaultKeys);
 
       // Stateless validation -- decrypts, checks expiry, confirms the
-      // supplied nonce's digest matches the one embedded in state, and
+      // ticket's own nonce digest matches the one embedded in state, and
       // confirms the embedded redirect origin is allowlisted. Throws
       // OAuthStateInvalidError (mapped to 400 by errors.ts) on any
       // mismatch; nothing below runs until this fully succeeds.
-      consumeOAuthState({
+      const consumed = consumeOAuthState({
         state,
-        sessionNonce: request.query.nonce,
+        sessionNonce,
         allowedRedirectOrigins: allowedOrigins,
         vaultKeys: options.vaultKeys,
       });
 
-      reply.header("set-cookie", sessionNonceCookie(cookieName, request.query.nonce, 600));
-      return reply.redirect(request.query.authorizationUrl, 302);
+      // Built entirely from trusted server config + the already-validated
+      // state/PKCE verifier -- nothing from the request influences this.
+      const authorizationUrl = options.buildGoogleAuthorizationUrl({
+        state,
+        codeChallenge: sha256Base64Url(consumed.pkceVerifier),
+      });
+
+      reply.header("set-cookie", sessionNonceCookie(cookieName, sessionNonce, 600));
+      return reply.redirect(authorizationUrl, 302);
     },
   );
 

@@ -42,11 +42,12 @@ export interface MailboxConnectionsRouteOptions {
   readonly brokerServiceSubject?: string;
   /**
    * Fix round 1 (Critical) -- the broker's PUBLIC base URL. Required to
-   * serve the customer-facing start route for real (it wraps the broker's
-   * Google authorization URL into a link to this origin's own
-   * `/oauth/google/begin`, where the broker sets its session-nonce cookie
-   * before redirecting to Google -- see `config.ts`'s
-   * `mailboxBrokerPublicBaseUrl` doc comment for why).
+   * serve the customer-facing start route for real: it wraps the
+   * broker's opaque begin ticket (fix round 2) into a link to this
+   * origin's own `/oauth/google/begin`, where the broker builds the real
+   * Google URL itself and sets its session-nonce cookie before
+   * redirecting -- see `config.ts`'s `mailboxBrokerPublicBaseUrl` doc
+   * comment for why.
    */
   readonly mailboxBrokerPublicBaseUrl?: string;
 }
@@ -130,11 +131,11 @@ const StartResponseSchema = z.strictObject({
   connection: MailboxConnectionV1Schema,
   attempt: MailboxOAuthAttemptV1Schema,
   /**
-   * The broker's PUBLIC `/oauth/google/begin?...` URL, not the raw Google
-   * URL directly -- the field name is unchanged (minimal client churn);
-   * only the value's origin and purpose changed. The browser must
-   * navigate here first so the broker's own origin can set its session-
-   * nonce cookie before redirecting to Google.
+   * The broker's PUBLIC `/oauth/google/begin?ticket=...` URL, not the raw
+   * Google URL directly -- the field name is unchanged (minimal client
+   * churn); only the value's origin and purpose changed. The browser must
+   * navigate here first so the broker's own origin can build the real
+   * Google URL and set its session-nonce cookie before redirecting.
    */
   authorizationUrl: z.string().trim().min(1),
 });
@@ -304,9 +305,12 @@ export async function registerMailboxConnectionRoutes(
         if (!options.mailboxBrokerPublicBaseUrl) {
           throw new Error("mailboxBrokerPublicBaseUrl is not configured");
         }
+        // Fix round 2: only the broker's own opaque, short-lived begin
+        // ticket travels here -- never the raw Google authorizationUrl or
+        // the session nonce. The begin route builds the real Google URL
+        // itself from trusted config.
         const beginUrl = new URL("/oauth/google/begin", options.mailboxBrokerPublicBaseUrl);
-        beginUrl.searchParams.set("authorizationUrl", result.authorizationUrl);
-        beginUrl.searchParams.set("nonce", result.sessionNonce);
+        beginUrl.searchParams.set("ticket", result.beginTicket);
         return reply.code(201).send({
           connection: result.connection,
           attempt: result.attempt,

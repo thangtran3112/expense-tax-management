@@ -179,16 +179,14 @@ export interface StartConnectionResult {
   readonly attempt: MailboxOAuthAttemptV1;
   readonly authorizationUrl: string;
   /**
-   * Fix round 1 (Critical) -- the raw session nonce, generated here
-   * (never caller-supplied: Office JavaScript cannot securely bind an
-   * OAuth attempt to the browser via a cookie it sets itself, since that
-   * cookie would be host-only on the Office origin and never reach the
-   * broker's callback origin). The route layer uses this exactly once, to
-   * build the broker's `/oauth/google/begin` URL; it is never logged,
-   * never persisted as plaintext (only its sha256 digest is), and never
-   * returned again on a replay of a *different* call.
+   * Fix round 2 (Important) -- the broker's opaque, short-lived begin
+   * ticket (replaces fix round 1's raw `sessionNonce` field: the broker
+   * now mints a ticket wrapping the nonce itself, so App API never needs
+   * to re-expose the raw nonce value at all -- strictly less exposure
+   * than before). The route layer uses this exactly once, to build the
+   * broker's `/oauth/google/begin?ticket=...` URL.
    */
-  readonly sessionNonce: string;
+  readonly beginTicket: string;
 }
 
 export interface ConsumeOAuthStateInput {
@@ -372,11 +370,12 @@ export function createMailboxConnectionsDomain(
       }
 
       const operationKey = "start-connection";
-      // Fix round 1: the session nonce is generated inside this function
-      // (see StartConnectionResult.sessionNonce), never caller-supplied,
-      // so it is no longer a semantic input that distinguishes one caller
-      // request from another -- it's an implementation detail of *how*
-      // this call satisfies the request, not *what* was requested. It is
+      // Fix round 1: the session nonce is generated inside this function,
+      // sent to the broker, and never returned to the caller at all (fix
+      // round 2: the broker now wraps it into its own begin ticket). It
+      // is not a semantic input that distinguishes one caller request
+      // from another -- it's an implementation detail of *how* this call
+      // satisfies the request, not *what* was requested. It is
       // deliberately excluded from the hash: a real replay (same
       // requestId, same caller-meaningful input) must short-circuit on
       // the ledger hit below before a new nonce is ever generated.
@@ -451,7 +450,7 @@ export function createMailboxConnectionsDomain(
         connection: toMailboxConnectionV1(connectionRow),
         attempt: toMailboxOAuthAttemptV1(attemptRow),
         authorizationUrl: started.authorizationUrl,
-        sessionNonce,
+        beginTicket: started.beginTicket,
       };
 
       try {

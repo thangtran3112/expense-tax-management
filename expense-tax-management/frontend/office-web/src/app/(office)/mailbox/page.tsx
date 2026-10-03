@@ -1,21 +1,23 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
+import type { Scope } from "@expense-tax/contracts";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Panel, PageHead, Status } from "@/components/ui";
 import { MailboxConnectionError } from "@/lib/api";
 import { connectMailboxGoogle, mailboxStatusDisplay } from "@/lib/mailbox";
-import { loadMailboxConnection } from "@/lib/page-data";
-import { readOfficeSession } from "@/lib/session";
+import { loadAuthorizedBusinesses, loadMailboxConnection } from "@/lib/page-data";
+import { readOfficeSession, type OfficeSession } from "@/lib/session";
 
 /**
- * Office mailbox base (Phase 3D-A Task 4, fix round 1). Implements every
+ * Office mailbox base (Phase 3D-A Task 4, fix round 2). Implements every
  * approved mockup scenario (plans/mockups/office-mailbox/):
- * 1. No connection -- explicit Personal/business scope choice, Connect
- *    disabled until chosen.
+ * 1. No connection -- explicit Personal/business scope choice (every
+ *    scope the user is authorized for, fetched from App API; none
+ *    preselected), Connect disabled until chosen.
  * 2. OAuth in progress (after clicking Connect) / OAuth return (back from
  *    the broker with `?status=connected`).
- * 3. Connected -- real account email/status/scope/schedule from the new
+ * 3. Connected -- real account email/status/scope/schedule from the real
  *    GET route (lib/api.ts's fetchMailboxConnection).
  * 4. Reauthorization-needed / revoked / error banners, driven by the real
  *    connection status.
@@ -29,6 +31,10 @@ import { readOfficeSession } from "@/lib/session";
 
 type Phase = "idle" | "starting" | "oauth-pending" | "oauth-return" | "error";
 
+function scopeKey(scope: Scope): string {
+  return scope.kind === "personal" ? `personal:${scope.profileId}` : `business:${scope.businessId}`;
+}
+
 function connectionSinceLabel(createdAt: string): string {
   return new Date(createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 }
@@ -37,9 +43,27 @@ export default function MailboxPage() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const { organization, isLoaded: organizationLoaded } = useOrganization();
   const searchParams = useSearchParams();
-  const session = isLoaded && isSignedIn ? readOfficeSession() : null;
 
-  const [scopeChosen, setScopeChosen] = useState(false);
+  // Fix round 2 (Important) -- readOfficeSession() returns a fresh object
+  // every call. Memoizing on the auth-load flags (not on anything this
+  // component's own state updates ever changes) keeps `session`'s
+  // reference stable across re-renders, so effects below never see it as
+  // "changed" just because *we* called setState. Every effect also
+  // depends on primitive, derived keys (tenantId, a scope-kind+id string,
+  // organization.id) rather than the `session`/`organization` objects
+  // themselves, per the same principle.
+  const session = useMemo<OfficeSession | null>(
+    () => (isLoaded && isSignedIn ? readOfficeSession() : null),
+    [isLoaded, isSignedIn],
+  );
+  const tenantId = session?.tenantId ?? null;
+  const sessionScopeKey = session ? scopeKey(session.scope) : null;
+  const organizationId = organization?.id ?? null;
+
+  const [selectedScope, setSelectedScope] = useState<Scope | null>(null);
+  const [businesses, setBusinesses] = useState<
+    readonly { readonly id: string; readonly name: string }[] | undefined
+  >(undefined);
   const [phase, setPhase] = useState<Phase>(
     searchParams.get("status") === "connected" ? "oauth-return" : "idle",
   );
@@ -52,13 +76,13 @@ export default function MailboxPage() {
   const [disconnectNote, setDisconnectNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organization) return;
+    if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organizationId) return;
     let active = true;
-    loadMailboxConnection(session, getToken, organization.id)
+    loadMailboxConnection(session, session.scope, getToken, organizationId)
       .then((result) => {
         if (!active) return;
         setConnection(result);
-        if (phase === "oauth-return") setPhase("idle");
+        setPhase((current) => (current === "oauth-return" ? "idle" : current));
       })
       .catch(() => {
         if (active) setConnection(null);
@@ -66,24 +90,57 @@ export default function MailboxPage() {
     return () => {
       active = false;
     };
+    // Depends on primitive/derived keys only (fix round 2) -- never the
+    // `session`/`organization` objects themselves, which change identity
+    // on every render regardless of whether anything meaningful changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [getToken, isLoaded, isSignedIn, organization, organizationLoaded, session]);
+  }, [tenantId, sessionScopeKey, organizationId, organizationLoaded, isLoaded, isSignedIn]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organizationId) return;
+    let active = true;
+    loadAuthorizedBusinesses(session, getToken, organizationId)
+      .then((items) => {
+        if (active) setBusinesses(items);
+      })
+      .catch(() => {
+        if (active) setBusinesses([]);
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, organizationId, organizationLoaded, isLoaded, isSignedIn]);
 
   if (!isLoaded || !organizationLoaded) {
     return <div className="empty" aria-live="polite">Loading...</div>;
   }
-  if (!isSignedIn || !session || !organization) {
+  if (!isSignedIn || !session || !organizationId) {
     return <div className="empty" role="alert">Office session unavailable. Sign in again.</div>;
   }
 
-  const scopeLabel = session.scope.kind === "business" ? session.label : "Personal";
+  // Fix round 2 (Important) -- every scope the user is authorized for:
+  // Personal when the current session already knows its profile ID (App
+  // API exposes no standalone "look up this tenant's personal profile"
+  // route yet -- see the report's Ruling), plus every active business
+  // from the real GET .../businesses list. None preselected.
+  const scopeOptions: readonly { readonly scope: Scope; readonly label: string }[] =
+    businesses === undefined
+      ? []
+      : [
+          ...(session.scope.kind === "personal" ? [{ scope: session.scope, label: "Personal" }] : []),
+          ...businesses.map((business) => ({
+            scope: { kind: "business" as const, businessId: business.id },
+            label: business.name,
+          })),
+        ];
 
   async function handleConnect() {
-    if (!scopeChosen || !session || !organization) return;
+    if (!selectedScope || !session || !organizationId) return;
     setPhase("starting");
     setError(null);
     try {
-      const result = await connectMailboxGoogle(session, getToken, organization.id);
+      const result = await connectMailboxGoogle(session, selectedScope, getToken, organizationId);
       setAuthorizationUrl(result.authorizationUrl);
       setPhase("oauth-pending");
       if (typeof window !== "undefined") {
@@ -162,18 +219,24 @@ export default function MailboxPage() {
             <legend>
               Default Personal/business scope<span aria-hidden="true"> *</span>
             </legend>
-            <div role="radiogroup" aria-required="true" aria-describedby="mailbox-scope-help">
-              <label>
-                <input
-                  type="radio"
-                  name="mailbox-scope"
-                  value={session.scope.kind}
-                  checked={scopeChosen}
-                  onChange={() => setScopeChosen(true)}
-                />
-                <strong>{scopeLabel}</strong>
-              </label>
-            </div>
+            {businesses === undefined ? (
+              <p aria-live="polite">Loading authorized scopes...</p>
+            ) : (
+              <div role="radiogroup" aria-required="true" aria-describedby="mailbox-scope-help">
+                {scopeOptions.map((option) => (
+                  <label key={scopeKey(option.scope)}>
+                    <input
+                      type="radio"
+                      name="mailbox-scope"
+                      value={scopeKey(option.scope)}
+                      checked={selectedScope !== null && scopeKey(selectedScope) === scopeKey(option.scope)}
+                      onChange={() => setSelectedScope(option.scope)}
+                    />
+                    <strong>{option.label}</strong>
+                  </label>
+                ))}
+              </div>
+            )}
           </fieldset>
           <p id="mailbox-scope-help">
             No scope is selected by default. Choose one to enable Connect. Changing scope later requires
@@ -182,9 +245,9 @@ export default function MailboxPage() {
           <button
             type="button"
             className="primary"
-            disabled={!scopeChosen || phase === "starting"}
-            aria-disabled={!scopeChosen || phase === "starting"}
-            title={scopeChosen ? undefined : "Select a Personal or business scope to enable Connect"}
+            disabled={!selectedScope || phase === "starting"}
+            aria-disabled={!selectedScope || phase === "starting"}
+            title={selectedScope ? undefined : "Select a Personal or business scope to enable Connect"}
             onClick={() => void handleConnect()}
           >
             {phase === "starting" ? "Starting..." : "Connect Gmail"}
