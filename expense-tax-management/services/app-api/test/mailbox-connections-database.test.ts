@@ -98,10 +98,16 @@ describe("mailbox connections migration 018 – app.mailbox_connections", () => 
     expect(migration).not.toMatch(/CREATE TABLE app\.mailbox_candidate/);
   });
 
-  it("enforces an active uniqueness per (tenant, scope, provider, provider_account_id)", () => {
+  it("enforces active uniqueness per scope with two scope-specific partial indexes (NULLs are distinct in a single composite index, so personal/business must be split)", () => {
     expect(migration).toMatch(
-      /CREATE UNIQUE INDEX mailbox_connections_active_unique[\s\S]*ON app\.mailbox_connections[\s\S]*WHERE status <> 'revoked'/,
+      /CREATE UNIQUE INDEX mailbox_connections_active_personal_unique[\s\S]*ON app\.mailbox_connections \(tenant_id, personal_profile_id, provider, provider_account_id\)[\s\S]*WHERE status <> 'revoked' AND personal_profile_id IS NOT NULL/,
     );
+    expect(migration).toMatch(
+      /CREATE UNIQUE INDEX mailbox_connections_active_business_unique[\s\S]*ON app\.mailbox_connections \(tenant_id, business_id, provider, provider_account_id\)[\s\S]*WHERE status <> 'revoked' AND business_id IS NOT NULL/,
+    );
+    // The old single-index design silently failed to dedup across NULLs;
+    // make sure it isn't still present alongside the fix.
+    expect(migration).not.toMatch(/CREATE UNIQUE INDEX mailbox_connections_active_unique\s/);
   });
 });
 
@@ -119,9 +125,18 @@ describe("mailbox connections migration 018 – app.mailbox_oauth_attempts", () 
     );
   });
 
-  it("guards completed/expired/cancelled attempts as immutable (terminal)", () => {
-    expect(migration).toMatch(/prevent_mailbox_oauth_attempt_terminal_update/);
-    expect(migration).toMatch(/mailbox_oauth_attempts_terminal_guard_trigger/);
+  it("guards against invalid status transitions with a forward-only trigger (consumed cannot return to pending)", () => {
+    expect(migration).toMatch(/prevent_mailbox_oauth_attempt_invalid_transition/);
+    expect(migration).toMatch(/mailbox_oauth_attempts_transition_guard_trigger/);
+    // The forward-only guard must enumerate every legal edge explicitly,
+    // not merely block updates to already-terminal rows (that alone
+    // leaves consumed -> pending open, since 'consumed' isn't terminal).
+    expect(migration).toMatch(
+      /OLD\.status = 'pending' AND NEW\.status IN \('consumed', 'expired', 'cancelled'\)/,
+    );
+    expect(migration).toMatch(
+      /OLD\.status = 'consumed' AND NEW\.status IN \('completed', 'cancelled'\)/,
+    );
   });
 });
 
@@ -142,9 +157,12 @@ describe("mailbox connections migration 018 – app.mailbox_operation_keys (perm
     expect(migration).toContain("CREATE TABLE app.mailbox_operation_keys");
   });
 
-  it("enforces permanent uniqueness over (tenant_id, operation_key, idempotency_key, normalized_request_hash)", () => {
+  it("enforces permanent uniqueness over the key triple only (tenant_id, operation_key, idempotency_key) -- normalized_request_hash is compared in domain code, not part of the constraint, so a differing-hash replay collides at the DB level instead of silently inserting a second row", () => {
     expect(migration).toMatch(
-      /mailbox_operation_keys_permanent_unique[\s\S]*UNIQUE \(tenant_id, operation_key, idempotency_key, normalized_request_hash\)/,
+      /mailbox_operation_keys_permanent_unique[\s\S]*UNIQUE \(tenant_id, operation_key, idempotency_key\)/,
+    );
+    expect(migration).not.toMatch(
+      /UNIQUE \(tenant_id, operation_key, idempotency_key, normalized_request_hash\)/,
     );
   });
 

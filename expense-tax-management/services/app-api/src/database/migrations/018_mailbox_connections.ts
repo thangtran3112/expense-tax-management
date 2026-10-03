@@ -105,11 +105,24 @@ export async function up(database: Kysely<unknown>): Promise<void> {
 
   /* Active uniqueness: at most one non-revoked connection per
      (tenant, scope, provider, provider_account_id). A revoked mailbox
-     may be reconnected, creating a new row -- history is preserved. */
+     may be reconnected, creating a new row -- history is preserved.
+     Split into two scope-specific partial indexes (rather than one
+     composite index spanning both personal_profile_id and business_id):
+     PostgreSQL treats NULL as distinct from NULL in a unique index, so a
+     single index over both nullable scope columns would never catch two
+     duplicate personal connections (business_id NULL on both rows) or
+     two duplicate business connections (personal_profile_id NULL on
+     both). Each partial index below filters out the scope that doesn't
+     apply, so every indexed column is NOT NULL within that index. */
   await sql`
-    CREATE UNIQUE INDEX mailbox_connections_active_unique
-      ON app.mailbox_connections (tenant_id, personal_profile_id, business_id, provider, provider_account_id)
-      WHERE status <> 'revoked'
+    CREATE UNIQUE INDEX mailbox_connections_active_personal_unique
+      ON app.mailbox_connections (tenant_id, personal_profile_id, provider, provider_account_id)
+      WHERE status <> 'revoked' AND personal_profile_id IS NOT NULL
+  `.execute(database);
+  await sql`
+    CREATE UNIQUE INDEX mailbox_connections_active_business_unique
+      ON app.mailbox_connections (tenant_id, business_id, provider, provider_account_id)
+      WHERE status <> 'revoked' AND business_id IS NOT NULL
   `.execute(database);
   await sql`
     CREATE INDEX mailbox_connections_tenant_status_index
@@ -121,10 +134,14 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   //
   // One-time OAuth attempt state consumed exactly once by the broker
   // callback. status: 'pending' | 'consumed' | 'completed' | 'expired' |
-  // 'cancelled'. A terminal-immutability trigger (completed/expired/
-  // cancelled) prevents a consumed replay from reopening a finished
-  // attempt -- the OAUTH_REPLAY error code is the application-level
-  // surface for this guard.
+  // 'cancelled'. A forward-only transition-guard trigger enumerates every
+  // legal edge explicitly (pending -> consumed/expired/cancelled,
+  // consumed -> completed/cancelled) and rejects everything else,
+  // including a 'consumed' row returning to 'pending' -- a terminal-only
+  // guard (blocking updates solely from completed/expired/cancelled)
+  // would miss that edge, since 'consumed' is not itself terminal. The
+  // OAUTH_REPLAY error code is the application-level surface for this
+  // guard.
   // ------------------------------------------------------------------ //
   await sql`
     CREATE TABLE app.mailbox_oauth_attempts (
@@ -166,22 +183,30 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   `.execute(database);
 
   await sql`
-    CREATE OR REPLACE FUNCTION app.prevent_mailbox_oauth_attempt_terminal_update()
+    CREATE OR REPLACE FUNCTION app.prevent_mailbox_oauth_attempt_invalid_transition()
     RETURNS trigger
     LANGUAGE plpgsql
     AS $function$
     BEGIN
-      IF OLD.status IN ('completed', 'expired', 'cancelled') AND OLD IS DISTINCT FROM NEW THEN
-        RAISE EXCEPTION 'terminal mailbox OAuth attempt is immutable';
+      IF OLD.status = NEW.status THEN
+        RETURN NEW;
       END IF;
+
+      IF NOT (
+        (OLD.status = 'pending' AND NEW.status IN ('consumed', 'expired', 'cancelled'))
+        OR (OLD.status = 'consumed' AND NEW.status IN ('completed', 'cancelled'))
+      ) THEN
+        RAISE EXCEPTION 'invalid mailbox OAuth attempt status transition: % -> %', OLD.status, NEW.status;
+      END IF;
+
       RETURN NEW;
     END;
     $function$;
   `.execute(database);
   await sql`
-    CREATE TRIGGER mailbox_oauth_attempts_terminal_guard_trigger
+    CREATE TRIGGER mailbox_oauth_attempts_transition_guard_trigger
       BEFORE UPDATE ON app.mailbox_oauth_attempts
-      FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_oauth_attempt_terminal_update()
+      FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_oauth_attempt_invalid_transition()
   `.execute(database);
 
   // ------------------------------------------------------------------ //
@@ -219,13 +244,18 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   // ------------------------------------------------------------------ //
   // app.mailbox_operation_keys  (permanent replay / conflict dedup)
   //
-  // Permanent uniqueness over (tenant_id, operation_key, idempotency_key,
-  // normalized_request_hash): the exact same operation replayed with the
-  // exact same request returns response_json unchanged. The narrower
-  // lookup index (tenant_id, operation_key, idempotency_key) lets the
-  // application find an existing row before insert -- if found with a
-  // different normalized_request_hash, it returns a typed
-  // IDEMPOTENCY_CONFLICT instead of attempting a second write.
+  // Permanent uniqueness over the key triple (tenant_id, operation_key,
+  // idempotency_key) only -- normalized_request_hash is stored but
+  // deliberately excluded from the constraint. Including the hash in the
+  // uniqueness tuple would let the exact same operation+idempotency key
+  // be inserted twice with two different hashes (e.g. a race between two
+  // concurrent requests), defeating replay detection; the application
+  // looks the row up by the triple, and if found compares the stored
+  // hash itself -- same hash replays the cached response_json, a
+  // different hash is a typed IDEMPOTENCY_CONFLICT. The triple-only
+  // constraint backs that check with a real DB-level guarantee: a second
+  // insert attempt for the same triple (whatever its hash) always
+  // collides instead of silently creating a second row.
   // ------------------------------------------------------------------ //
   await sql`
     CREATE TABLE app.mailbox_operation_keys (
@@ -247,12 +277,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       CONSTRAINT mailbox_operation_keys_normalized_request_hash_check
         CHECK (normalized_request_hash ~ '^[a-f0-9]{64}$'),
       CONSTRAINT mailbox_operation_keys_permanent_unique
-        UNIQUE (tenant_id, operation_key, idempotency_key, normalized_request_hash)
+        UNIQUE (tenant_id, operation_key, idempotency_key)
     )
-  `.execute(database);
-  await sql`
-    CREATE INDEX mailbox_operation_keys_lookup_index
-      ON app.mailbox_operation_keys (tenant_id, operation_key, idempotency_key)
   `.execute(database);
 
   /* Runtime role may read/insert operation-key ledger rows (append-only
@@ -265,8 +291,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(database: Kysely<unknown>): Promise<void> {
-  await sql`DROP TRIGGER IF EXISTS mailbox_oauth_attempts_terminal_guard_trigger ON app.mailbox_oauth_attempts`.execute(database);
-  await sql`DROP FUNCTION IF EXISTS app.prevent_mailbox_oauth_attempt_terminal_update()`.execute(database);
+  await sql`DROP TRIGGER IF EXISTS mailbox_oauth_attempts_transition_guard_trigger ON app.mailbox_oauth_attempts`.execute(database);
+  await sql`DROP FUNCTION IF EXISTS app.prevent_mailbox_oauth_attempt_invalid_transition()`.execute(database);
   await database.schema.dropTable("app.mailbox_operation_keys").ifExists().execute();
   await database.schema.dropTable("app.mailbox_reviewer_grants").ifExists().execute();
   await database.schema.dropTable("app.mailbox_oauth_attempts").ifExists().execute();
