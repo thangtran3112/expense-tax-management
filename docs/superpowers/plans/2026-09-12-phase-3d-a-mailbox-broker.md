@@ -35,8 +35,15 @@ or `{ kind: "business", businessId }`), imported and aliased, not redeclared. Do
 invent a second public scope schema; `enrichment.ts` states "do not create another
 public scope schema elsewhere" for exactly this reason.
 
+This block illustrates `packages/contracts/src/mailbox.ts`, a file *inside* the
+`@expense-tax/contracts` package itself; it must import its sibling module by
+relative path (`./enrichment.js`), the same way `enrichment.ts` imports
+`./expenses.js`/`./tax-treatments.js` — never `@expense-tax/contracts` self-referentially.
+Downstream consumers outside this package (`mailbox-broker`, `workflow-worker`,
+`office-web`) import `MailboxScope` from `@expense-tax/contracts` as usual.
+
 ```ts
-import type { Scope } from "@expense-tax/contracts";
+import type { Scope } from "./enrichment.js";
 
 export type MailboxProvider = "gmail" | "outlook";
 export type MailboxScope = Scope;
@@ -99,9 +106,18 @@ export interface OAuthStartResult { authorizationUrl: string; stateDigest: strin
 export interface OAuthCallbackInput { code: string; state: string; requestOrigin: string; }
 export interface ConnectedAccount { providerAccountId: string; email: string; grantedScopes: readonly string[]; initialHistoryId: string; vaultReference: string; tokenGeneration: number; }
 export interface RevokeConnectionInput { connectionId: string; operationId: string; }
+export interface TokenOperationLeaseV1 { readonly connectionId: string; readonly leaseId: string; readonly expiresAt: string; readonly expectedConnectionVersion: number; readonly currentTokenGeneration: number; }
+export interface AdvanceTokenGenerationInput {
+  readonly connectionId: string; readonly leaseId: string; readonly expectedConnectionVersion: number;
+  readonly newGeneration: number; readonly vaultReference: string; readonly requestId: string; readonly idempotencyKey: string;
+}
+export interface AdvanceTokenGenerationResult { readonly connectionVersion: number; readonly tokenGeneration: number; readonly vaultReference: string; }
 export interface MailboxBrokerConnectionAppClient {
   consumeOAuthAttempt(input: { connectionId: string; attemptId: string; stateDigest: string; sessionNonceDigest: string }): Promise<{ status: "consumed"; connectionVersion: number }>;
   completeConnection(input: ConnectedAccount & { connectionId: string; attemptId: string; expectedConnectionVersion: number }): Promise<MailboxConnectionV1>;
+  acquireTokenOperationLease(input: { connectionId: string; operationId: string; ttlSeconds: number }): Promise<TokenOperationLeaseV1>;
+  advanceTokenGeneration(input: AdvanceTokenGenerationInput): Promise<AdvanceTokenGenerationResult>;
+  releaseTokenOperationLease(input: { connectionId: string; leaseId: string }): Promise<void>;
   recordRevocation(input: { connectionId: string; operationId: string; status: "revoked" | "revocation_pending" }): Promise<MailboxConnectionV1>;
 }
 export interface MailboxProviderAdapter {
@@ -110,6 +126,20 @@ export interface MailboxProviderAdapter {
   revoke(input: RevokeConnectionInput): Promise<void>;
 }
 ```
+
+`acquireTokenOperationLease`/`advanceTokenGeneration`/`releaseTokenOperationLease` exist
+because App API — not just the broker's vault — tracks an active `tokenGeneration` on
+`MailboxConnectionRecordV1` (it must know, without ever seeing a token, which vault
+generation is currently authoritative, so a losing concurrent refresh/rotation can be
+detected and only its own newly created generation destroyed). The vault-reference
+design does not remove this dependency: `vaultReference`/`tokenGeneration` are opaque
+to App, but App still owns the **pointer** (which generation is active) as connection
+metadata, and that pointer must move exactly once per rotation, under lease, never by
+two concurrent broker operations at once. The lease (bound to
+`expectedConnectionVersion` and carrying the connection's `currentTokenGeneration` at
+acquisition time) is the race-prevention primitive; `advanceTokenGeneration` is the CAS
+that actually moves the pointer and only accepts `newGeneration === currentTokenGeneration + 1`
+under the exact `leaseId` that acquired it.
 
 ### Task 1: Contracts, Ownership Ledger, and Migration 018 Prerequisite
 
@@ -156,19 +186,28 @@ export interface MailboxProviderAdapter {
 - Create: `expense-tax-management/services/app-api/test/mailbox-connections.test.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-oauth-state.test.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-broker-client.test.ts`
+- Create: `expense-tax-management/services/app-api/test/mailbox-token-generation.test.ts`
 
 **Interfaces:**
 - `startConnection({ actorUserId, tenantId, scope, sessionNonce, redirectOrigin, timezone, localScanTime, requestId }): Promise<{ connection: MailboxConnectionV1; attempt: MailboxOAuthAttemptV1; authorizationUrl: string }>` calls `MailboxBrokerClient.startOAuth(...)` (new outbound client, subject `app-api-mailbox`, broker audience) to obtain `authorizationUrl`, passes `sessionNonce` to broker, and stores only `sha256(sessionNonce)`.
 - `consumeOAuthState({ attemptId, connectionId, stateDigest, sessionNonceDigest, requestId }): Promise<{ connectionId: string; attemptId: string; redirectOrigin: string }>` locks pending attempt, constant-time compares both digests, verifies allowlisted origin and expiry, changes status to `consumed`, and returns no state/code/verifier/token.
-- `completeConnection({ attemptId, connectionId, vaultReference, providerAccountId, accountEmail, grantedScopes, initialHistoryId, tokenGeneration, requestId }): Promise<MailboxConnectionRecordV1>` performs activation CAS only from `consumed`; replay returns prior completion result or `OAUTH_REPLAY`.
+- `completeConnection({ attemptId, connectionId, vaultReference, providerAccountId, accountEmail, grantedScopes, initialHistoryId, tokenGeneration, requestId }): Promise<MailboxConnectionRecordV1>` performs activation CAS only from `consumed`; replay returns prior completion result or `OAUTH_REPLAY`. This is generation 1's activation path; it does not handle later rotations.
+- `acquireTokenOperationLease(input: { connectionId: string; operationId: string; ttlSeconds: number }): Promise<TokenOperationLeaseV1>` takes an exclusive, expiring lease on the connection's token-generation pointer (`SELECT ... FOR UPDATE` within a transaction, or a CAS on a nullable `tokenOperationLeaseId`/`tokenOperationLeaseExpiresAt` pair); fails with `VERSION_CONFLICT` if an unexpired lease already exists. Returns the connection's `currentTokenGeneration` at acquisition time so the broker's `newGeneration` request is always `currentTokenGeneration + 1`, never a value the broker guesses independently.
+- `advanceTokenGeneration(input: AdvanceTokenGenerationInput): Promise<AdvanceTokenGenerationResult>` requires the exact `leaseId` from `acquireTokenOperationLease`, exact `expectedConnectionVersion`, and `newGeneration === currentTokenGeneration + 1`; atomically sets `tokenGeneration = newGeneration`, `vaultReference = input.vaultReference`, bumps `connectionVersion`, and clears the lease. Permanent idempotency key `(connectionId, "advance-generation", String(newGeneration), connectionVersion)`: identical replay returns the prior result; same key with a different `vaultReference` returns `IDEMPOTENCY_CONFLICT`. Out-of-order or stale generation/version returns `VERSION_CONFLICT` and does not move the pointer.
+- `releaseTokenOperationLease(input: { connectionId: string; leaseId: string }): Promise<void>` clears the lease without advancing the generation (used when the broker's own new vault generation write fails after acquiring the lease, so the lease does not block future operations until its TTL alone expires).
 - `routes/mailbox-connections.ts` exports its route-registration function only; it is unit-tested directly against a minimal Fastify instance in this task and wired into `app-api/src/app.ts` in Task 4, alongside the broker/Office routes it depends on.
 
-- [ ] **Step 1: Write failing tests** for entitlement/scope checks, session nonce digest transport, trusted redirect allowlist, state digest mismatch, expired attempt, first consume, second consume, completion-before-consume, completion replay, wrong connection/tenant, and `MailboxBrokerClient` acquiring/attaching a machine token with exact audience/subject `app-api-mailbox`.
-- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/app-api test -- test/mailbox-connections.test.ts test/mailbox-oauth-state.test.ts test/mailbox-broker-client.test.ts`; expected FAIL.
+- [ ] **Step 1: Write failing tests** for entitlement/scope checks, session nonce digest transport, trusted redirect allowlist, state digest mismatch, expired attempt, first consume, second consume, completion-before-consume, completion replay, wrong connection/tenant, `MailboxBrokerClient` acquiring/attaching a machine token with exact audience/subject `app-api-mailbox`, and (in `test/mailbox-token-generation.test.ts`) lease acquisition exclusivity (second concurrent acquire on the same connection is rejected until release or TTL expiry), lease-TTL expiry allowing a new acquire, `advanceTokenGeneration` accepting only `currentTokenGeneration + 1`, rejecting a stale `expectedConnectionVersion` or wrong `leaseId`, idempotent replay of an identical advance, `IDEMPOTENCY_CONFLICT` on same key/different `vaultReference`, and `releaseTokenOperationLease` without advancing.
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/app-api test -- test/mailbox-connections.test.ts test/mailbox-oauth-state.test.ts test/mailbox-broker-client.test.ts test/mailbox-token-generation.test.ts`; expected FAIL.
 - [ ] **Step 3: Implement domain and routes.** Public responses use `MailboxConnectionV1`; only internal broker callback may receive `MailboxConnectionRecordV1` fields, and only vault reference/generation required for completion.
-- [ ] **Step 4: Add exact endpoint:** `POST /internal/v1/mailbox/oauth/attempts/:attemptId/consume`; guard broker subject `mailbox-broker-app`, App service audience, scope `mailbox:write`; request body is `{ connectionId, stateDigest, sessionNonceDigest, requestId }`. Add a negative-auth test asserting this route rejects a wrong subject, a token for the existing `ai-worker`/`workflow-worker` App-worker audience/subject, and a tenant token (same pattern as `test/auth.test.ts`'s "rejects a tenant token on the service guard").
-- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/app-api test -- test/mailbox-connections.test.ts test/mailbox-oauth-state.test.ts test/mailbox-broker-client.test.ts && pnpm --filter @expense-tax/app-api typecheck`; expected PASS.
-- [ ] **Step 6: Commit:** `git add services/app-api/src/domain/mailbox-connections.ts services/app-api/src/routes/mailbox-connections.ts services/app-api/src/auth/machine-token.ts services/app-api/src/integrations/mailbox-broker-client.ts services/app-api/src/config.ts services/app-api/test/mailbox-connections.test.ts services/app-api/test/mailbox-oauth-state.test.ts services/app-api/test/mailbox-broker-client.test.ts && git commit -m "feat(mailbox): add OAuth consume CAS"`
+- [ ] **Step 4: Add exact endpoints:**
+  - `POST /internal/v1/mailbox/oauth/attempts/:attemptId/consume`; guard broker subject `mailbox-broker-app`, App service audience, scope `mailbox:write`; request body is `{ connectionId, stateDigest, sessionNonceDigest, requestId }`.
+  - `POST /internal/v1/mailbox/connections/:connectionId/token-operations/lease` (acquire); same guard; body `{ operationId, ttlSeconds }`.
+  - `POST /internal/v1/mailbox/connections/:connectionId/token-operations/advance` (CAS advance); same guard; body `{ leaseId, expectedConnectionVersion, newGeneration, vaultReference, requestId, idempotencyKey }`.
+  - `POST /internal/v1/mailbox/connections/:connectionId/token-operations/release`; same guard; body `{ leaseId }`.
+  Add a negative-auth test asserting every one of these routes rejects a wrong subject, a token for the existing `ai-worker`/`workflow-worker` App-worker audience/subject, and a tenant token (same pattern as `test/auth.test.ts`'s "rejects a tenant token on the service guard").
+- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/app-api test -- test/mailbox-connections.test.ts test/mailbox-oauth-state.test.ts test/mailbox-broker-client.test.ts test/mailbox-token-generation.test.ts && pnpm --filter @expense-tax/app-api typecheck`; expected PASS.
+- [ ] **Step 6: Commit:** `git add services/app-api/src/domain/mailbox-connections.ts services/app-api/src/routes/mailbox-connections.ts services/app-api/src/auth/machine-token.ts services/app-api/src/integrations/mailbox-broker-client.ts services/app-api/src/config.ts services/app-api/test/mailbox-connections.test.ts services/app-api/test/mailbox-oauth-state.test.ts services/app-api/test/mailbox-broker-client.test.ts services/app-api/test/mailbox-token-generation.test.ts && git commit -m "feat(mailbox): add OAuth consume CAS"`
 
 ### Task 3: Broker Token Vault, OAuth CAS, Clerk Identity, and Base Worker Client
 
@@ -181,6 +220,8 @@ export interface MailboxProviderAdapter {
 - Create: `expense-tax-management/services/mailbox-broker/src/database/migrations/001_token_vault.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/token-vault.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/key-rotation.ts`
+- Create: `expense-tax-management/services/mailbox-broker/src/key-rotation-cli.ts`
+- Create: `expense-tax-management/services/mailbox-broker/test/key-rotation-cli.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/oauth-state.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/google-mailbox.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/app-client.ts`
@@ -200,24 +241,79 @@ export interface MailboxProviderAdapter {
 
 Token vault schema (`src/token-vault.ts` + migration `001_token_vault.ts`): one row per `(connection_id, generation)` with columns `connection_id`, `generation` (int, starts at 1), `key_id` (text, identifies which AES key encrypted this row), `nonce` (12 random bytes / 96 bits, `bytea`), `ciphertext` (`bytea`), `auth_tag` (`bytea`, GCM tag), `disabled_at` (nullable), `created_at`. Unique constraint `(key_id, nonce)` across the whole table — a generated nonce collision under the same key is rejected at the database and the encrypt operation retries with a freshly generated nonce (collision probability is negligible at 96 bits, but the constraint makes reuse impossible rather than merely unlikely). AAD for every encrypt/decrypt call is the UTF-8 bytes of `${connectionId}:${keyId}:${generation}`, so ciphertext from one connection/key/generation cannot be decrypted, or silently substituted, into another's row. `addTokenGenerationCAS` always uses the current active `key_id` from `src/config.ts`'s loaded key map (see below) to encrypt; `destroyTokenGeneration`/`revokeTokenGenerations` only ever disable/delete, never decrypt-and-reencrypt in place.
 
-Key rotation (`src/key-rotation.ts`): broker config loads a map of `key_id -> key material` from the Expense Secret Manager bundle (deployment-time env, e.g. `MAILBOX_VAULT_KEYS` as a JSON array of `{keyId, key}` plus `MAILBOX_VAULT_ACTIVE_KEY_ID` naming the current active entry); decrypt selects the key by each row's own stored `key_id`, so any key present in the loaded map can still decrypt its rows — this is the dual-key window. `rotateVaultKey(newKeyId)` is an operator-invoked, idempotent, generation-CAS operation: for every active (non-disabled) row still encrypted under a retiring key, it decrypts with the retiring key, re-encrypts under `newKeyId` as a new generation (same CAS path `addTokenGenerationCAS` already uses for refresh-token rotation), and disables the prior generation — it never mutates a row in place. A retiring key may only be removed from the deployed key map (ending its dual-key window) after an operator confirms zero non-disabled rows still reference it (`SELECT count(*) FROM token_vault WHERE key_id = $1 AND disabled_at IS NULL`); the migration/runtime roles split (below) does not relax this check.
+**Key rotation — concrete protocol.** Broker config loads a map of `key_id -> key
+material` from the Expense Secret Manager bundle (deployment-time env:
+`MAILBOX_VAULT_KEYS` as a JSON array of `{keyId, key}`, plus
+`MAILBOX_VAULT_ACTIVE_KEY_ID` naming the current active entry). Decrypt selects the
+key by each row's own stored `key_id`, so any key still present in the loaded map
+can decrypt its own rows — this is the **dual-key decrypt window**: both the
+retiring and the new key stay in `MAILBOX_VAULT_KEYS` simultaneously until every
+row is migrated off the retiring key.
+
+Rotation is a four-step operator-run, broker-executed workflow, not an automatic
+background job (there is no scheduler in 3D-A):
+
+1. **Operator adds the new key to the deployment bundle.** Add a new `{keyId, key}`
+   entry to `MAILBOX_VAULT_KEYS` and set `MAILBOX_VAULT_ACTIVE_KEY_ID` to the new
+   `keyId`; redeploy the broker container so new writes use the new key. The
+   retiring key stays in `MAILBOX_VAULT_KEYS` (dual-key window is now open).
+2. **Operator runs the re-encryption job.** `src/key-rotation-cli.ts` is a small
+   CLI entry point built into the broker image, invoked exactly like the existing
+   `app-api-migrate` one-shot pattern (`command: ["node", "dist/database/migrate.js"]`
+   in `docker-compose.yml`): `docker exec <mailbox-broker-container> node
+   dist/key-rotation-cli.js --retiring-key-id=<old> --new-key-id=<new>
+   [--connection-id=<uuid>]` (omit `--connection-id` to rotate every connection).
+   For each active (non-disabled) row still encrypted under `--retiring-key-id`,
+   `rotateVaultKey` in `src/key-rotation.ts`:
+   a. decrypts the row with the retiring key;
+   b. calls App's `acquireTokenOperationLease` for that connection (same lease
+      primitive refresh-token rotation uses — see below — so a concurrent Gmail
+      refresh-token rotation and a key rotation on the same connection can never
+      race each other);
+   c. encrypts under `--new-key-id` as a new generation (12-byte random nonce, AAD
+      `${connectionId}:${newKeyId}:${newGeneration}`), inserts the new vault row;
+   d. calls App's `advanceTokenGeneration` with the new generation/`vaultReference`
+      under the acquired lease;
+   e. on success, disables (does not delete) the prior vault-row generation and
+      releases the lease; on any failure after step (b), calls
+      `releaseTokenOperationLease` without advancing, leaving the prior generation
+      untouched and the connection usable under the old key.
+   The job is idempotent and resumable: re-running it only processes rows still
+   encrypted under `--retiring-key-id`; rows already migrated are skipped.
+3. **Operator verifies zero remaining references.** `node dist/key-rotation-cli.js
+   --verify-retired=<old>` (or the equivalent `SELECT count(*) FROM token_vault
+   WHERE key_id = $1 AND disabled_at IS NULL`) must return zero before step 4.
+4. **Operator removes the retiring key from the deployment bundle.** Delete its
+   entry from `MAILBOX_VAULT_KEYS` and redeploy; this closes the dual-key window.
+   Never remove a key from the bundle before step 3 confirms zero references —
+   doing so would make any still-referencing row permanently undecryptable.
+
+Every step above is explicitly **operator-gated**: steps 1, 2, and 4 mutate the
+production Secret Manager bundle, the vault database, or both, and require
+explicit execution-time confirmation before running, exactly like the vault
+database/role bootstrap in Task 5. Step 2's CLI run is the only step this task's
+automated tests can exercise locally (against a test vault database with fake
+keys); steps 1 and 4 (editing the real deployment bundle) are not something an
+automated test can perform.
 
 The token vault uses its own dedicated PostgreSQL database with a runtime role (read/write vault rows only) separate from its migration role (DDL only); both are provisioned by the operator-only bootstrap in Task 5, never by normal deploy.
 
 Broker's own inbound auth (`src/auth/clerk.ts` + `src/config.ts`): verifies tokens against its own audience (env `MAILBOX_SERVICE_TOKEN_AUDIENCE`/`MAILBOX_SERVICE_TOKEN_ISSUER`/`MAILBOX_SERVICE_JWKS_URL`, mirroring App API's own `APP_SERVICE_TOKEN_*` config shape) and accepts exactly two configurable expected subjects — `MAILBOX_APP_API_SUBJECT` (default `app-api-mailbox`, scopes `oauth:start`/`connections:read`/`connections:revoke`) and `MAILBOX_WORKER_SUBJECT` (default `workflow-worker-mailbox`, scopes `mailbox:discover`/`mailbox:materialize`) — mirroring the existing configurable-subject-with-default pattern used by `serviceGuard` call sites such as `routes/quotas.ts:65`.
 
-`MailboxBrokerConnectionAppClient` signs broker-to-App connection/OAuth callbacks with existing App service audience, subject `mailbox-broker-app`, and scope `mailbox:write`, using env `CLERK_APP_SERVICE_AUDIENCE`/`CLERK_APP_MACHINE_SECRET_KEY`/`CLERK_APP_SERVICE_SUBJECT` inside the broker's own container (same env-var names as `ai-worker`/`workflow-worker` already use to call App API; the value is broker-specific). 3D-B extends broker App access with discovery staging; 3D-C extends it with upload/materialization.
+`MailboxBrokerConnectionAppClient` signs broker-to-App connection/OAuth/token-operation callbacks (`consumeOAuthAttempt`, `completeConnection`, `acquireTokenOperationLease`, `advanceTokenGeneration`, `releaseTokenOperationLease`, `recordRevocation`) with existing App service audience, subject `mailbox-broker-app`, and scope `mailbox:write`, using env `CLERK_APP_SERVICE_AUDIENCE`/`CLERK_APP_MACHINE_SECRET_KEY`/`CLERK_APP_SERVICE_SUBJECT` inside the broker's own container (same env-var names as `ai-worker`/`workflow-worker` already use to call App API; the value is broker-specific). 3D-B extends broker App access with discovery staging; 3D-C extends it with upload/materialization.
 
 Separate TypeScript `MailboxAppApiClient` in `services/workflow-worker` uses existing App audience, subject `workflow-worker-mailbox`, and scopes `mailbox:discover`, `mailbox:materialize` only for opaque orchestration; it also gains a new `clerk.mailbox` credential block (subject `workflow-worker-mailbox`, broker audience) to call the broker directly in 3D-B/C.
 
-- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper detection, AAD mismatch rejection (ciphertext from one connection/generation fails to decrypt under another's AAD), unique `(key_id, nonce)` enforcement with collision retry, PKCE S256, state one-time behavior, nonce transport, token-vault losing-writer cleanup (compare-and-set on generation), revoke race, key rotation (new key encrypts new writes, old key still decrypts its own rows during the dual-key window, retirement blocked while non-disabled rows reference the key), logger redaction, exact Clerk issuer/audience/subject/scope for both broker-accepted subjects, a negative test rejecting a tenant token or wrong subject/audience on every broker route, and worker token config (new `clerk.mailbox` block parses/validates like `clerk.app`/`clerk.foundry`).
-- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/oauth-state.test.ts test/token-vault.test.ts test/key-rotation.test.ts test/auth.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected FAIL.
+**Production Compose mapping for this credential.** `deploy/production/docker-compose.yml` does not have a `workflow-worker` service yet — it is still running `ai-worker` (Python) pending runtime migration Task 7's production cutover. Runtime migration Task 7 Stage B is already adding a `workflow-worker` service to that Compose file (namespace `expense-tax`, queue `expense-tax-processing`, the same Clerk M2M variable shape `ai-worker` uses today). This plan does **not** create a second, competing `workflow-worker` Compose entry. Instead: once that Stage B service exists, its `environment` block must additionally carry this task's new `CLERK_MAILBOX_SERVICE_AUDIENCE`/`CLERK_MAILBOX_MACHINE_SECRET_KEY`/`CLERK_MAILBOX_SERVICE_SUBJECT` (value `workflow-worker-mailbox`) — the same three env vars `workerConfigFromEnv`'s new `clerk.mailbox` block in `src/config.ts` requires, mirrored into whichever Compose service and production secret bundle Stage B uses for the `app`/`foundry` blocks already present on `ai-worker` today. Until Stage B's cutover, 3D-B/C's worker-side mailbox calls have no production Compose target at all, consistent with this plan's existing "3D-B/C production activation is blocked on runtime migration Task 7 cutover" constraint; there is nothing for 3D-A to deploy on the worker side before then.
+
+- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper detection, AAD mismatch rejection (ciphertext from one connection/generation fails to decrypt under another's AAD), unique `(key_id, nonce)` enforcement with collision retry, PKCE S256, state one-time behavior, nonce transport, token-vault losing-writer cleanup (compare-and-set on generation), revoke race, refresh-token rotation calling App's lease/advance/release in order (lease acquired before vault write, `advanceTokenGeneration` called only after the new vault row is verified, prior generation disabled only after `advanceTokenGeneration` succeeds, `releaseTokenOperationLease` called instead if the vault write fails), key rotation (new key encrypts new writes, old key still decrypts its own rows during the dual-key window, the CLI resumes correctly against partially-rotated connections, retirement verification returns nonzero while any non-disabled row references the retiring key), logger redaction, exact Clerk issuer/audience/subject/scope for both broker-accepted subjects, a negative test rejecting a tenant token or wrong subject/audience on every broker route, and worker token config (new `clerk.mailbox` block parses/validates like `clerk.app`/`clerk.foundry`).
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/oauth-state.test.ts test/token-vault.test.ts test/key-rotation.test.ts test/key-rotation-cli.test.ts test/auth.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-token-generation.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected FAIL.
 - [ ] **Step 3: Implement state.** Payload carries `keyId`, `connectionId`, `attemptId`, `sessionNonce`, `pkceVerifier`, issue/expiry, and redirect origin. Callback decrypts, validates allowlist/session/expiry, computes `sha256(state)` and `sha256(sessionNonce)`, then calls App consume CAS before exchanging code. Invalid/replayed state redirects to fixed failure page with no details; no provider exchange occurs.
-- [ ] **Step 4: Implement Gmail adapter.** Use `googleapis`, offline access, exact readonly scope, in-memory access token, token-event token-vault CAS (12-byte random nonce, AAD-bound AES-256-GCM encrypt, new generation, verify, then disable prior generation), and provider enum rejection for Outlook.
-- [ ] **Step 5: Implement token vault and key rotation.** Implement the schema/CAS/AAD invariants and `rotateVaultKey` exactly as specified in Interfaces above.
-- [ ] **Step 6: Implement `MailboxBrokerConnectionAppClient`.** Implement only OAuth-attempt consume, connection completion, and revocation-state callbacks. Never create scan, candidate, upload, or structured-result routes in A. Add tests for App audience, `mailbox-broker-app` subject, and `mailbox:write` scope.
+- [ ] **Step 4: Implement Gmail adapter's refresh-token rotation.** On the OAuth client's `tokens` event: call App's `acquireTokenOperationLease`; encrypt the new refresh token (12-byte random nonce, AAD-bound AES-256-GCM, new generation) and insert the vault row; call App's `advanceTokenGeneration` with the new generation/`vaultReference` under the lease; only then disable the prior vault-row generation. If the vault write fails before `advanceTokenGeneration`, call `releaseTokenOperationLease` and leave the prior generation active. Use `googleapis`, offline access, exact readonly scope, in-memory access token, and provider enum rejection for Outlook.
+- [ ] **Step 5: Implement token vault and key rotation.** Implement the vault schema/CAS/AAD invariants, `rotateVaultKey`, and `key-rotation-cli.ts`'s `--retiring-key-id`/`--new-key-id`/`--connection-id`/`--verify-retired` flags exactly as specified in Interfaces above. The CLI calls the same App lease/advance/release endpoints as refresh-token rotation, so the two rotation paths cannot race each other on the same connection.
+- [ ] **Step 6: Implement `MailboxBrokerConnectionAppClient`.** Implement OAuth-attempt consume, connection completion, token-operation lease/advance/release, and revocation-state callbacks. Never create scan, candidate, upload, or structured-result routes in A. Add tests for App audience, `mailbox-broker-app` subject, and `mailbox:write` scope.
 - [ ] **Step 7: Implement broker's own inbound auth and worker's outbound credential.** `src/auth/clerk.ts` accepts exactly the two configured subjects above; `workflow-worker/src/config.ts` gains the new `clerk.mailbox` block.
-- [ ] **Step 8: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/mailbox-broker typecheck && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected PASS.
+- [ ] **Step 8: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/mailbox-broker typecheck && pnpm --filter @expense-tax/app-api test -- test/mailbox-token-generation.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts test/config.test.ts`; expected PASS.
 - [ ] **Step 9: Commit:** `git add services/mailbox-broker/src services/mailbox-broker/test services/workflow-worker/src/config.ts services/workflow-worker/src/clients/mailbox-client.ts services/workflow-worker/test/mailbox-client.test.ts services/workflow-worker/test/config.test.ts && git commit -m "feat(mailbox): secure OAuth and broker clients"`
 
 ### Task 4: Fastify Broker/App Routes and Office Mailbox Base
@@ -263,7 +359,7 @@ Separate TypeScript `MailboxAppApiClient` in `services/workflow-worker` uses exi
 - Modify: `expense-tax-management/deploy/production/docker-compose.yml` (add the Task 2 outbound-credential and expected-subject env to the existing `app-api` service's `environment` block: `MAILBOX_BROKER_BASE_URL: http://mailbox-broker:8300`, `CLERK_MAILBOX_SERVICE_AUDIENCE`, `CLERK_MAILBOX_MACHINE_SECRET_KEY`, `CLERK_MAILBOX_SERVICE_SUBJECT`, `CLERK_MAILBOX_BROKER_SERVICE_SUBJECT`, `CLERK_MAILBOX_WORKER_SERVICE_SUBJECT` — same `${VAR:?...}` style as its existing entries)
 - Modify: `expense-tax-management/deploy/production/deploy.sh` (add `mailbox-broker` to the `APPLICATION_SERVICES` array at line 131, so `compose up -d` actually starts it — building the image alone does not run the container)
 - Create: `expense-tax-management/deploy/production/bootstrap-mailbox-vault-db.sh` (same directory and operator-only invocation style as the existing `bootstrap-temporal-db.sh`: credentials piped via `PGPASSWORD`/stdin SQL, never as CLI arguments; idempotent `CREATE ROLE`/`CREATE DATABASE IF NOT EXISTS` guards. Unlike Temporal's single `expense_temporal` role, this script creates **two** roles — a DML-only runtime role and a DDL-only migration role — mirroring the existing App/Foundry runtime-vs-migration split already visible in this Compose file as `APP_DATABASE_URL` vs `APP_MIGRATION_DATABASE_URL`, not Temporal's single-role pattern)
-- Create: `expense-tax-management/services/mailbox-broker/README.md`
+- Create: `expense-tax-management/services/mailbox-broker/README.md` (includes an explicit "Workflow worker credential — Task 7 Stage B handoff" section: the exact three env vars `CLERK_MAILBOX_SERVICE_AUDIENCE`/`CLERK_MAILBOX_MACHINE_SECRET_KEY`/`CLERK_MAILBOX_SERVICE_SUBJECT` that Stage B's `workflow-worker` Compose service must carry, with the exact value `workflow-worker-mailbox` for the subject — so Stage B does not have to rediscover this plan's Task 3 config requirement)
 - Create: `expense-tax-management/services/mailbox-broker/test/compose-config.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/deploy-script.test.ts`
 - Modify: `.github/workflows/expense-tax-deploy.yml` (repo-root file, outside `expense-tax-management/`; add `- image: expense-tax-mailbox-broker` / `dockerfile: expense-tax-management/services/mailbox-broker/Dockerfile` to the build matrix, alongside the existing `expense-tax-workflow-worker` entry)
@@ -280,6 +376,7 @@ Separate TypeScript `MailboxAppApiClient` in `services/workflow-worker` uses exi
 - [ ] **Step 4: Add `mailbox-broker` to `deploy.sh`'s `APPLICATION_SERVICES` array.** Without this, the built image exists in GHCR but `compose up -d` never starts the container.
 - [ ] **Step 5: Implement operator-only vault bootstrap script.** `deploy/production/bootstrap-mailbox-vault-db.sh` creates the dedicated token-vault database plus separate runtime (DML-only) and migration (DDL-only) roles, following `bootstrap-temporal-db.sh`'s credential-handling and idempotency style (not its single-role shape — see the Files entry above). The normal deploy path never runs this script.
 - [ ] **Step 6: Implement the Cloudflare Tunnel ingress change.** Modify `variables.tf`/`main.tf`/`check-cloudflare-infrastructure.mjs`/`.test.mjs` exactly as the Files entries above specify; run `terraform -chdir=infrastructure/cloudflare/expense-tax init -backend=false && terraform -chdir=infrastructure/cloudflare/expense-tax validate` to confirm the HCL is well-formed. Do not run `terraform plan`/`apply`.
+- [ ] **Step 6a: Write the Task 7 Stage B handoff note.** This plan cannot add env vars to the `workflow-worker` Compose service because that service does not exist until runtime migration Task 7 Stage B lands it; write the exact three-variable requirement (`CLERK_MAILBOX_SERVICE_AUDIENCE`/`CLERK_MAILBOX_MACHINE_SECRET_KEY`/`CLERK_MAILBOX_SERVICE_SUBJECT`, subject value `workflow-worker-mailbox`) into `README.md` as specified in the Files entry above, so Stage B's own Compose change carries them from day one instead of discovering the gap after deploying without mailbox credentials.
 - [ ] **Step 7: Request explicit confirmation before remote commands.** Show the vault bootstrap script, Clerk machine-identity provisioning commands, the Compose/deploy diff, and the Cloudflare `terraform plan` output; execute only after confirmation. These touch shared production Postgres, Clerk, and Cloudflare and are not reversible by a revert commit alone.
 - [ ] **Step 8: Verify:** `pnpm --filter @expense-tax/mailbox-broker test && docker build -f services/mailbox-broker/Dockerfile services/mailbox-broker && node --test expense-tax-management/scripts/check-cloudflare-infrastructure.test.mjs`; expected PASS and no unapproved paid product.
 - [ ] **Step 9: Commit:** `git add services/mailbox-broker/Dockerfile services/mailbox-broker/.dockerignore services/mailbox-broker/README.md services/mailbox-broker/test/compose-config.test.ts services/mailbox-broker/test/deploy-script.test.ts deploy/production/docker-compose.yml deploy/production/deploy.sh deploy/production/bootstrap-mailbox-vault-db.sh ../.github/workflows/expense-tax-deploy.yml ../infrastructure/cloudflare/expense-tax/variables.tf ../infrastructure/cloudflare/expense-tax/main.tf scripts/check-cloudflare-infrastructure.mjs scripts/check-cloudflare-infrastructure.test.mjs && git commit -m "infra(mailbox): add broker container to VPS Compose and Tunnel"`
