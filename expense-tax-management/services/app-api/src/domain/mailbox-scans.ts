@@ -26,18 +26,19 @@
  * - loadScanBinding: the broker's read of "where does this scan currently
  *   stand" (connection version + cursor fence + next expected page).
  * - recordCandidateMetadata: the fenced page callback. Locks run and
- *   connection, requires exact fence-field equality and
- *   pageSequence === nextPageSequence, persists candidates (classification
- *   receipt -> staged, ambiguous -> review, not_receipt -> discovered-only,
- *   never persisted), writes a durable page outcome, and only then
- *   advances the connection's cursor/page-sequence pointer. Duplicate
- *   pages replay via the same permanent `app.mailbox_operation_keys`
- *   ledger migration 018 built for exactly this purpose; out-of-order/
- *   stale pages are rejected with a generic conflict -- same precedent as
- *   `advanceTokenGeneration` (see mailbox-broker/src/app-client.ts's
- *   `isDefinitiveRejection` doc comment): a distinct typed
- *   `MailboxErrorCodeV1.VERSION_CONFLICT` is never surfaced as a thrown
- *   `DomainError` anywhere in this file/the A domain it mirrors.
+ *   connection, requires the run to still hold the connection's active
+ *   scan lease (fix round 1: a run whose lease was stolen by a later run
+ *   is rejected by run identity, not just by fence-field comparison --
+ *   see loadScanBinding's matching check), requires exact fence-field
+ *   equality and pageSequence === nextPageSequence, persists candidates
+ *   (classification receipt -> staged, ambiguous -> review, not_receipt ->
+ *   discovered-only, never persisted), writes a durable page outcome, and
+ *   only then advances the connection's cursor/page-sequence pointer.
+ *   Duplicate pages replay via the same permanent
+ *   `app.mailbox_operation_keys` ledger migration 018 built for exactly
+ *   this purpose; out-of-order/stale/superseded pages are rejected with
+ *   `DomainError.versionConflict()` (fix round 1: the brief's required
+ *   typed VERSION_CONFLICT -- a generic conflict was used before review).
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
@@ -374,6 +375,15 @@ export function createMailboxScansDomain(
         .where("id", "=", scanRun.connection_id)
         .executeTakeFirstOrThrow();
 
+      // This run must still be the one currently holding the connection's
+      // scan lease. Without this check, a run whose lease expired and was
+      // then stolen by a later run would be handed that LATER run's
+      // current fence values (connection state is shared, not per-run),
+      // letting a stale worker masquerade as the active one.
+      if (connection.active_scan_run_id !== scanRunId) {
+        throw DomainError.versionConflict();
+      }
+
       // Both set together by startScan whenever a scan run is created, so
       // any scan run reaching this point always has non-null values here.
       return {
@@ -442,19 +452,26 @@ export function createMailboxScansDomain(
           .executeTakeFirst();
         if (!connection) throw DomainError.notFound();
 
+        // This run must still hold the connection's scan lease. A run
+        // whose lease expired and was stolen by a later run must be
+        // rejected here even if (improbably) its stale fence values still
+        // happened to match -- the run identity itself is the fence of
+        // last resort, checked before the field-level comparisons below.
+        if (connection.active_scan_run_id !== input.scanRunId) {
+          throw DomainError.versionConflict();
+        }
+
         // Exact fence-field equality + the one legal next page sequence.
         // A stale/out-of-order page (pageSequence !== connection's
         // nextPageSequence) or any fence-field mismatch is rejected
-        // without moving the cursor -- generic conflict, same precedent
-        // as advanceTokenGeneration (no distinct thrown VERSION_CONFLICT
-        // code; see this file's header comment).
+        // without moving the cursor.
         if (
           input.pageSequence !== connection.next_page_sequence ||
           input.expectedConnectionVersion !== connection.connection_version ||
           input.cursorBeforeDigest !== connection.current_cursor_digest ||
           input.preFenceToken !== connection.pre_fence_token
         ) {
-          throw DomainError.conflict();
+          throw DomainError.versionConflict();
         }
 
         const now = new Date();

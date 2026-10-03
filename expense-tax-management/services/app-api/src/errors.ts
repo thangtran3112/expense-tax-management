@@ -9,7 +9,8 @@ export type DomainErrorCode =
   | "NOT_FOUND"
   | "PRECONDITION_FAILED"
   | "UNAUTHENTICATED"
-  | "VALIDATION_ERROR";
+  | "VALIDATION_ERROR"
+  | "VERSION_CONFLICT";
 
 export class DomainError extends Error {
   private constructor(
@@ -62,6 +63,21 @@ export class DomainError extends Error {
       "IDEMPOTENCY_CONFLICT",
       409,
       "Request conflicts with a prior operation using this idempotency key",
+    );
+  }
+
+  /**
+   * A stale, out-of-order, or superseded version/fence value -- distinct
+   * from the generic CONFLICT a caller might retry unchanged. The caller
+   * must re-fetch current state before trying again (e.g. a mailbox scan
+   * page callback whose cursor/connection-version fence no longer matches,
+   * or whose scan run no longer holds the connection's scan lease).
+   */
+  static versionConflict(): DomainError {
+    return new DomainError(
+      "VERSION_CONFLICT",
+      409,
+      "Request targets a stale or superseded version",
     );
   }
 

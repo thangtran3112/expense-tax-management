@@ -314,6 +314,80 @@ describe.skipIf(!requested)(
       expect(count).toBe("1");
     });
 
+    /** Backdates the connection's scan lease so the next start attempt can
+     * steal it, simulating an expired-and-superseded run without a real
+     * sleep. */
+    function expireLease(connectionId: string): void {
+      runtimeSql(
+        `UPDATE app.mailbox_connections SET active_scan_lease_expires_at = now() - interval '1 hour' WHERE id = '${connectionId}'`,
+      );
+    }
+
+    it("rejects a stale run's loadScanBinding and candidate page after its lease is stolen by a new run; the new run succeeds", async () => {
+      const domain = createDomain();
+      const connectionId = createActiveConnection();
+
+      const runA = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      const bindingA = await domain.loadScanBinding(runA.scanRun.id);
+
+      // Run A's lease has expired but nothing has stolen it yet --
+      // loadScanBinding should still succeed for the still-active holder.
+      expireLease(connectionId);
+      await expect(domain.loadScanBinding(runA.scanRun.id)).resolves.toMatchObject({
+        scanRunId: runA.scanRun.id,
+      });
+
+      // Run B steals the lease (A's expired, so B's start CAS wins).
+      const runB = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      expect(runB.status).toBe("started");
+      expect(runB.scanRun.id).not.toBe(runA.scanRun.id);
+
+      // A is no longer the lease holder: both the binding read and the
+      // page callback must now reject it, even though A still holds
+      // fence values that were valid a moment ago.
+      await expect(domain.loadScanBinding(runA.scanRun.id)).rejects.toMatchObject({
+        code: "VERSION_CONFLICT",
+      });
+      await expect(
+        domain.recordCandidateMetadata(
+          stagingInput({
+            scanRunId: runA.scanRun.id,
+            connectionId,
+            expectedConnectionVersion: bindingA.expectedConnectionVersion,
+            cursorBeforeDigest: bindingA.currentCursorDigest,
+            preFenceToken: bindingA.preFenceToken,
+            pageSequence: 1,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+      const candidateCountForA = runtimeSql(
+        `SELECT count(*) FROM app.mailbox_candidates WHERE scan_run_id = '${runA.scanRun.id}'`,
+      );
+      expect(candidateCountForA).toBe("0");
+      const outcomeCountForA = runtimeSql(
+        `SELECT count(*) FROM app.mailbox_scan_page_outcomes WHERE scan_run_id = '${runA.scanRun.id}'`,
+      );
+      expect(outcomeCountForA).toBe("0");
+
+      // B, the real current lease holder, succeeds normally.
+      const bindingB = await domain.loadScanBinding(runB.scanRun.id);
+      const pageB = await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: runB.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: bindingB.expectedConnectionVersion,
+          cursorBeforeDigest: bindingB.currentCursorDigest,
+          preFenceToken: bindingB.preFenceToken,
+          pageSequence: 1,
+        }),
+      );
+      expect(pageB.counts.staged).toBe(1);
+    });
+
     function stagingInput(overrides: Record<string, unknown> = {}) {
       return {
         schemaVersion: 1 as const,
@@ -363,7 +437,7 @@ describe.skipIf(!requested)(
             pageSequence: 2,
           }),
         ),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
     });
 
     it("accepts page 1, then page 2, staging receipt/ambiguous and advancing the cursor only after each page is durable", async () => {
@@ -424,7 +498,7 @@ describe.skipIf(!requested)(
       expect(page2.counts).toEqual({ discovered: 1, staged: 1, review: 0, failed: 0 });
     });
 
-    it("rejects a stale cursorBeforeDigest without moving the cursor (VERSION_CONFLICT-equivalent)", async () => {
+    it("rejects a stale cursorBeforeDigest without moving the cursor (VERSION_CONFLICT)", async () => {
       const domain = createDomain();
       const connectionId = createActiveConnection();
       const started = await domain.startManualScan({
@@ -443,7 +517,7 @@ describe.skipIf(!requested)(
             pageSequence: 1,
           }),
         ),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
 
       const afterReject = await domain.loadScanBinding(started.scanRun.id);
       expect(afterReject.nextPageSequence).toBe(1);
@@ -469,7 +543,7 @@ describe.skipIf(!requested)(
             pageSequence: 1,
           }),
         ),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
     });
 
     it("rejects a mismatched expectedConnectionVersion (active connection version fence)", async () => {
@@ -491,7 +565,7 @@ describe.skipIf(!requested)(
             pageSequence: 1,
           }),
         ),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
     });
 
     it("replays a duplicate page submission with the original result, without re-staging candidates", async () => {
