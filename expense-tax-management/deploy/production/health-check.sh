@@ -15,6 +15,13 @@ endpoints=(
   "http://127.0.0.1:7302/dashboard"
   "http://127.0.0.1:7303/providers"
 )
+# Phase 3D-A Task 5 (controller ruling): mailbox broker is opt-in -- only
+# polled when the validated production env set MAILBOX_FEATURE_ENABLED=true
+# (same signal deploy.sh uses to decide whether the broker was started at
+# all). An ordinary mailbox-disabled deploy never waits on this endpoint.
+if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
+  endpoints+=("http://127.0.0.1:8300/health/live")
+fi
 
 for endpoint in "${endpoints[@]}"; do
   ready=0
