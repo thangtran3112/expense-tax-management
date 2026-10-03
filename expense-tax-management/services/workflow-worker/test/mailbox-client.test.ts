@@ -62,6 +62,18 @@ function fakeFetch(
 }
 
 describe("clients/mailbox-client.ts createMailboxAppApiClient", () => {
+  it("Phase 3D-A Task 5: throws a clear error when mailbox configuration is absent (ordinary dev->main WorkerConfig)", () => {
+    const unconfigured: WorkerConfig = {
+      ...config,
+      services: { appApiBaseUrl: config.services.appApiBaseUrl, foundryBaseUrl: config.services.foundryBaseUrl },
+      clerk: { ...config.clerk, mailboxApp: undefined, mailboxBroker: undefined },
+    };
+
+    expect(() => createMailboxAppApiClient(unconfigured)).toThrow(
+      /requires mailbox configuration/,
+    );
+  });
+
   it("requestAppApi sends the App token as a Bearer header and parses the JSON response", async () => {
     let capturedAuth = "";
     const client = createMailboxAppApiClient(config, {

@@ -104,6 +104,35 @@ describe("workerConfigFromEnv", () => {
     expect(() => workerConfigFromEnv({ ...ENV, [key]: value })).toThrow(key);
   });
 
+  it("Phase 3D-A Task 5: parses cleanly with every mailbox var omitted (ordinary dev->main deploy)", () => {
+    const env: Record<string, string | undefined> = { ...ENV };
+    delete env.MAILBOX_BROKER_BASE_URL;
+    delete env.CLERK_MAILBOX_SERVICE_AUDIENCE;
+    delete env.CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY;
+    delete env.CLERK_MAILBOX_WORKER_SUBJECT;
+
+    const config = workerConfigFromEnv(env);
+
+    expect(config.services.mailboxBrokerBaseUrl).toBeUndefined();
+    expect(config.clerk.mailboxApp).toBeUndefined();
+    expect(config.clerk.mailboxBroker).toBeUndefined();
+  });
+
+  it.each([
+    "MAILBOX_BROKER_BASE_URL",
+    "CLERK_MAILBOX_SERVICE_AUDIENCE",
+    "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
+    "CLERK_MAILBOX_WORKER_SUBJECT",
+  ])(
+    "Phase 3D-A Task 5: rejects a partially-set mailbox configuration missing only %s",
+    (missingKey) => {
+      const env: Record<string, string | undefined> = { ...ENV };
+      delete env[missingKey];
+
+      expect(() => workerConfigFromEnv(env)).toThrow(/must all be set together or all omitted/);
+    },
+  );
+
   it.each([
     ["CLERK_APP_SERVICE_AUDIENCE", "app-audience"],
     ["CLERK_APP_MACHINE_SECRET_KEY", "not-yet-issued"],

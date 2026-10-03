@@ -125,13 +125,27 @@ export function createMailboxAppApiClient(
   const fetchImplementation = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
 
+  // Phase 3D-A Task 5 (controller ruling): mailbox config is optional on
+  // WorkerConfig (ordinary dev->main deploys carry none at all). This
+  // client is only ever constructed by a caller that actually wants a
+  // mailbox client, so a missing credential here is a real
+  // misconfiguration -- fail fast with a clear error instead of minting a
+  // token request with `undefined` credentials.
+  const { mailboxApp, mailboxBroker } = config.clerk;
+  const { mailboxBrokerBaseUrl } = config.services;
+  if (!mailboxApp || !mailboxBroker || !mailboxBrokerBaseUrl) {
+    throw new Error(
+      "createMailboxAppApiClient requires mailbox configuration (MAILBOX_BROKER_BASE_URL, CLERK_MAILBOX_SERVICE_AUDIENCE, CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_SUBJECT) to be set",
+    );
+  }
+
   const appTokenProvider =
     options.appTokenProvider ??
     createMachineTokenProvider(
       {
         issuerUrl: config.clerk.issuerUrl,
         jwksUrl: config.clerk.jwksUrl,
-        credentials: config.clerk.mailboxApp,
+        credentials: mailboxApp,
         scopes: ["mailbox:discover", "mailbox:materialize"],
       },
       { fetch: fetchImplementation },
@@ -142,7 +156,7 @@ export function createMailboxAppApiClient(
       {
         issuerUrl: config.clerk.issuerUrl,
         jwksUrl: config.clerk.jwksUrl,
-        credentials: config.clerk.mailboxBroker,
+        credentials: mailboxBroker,
         scopes: ["mailbox:discover", "mailbox:materialize"],
       },
       { fetch: fetchImplementation },
@@ -205,7 +219,7 @@ export function createMailboxAppApiClient(
       return request(config.services.appApiBaseUrl, appTokenProvider, input);
     },
     requestBroker(input) {
-      return request(config.services.mailboxBrokerBaseUrl, brokerTokenProvider, input);
+      return request(mailboxBrokerBaseUrl, brokerTokenProvider, input);
     },
   };
 }
