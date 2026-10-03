@@ -29,6 +29,31 @@ export interface ClerkConfig {
   readonly publishableKey?: string | undefined;
   readonly secretKey?: string | undefined;
   readonly webhookSigningSecret?: string | undefined;
+  /**
+   * Phase 3D-A: App API's own outbound M2M credential to call the mailbox
+   * broker (subject "app-api-mailbox"). Optional -- absent until an
+   * operator provisions the broker's env vars -- so existing deployments
+   * and fixtures that predate the mailbox broker keep working unchanged.
+   */
+  readonly mailboxBrokerBaseUrl?: string | undefined;
+  readonly mailboxServiceAudience?: string | undefined;
+  readonly mailboxAppApiMachineSecretKey?: string | undefined;
+  readonly mailboxAppApiSubject?: string | undefined;
+  /**
+   * Expected-subject config for the two inbound mailbox route families.
+   * Optional with a literal fallback at the call site (same pattern as
+   * `options.workerServiceSubject ?? "ai-worker"` elsewhere in this
+   * service), not required here.
+   */
+  readonly mailboxBrokerServiceSubject?: string | undefined;
+  readonly mailboxWorkerServiceSubject?: string | undefined;
+}
+
+/** Shared outbound M2M credential shape (ported from workflow-worker's config). */
+export interface MachineCredentialConfig {
+  readonly audience: string;
+  readonly machineSecretKey: string;
+  readonly subject: string;
 }
 
 export interface InboundEmailConfig {
@@ -119,6 +144,28 @@ function optionalEnvironmentValue(
   return value || undefined;
 }
 
+/**
+ * Optional HTTP(S) base URL. Used for the mailbox broker's Compose-internal
+ * origin (`http://mailbox-broker:8300`), unlike `urlEnvironmentValue`'s
+ * HTTPS-only Clerk URLs -- Docker's internal DNS has no TLS.
+ */
+function optionalBaseUrlEnvironmentValue(
+  env: Readonly<Record<string, string | undefined>>,
+  key: string,
+): string | undefined {
+  const value = optionalEnvironmentValue(env, key);
+  if (value === undefined) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("unsupported protocol");
+    }
+  } catch {
+    throw new Error(`Invalid URL in environment variable: ${key}`);
+  }
+  return value;
+}
+
 export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
   const port = options.port ?? 8100;
   const env = options.env ?? process.env;
@@ -201,6 +248,30 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
           webhookSigningSecret: optionalEnvironmentValue(
             env,
             "CLERK_WEBHOOK_SIGNING_SECRET",
+          ),
+          mailboxBrokerBaseUrl: optionalBaseUrlEnvironmentValue(
+            env,
+            "MAILBOX_BROKER_BASE_URL",
+          ),
+          mailboxServiceAudience: optionalEnvironmentValue(
+            env,
+            "CLERK_MAILBOX_SERVICE_AUDIENCE",
+          ),
+          mailboxAppApiMachineSecretKey: optionalEnvironmentValue(
+            env,
+            "CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY",
+          ),
+          mailboxAppApiSubject: optionalEnvironmentValue(
+            env,
+            "CLERK_MAILBOX_APP_API_SUBJECT",
+          ),
+          mailboxBrokerServiceSubject: optionalEnvironmentValue(
+            env,
+            "CLERK_MAILBOX_BROKER_SUBJECT",
+          ),
+          mailboxWorkerServiceSubject: optionalEnvironmentValue(
+            env,
+            "CLERK_MAILBOX_WORKER_SUBJECT",
           ),
         }
       : undefined;

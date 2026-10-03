@@ -55,6 +55,14 @@ export class DomainError extends Error {
       "Request precondition failed",
     );
   }
+
+  static idempotencyConflict(): DomainError {
+    return new DomainError(
+      "IDEMPOTENCY_CONFLICT",
+      409,
+      "Request conflicts with a prior operation using this idempotency key",
+    );
+  }
 }
 
 interface ErrorEnvelope {
