@@ -352,7 +352,53 @@ describe.skipIf(!requested)(
           WHERE id = '${attemptId}';
         `);
         expect(result).toContain("STDERR:");
-        expect(result).toMatch(/invalid mailbox OAuth attempt status transition: completed -> cancelled/);
+        // Terminal rows are now rejected by the immutability check before
+        // the transition-edge check ever runs, so the message is the
+        // terminal one, not "invalid ... transition: completed -> cancelled".
+        expect(result).toMatch(/terminal mailbox OAuth attempt is immutable: completed/);
+      });
+
+      it("rejects a same-status UPDATE of a terminal (completed) row -- terminal rows are fully immutable, not just forward-only", () => {
+        const connectionId = randomUUID();
+        const attemptId = randomUUID();
+        insertConnection(connectionId);
+        insertAttempt(attemptId, connectionId);
+        runtimeSqlOk(`
+          UPDATE app.mailbox_oauth_attempts SET status = 'consumed', consumed_at = now()
+          WHERE id = '${attemptId}';
+        `);
+        runtimeSqlOk(`
+          UPDATE app.mailbox_oauth_attempts SET status = 'completed', completed_at = now()
+          WHERE id = '${attemptId}';
+        `);
+
+        // Same status, only touching an otherwise-mutable-looking column
+        // (completed_at) -- a same-status early return in the trigger
+        // would let this through even though the row is terminal.
+        const result = runtimeSqlExpectError(`
+          UPDATE app.mailbox_oauth_attempts SET status = 'completed', completed_at = now()
+          WHERE id = '${attemptId}';
+        `);
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/terminal mailbox OAuth attempt is immutable/);
+      });
+
+      it("rejects a same-status UPDATE of a terminal (expired) row", () => {
+        const connectionId = randomUUID();
+        const attemptId = randomUUID();
+        insertConnection(connectionId);
+        insertAttempt(attemptId, connectionId);
+        runtimeSqlOk(`
+          UPDATE app.mailbox_oauth_attempts SET status = 'expired'
+          WHERE id = '${attemptId}';
+        `);
+
+        const result = runtimeSqlExpectError(`
+          UPDATE app.mailbox_oauth_attempts SET status = 'expired'
+          WHERE id = '${attemptId}';
+        `);
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/terminal mailbox OAuth attempt is immutable/);
       });
 
       it("allows pending -> expired directly", () => {

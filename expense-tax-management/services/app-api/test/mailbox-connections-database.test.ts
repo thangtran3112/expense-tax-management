@@ -138,6 +138,27 @@ describe("mailbox connections migration 018 – app.mailbox_oauth_attempts", () 
       /OLD\.status = 'consumed' AND NEW\.status IN \('completed', 'cancelled'\)/,
     );
   });
+
+  it("rejects ANY update of a terminal row, including a same-status update (terminal rows are fully immutable, not just forward-only)", () => {
+    const functionMatch = migration.match(
+      /CREATE OR REPLACE FUNCTION app\.prevent_mailbox_oauth_attempt_invalid_transition\(\)[\s\S]*?\$function\$;/,
+    );
+    expect(functionMatch).not.toBeNull();
+    const body = functionMatch![0];
+
+    // The terminal-immutability check must come first and must NOT be
+    // guarded by "OLD.status = NEW.status" -- a same-status early return
+    // placed before this check would let a completed/expired/cancelled
+    // row be "updated" (e.g. touching an unrelated column) as long as
+    // status itself didn't change, which is not fully immutable.
+    const terminalCheckIndex = body.search(
+      /OLD\.status IN \('completed', 'expired', 'cancelled'\)/,
+    );
+    const sameStatusShortcutIndex = body.search(/OLD\.status = NEW\.status THEN\s*\n\s*RETURN NEW/);
+    expect(terminalCheckIndex).toBeGreaterThanOrEqual(0);
+    expect(sameStatusShortcutIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalCheckIndex).toBeLessThan(sameStatusShortcutIndex);
+  });
 });
 
 describe("mailbox connections migration 018 – app.mailbox_reviewer_grants", () => {

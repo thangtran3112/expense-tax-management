@@ -188,6 +188,15 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     LANGUAGE plpgsql
     AS $function$
     BEGIN
+      -- Terminal rows are fully immutable: reject every UPDATE, including
+      -- one that keeps the same status (e.g. re-touching completed_at).
+      -- This check must run before -- and must NOT be short-circuited by
+      -- -- the same-status allowance below, otherwise a same-status
+      -- UPDATE on a completed/expired/cancelled row would slip through.
+      IF OLD.status IN ('completed', 'expired', 'cancelled') THEN
+        RAISE EXCEPTION 'terminal mailbox OAuth attempt is immutable: %', OLD.status;
+      END IF;
+
       IF OLD.status = NEW.status THEN
         RETURN NEW;
       END IF;
