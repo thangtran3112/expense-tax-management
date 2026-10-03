@@ -317,6 +317,7 @@ describe("buildProductionBundle", () => {
       "INBOUND_EMAIL_BASE_ADDRESS=receipts@inbound.expense-tax.local",
       `INBOUND_ROUTING_TOKEN_SECRET=${"22".repeat(32)}`,
       `INBOUND_WEBHOOK_SIGNING_KEY=${"33".repeat(32)}`,
+      "MAILBOX_FEATURE_ENABLED=false",
       "OPENAI_API_KEY=openai",
       "OPENROUTER_API_KEY=openrouter",
       "STORAGE_BACKEND=local",
@@ -362,6 +363,162 @@ describe("buildProductionBundle", () => {
     } catch (error) {
       expect(error.message).not.toContain(value);
     }
+  });
+});
+
+const mailboxRequiredShellEnv = {
+  CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY: "ak_test_mailbox_app_api_secret",
+  CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_test_mailbox_worker_secret",
+  CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY: "ak_test_mailbox_broker_secret",
+  MAILBOX_VAULT_KEYS: '[{"keyId":"k1","key":"' + "a".repeat(44) + '"}]',
+  MAILBOX_VAULT_ACTIVE_KEY_ID: "k1",
+  MAILBOX_BROKER_PUBLIC_BASE_URL: "https://expense-mailbox.tobytran.dev",
+  MAILBOX_ALLOWED_REDIRECT_ORIGINS: "https://expense-office.tobytran.dev",
+  GOOGLE_OAUTH_CLIENT_ID: "test-google-client-id",
+  GOOGLE_OAUTH_CLIENT_SECRET: "test-google-client-secret",
+  GOOGLE_OAUTH_REDIRECT_URI: "https://expense-mailbox.tobytran.dev/oauth/google/callback",
+};
+const mailboxDatabaseFixture = {
+  MAILBOX_BROKER_DATABASE_URL:
+    "postgresql://mailbox_vault_runtime:runtime-password@127.0.0.1:15432/mailbox_vault",
+  MAILBOX_BROKER_MIGRATION_DATABASE_URL:
+    "postgresql://mailbox_vault_migrator:migrator-password@127.0.0.1:15432/mailbox_vault",
+};
+
+describe("buildProductionBundle — Phase 3D-A Task 5 mailbox opt-in", () => {
+  it("emits MAILBOX_FEATURE_ENABLED=false and no mailbox keys when the shell never opts in", () => {
+    const bundle = buildProductionBundle({
+      shellEnv: requiredShellEnv,
+      databaseEnv: databaseFixture,
+      randomBytes: () => Buffer.alloc(32, 7),
+    });
+
+    expect(bundle).toContain("MAILBOX_FEATURE_ENABLED=false");
+    for (const key of [
+      ...Object.keys(mailboxRequiredShellEnv),
+      ...Object.keys(mailboxDatabaseFixture),
+      "CLERK_MAILBOX_SERVICE_AUDIENCE",
+      "CLERK_MAILBOX_APP_API_SUBJECT",
+      "CLERK_MAILBOX_WORKER_SUBJECT",
+      "CLERK_MAILBOX_BROKER_SUBJECT",
+      "MAILBOX_SERVICE_TOKEN_ISSUER",
+      "MAILBOX_SERVICE_TOKEN_AUDIENCE",
+      "MAILBOX_SERVICE_JWKS_URL",
+    ]) {
+      expect(bundle).not.toContain(`${key}=`);
+    }
+  });
+
+  it("does not require any mailbox key when MAILBOX_FEATURE_ENABLED is absent from the shell, even with a mailbox database env present", () => {
+    expect(() =>
+      buildProductionBundle({
+        shellEnv: requiredShellEnv,
+        databaseEnv: { ...databaseFixture, ...mailboxDatabaseFixture },
+        randomBytes: () => Buffer.alloc(32, 7),
+      }),
+    ).not.toThrow();
+  });
+
+  it("requires every mailbox shell/database key, with fail-closed defaults for the Clerk runtime subset, once MAILBOX_FEATURE_ENABLED=true", () => {
+    const bundle = buildProductionBundle({
+      shellEnv: { ...requiredShellEnv, MAILBOX_FEATURE_ENABLED: "true", ...mailboxRequiredShellEnv },
+      databaseEnv: { ...databaseFixture, ...mailboxDatabaseFixture },
+      randomBytes: () => Buffer.alloc(32, 7),
+    });
+
+    expect(bundle).toContain("MAILBOX_FEATURE_ENABLED=true");
+    for (const [key, value] of Object.entries(mailboxRequiredShellEnv)) {
+      expect(bundle).toContain(`${key}=${value}`);
+    }
+    expect(bundle).toContain(
+      "MAILBOX_BROKER_DATABASE_URL=postgresql://mailbox_vault_runtime:runtime-password@postgres:5432/mailbox_vault",
+    );
+    expect(bundle).toContain(
+      "MAILBOX_BROKER_MIGRATION_DATABASE_URL=postgresql://mailbox_vault_migrator:migrator-password@postgres:5432/mailbox_vault",
+    );
+    expect(bundle).not.toContain("127.0.0.1:15432");
+    // Clerk mailbox runtime subset: optional, fail-closed when unset.
+    expect(bundle).toContain("CLERK_MAILBOX_APP_API_SUBJECT=app-api-mailbox-not-configured");
+    expect(bundle).toContain("CLERK_MAILBOX_WORKER_SUBJECT=workflow-worker-mailbox-not-configured");
+    expect(bundle).toContain("CLERK_MAILBOX_BROKER_SUBJECT=mailbox-broker-app-not-configured");
+    expect(bundle).toContain("CLERK_MAILBOX_SERVICE_AUDIENCE=mch_3J9hMailboxSvcAud01");
+    // Broker-verifier-only config: always fail-closed, never shell-overridable.
+    expect(bundle).toContain("MAILBOX_SERVICE_TOKEN_ISSUER=https://services.not-configured.invalid");
+  });
+
+  it("carries real mailbox Clerk runtime values from the shell while MAILBOX_FEATURE_ENABLED=true", () => {
+    const bundle = buildProductionBundle({
+      shellEnv: {
+        ...requiredShellEnv,
+        MAILBOX_FEATURE_ENABLED: "true",
+        ...mailboxRequiredShellEnv,
+        CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_realMailboxAudience",
+        CLERK_MAILBOX_APP_API_SUBJECT: "app-api-mailbox",
+        CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox",
+        CLERK_MAILBOX_BROKER_SUBJECT: "mailbox-broker-app",
+      },
+      databaseEnv: { ...databaseFixture, ...mailboxDatabaseFixture },
+      randomBytes: () => Buffer.alloc(32, 7),
+    });
+
+    expect(bundle).toContain("CLERK_MAILBOX_SERVICE_AUDIENCE=mch_realMailboxAudience");
+    expect(bundle).toContain("CLERK_MAILBOX_APP_API_SUBJECT=app-api-mailbox");
+    expect(bundle).toContain("CLERK_MAILBOX_WORKER_SUBJECT=workflow-worker-mailbox");
+    expect(bundle).toContain("CLERK_MAILBOX_BROKER_SUBJECT=mailbox-broker-app");
+  });
+
+  it.each(Object.keys(mailboxRequiredShellEnv))(
+    "names only missing required mailbox shell key %s once enabled",
+    (key) => {
+      const shellEnv = {
+        ...requiredShellEnv,
+        MAILBOX_FEATURE_ENABLED: "true",
+        ...mailboxRequiredShellEnv,
+      };
+      delete shellEnv[key];
+
+      expect(() =>
+        buildProductionBundle({
+          shellEnv,
+          databaseEnv: { ...databaseFixture, ...mailboxDatabaseFixture },
+        }),
+      ).toThrowError(new RegExp(`missing required environment keys: ${key}$`));
+    },
+  );
+
+  it.each(Object.keys(mailboxDatabaseFixture))(
+    "names only missing required mailbox database key %s once enabled",
+    (key) => {
+      const databaseEnv = { ...databaseFixture, ...mailboxDatabaseFixture };
+      delete databaseEnv[key];
+
+      expect(() =>
+        buildProductionBundle({
+          shellEnv: { ...requiredShellEnv, MAILBOX_FEATURE_ENABLED: "true", ...mailboxRequiredShellEnv },
+          databaseEnv,
+        }),
+      ).toThrowError(new RegExp(`missing required environment keys: ${key}$`));
+    },
+  );
+
+  it("requires mailbox shell/Clerk-runtime keys in protected sync input only inside the MAILBOX_FEATURE_ENABLED guard", () => {
+    expect(syncScript).toContain('if [[ "$MAILBOX_FEATURE_ENABLED" == "true" ]]; then');
+    for (const key of [
+      ...Object.keys(mailboxRequiredShellEnv),
+      "CLERK_MAILBOX_SERVICE_AUDIENCE",
+      "CLERK_MAILBOX_APP_API_SUBJECT",
+      "CLERK_MAILBOX_WORKER_SUBJECT",
+      "CLERK_MAILBOX_BROKER_SUBJECT",
+    ]) {
+      expect(syncScript).toContain(`: "\${${key}:?`);
+      expect(syncScript).toContain(`export ${key}=%q`);
+      expect(syncScript).toContain(`${key}: process.env.${key}`);
+    }
+    expect(syncScript).toContain("export MAILBOX_FEATURE_ENABLED=%q");
+    expect(syncScript).toContain("MAILBOX_FEATURE_ENABLED: process.env.MAILBOX_FEATURE_ENABLED");
+    // Mailbox vault database URLs flow via databaseEnv, never shellEnv.
+    expect(syncScript).not.toContain("MAILBOX_BROKER_DATABASE_URL");
+    expect(syncScript).not.toContain("MAILBOX_BROKER_MIGRATION_DATABASE_URL");
   });
 });
 
