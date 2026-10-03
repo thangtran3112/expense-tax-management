@@ -734,6 +734,11 @@ export interface MailboxConnectionTable {
   token_operation_lease_expires_at: NullableTimestamp;
   active_scan_run_id: string | null;
   active_scan_lease_expires_at: NullableTimestamp;
+  /** Cursor fence columns (migration 019). Opaque beyond CAS/ordering. */
+  current_history_id: string | null;
+  current_cursor_digest: string | null;
+  pre_fence_token: string | null;
+  next_page_sequence: Generated<number>;
   readonly created_at: GeneratedTimestamp;
   updated_at: GeneratedTimestamp;
   revoked_at: NullableTimestamp;
@@ -774,6 +779,73 @@ export interface MailboxOperationKeyTable {
   readonly normalized_request_hash: string;
   response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
   readonly created_at: GeneratedTimestamp;
+}
+
+export interface MailboxScanRunTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly initiated_by: string;
+  readonly entitlement_version: number;
+  readonly connection_version: number;
+  status: "pending" | "running" | "completed" | "partial" | "failed" | "skipped";
+  discovered_count: Generated<number>;
+  staged_count: Generated<number>;
+  review_count: Generated<number>;
+  duplicate_count: Generated<number>;
+  skipped_count: Generated<number>;
+  failed_count: Generated<number>;
+  error_code: NullableText;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  readonly created_at: GeneratedTimestamp;
+  started_at: NullableTimestamp;
+  completed_at: NullableTimestamp;
+}
+
+export interface MailboxCandidateTable {
+  readonly id: string;
+  readonly scan_run_id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly received_at: Timestamp;
+  readonly sender_address: string;
+  readonly sender_domain: string;
+  subject: string;
+  readonly content_hash: string;
+  attachment_manifest: ColumnType<JsonValue, JsonValue | undefined, JsonValue>;
+  classification: "receipt" | "ambiguous" | "not_receipt";
+  confidence: MoneyAmount;
+  evidence: ColumnType<string[], string[], string[]>;
+  candidate_personal_profile_id: string | null;
+  candidate_business_id: string | null;
+  status: "staged" | "review" | "queued" | "processed" | "duplicate" | "skipped" | "failed";
+  processing_job_id: string | null;
+  expense_id: string | null;
+  source_id: string | null;
+  duplicate_match_id: string | null;
+  version: Generated<number>;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  error_code: NullableText;
+  readonly provider_message_id: string;
+  provider_thread_id: string | null;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
+export interface MailboxScanPageOutcomeTable {
+  readonly id: string;
+  readonly scan_run_id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly page_sequence: number;
+  candidate_count: Generated<number>;
+  retry_count: Generated<number>;
+  status: "pending" | "completed" | "failed";
+  last_error_code: NullableText;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
 }
 
 export interface AppDatabase {
@@ -832,4 +904,7 @@ export interface AppDatabase {
   readonly "app.mailbox_oauth_attempts": MailboxOAuthAttemptTable;
   readonly "app.mailbox_reviewer_grants": MailboxReviewerGrantTable;
   readonly "app.mailbox_operation_keys": MailboxOperationKeyTable;
+  readonly "app.mailbox_scan_runs": MailboxScanRunTable;
+  readonly "app.mailbox_candidates": MailboxCandidateTable;
+  readonly "app.mailbox_scan_page_outcomes": MailboxScanPageOutcomeTable;
 }

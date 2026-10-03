@@ -23,12 +23,22 @@ export const FORWARDED_RECEIPT_WORKFLOW_TYPE = "ForwardedReceiptWorkflow";
 export const OCR_EXTRACTION_RESULT_SCHEMA_VERSION = "ocr-extraction-v1";
 export const EXPENSE_ENRICHMENT_WORKFLOW_TYPE = "ExpenseEnrichmentWorkflow";
 export const EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION = "expense-enrichment-v1";
+/**
+ * Phase 3D-B mailbox scan workflow. TypeScript-only: it has no Python
+ * `ai-worker` implementation and never will (see 3D-B pre-flight C2/C4), so
+ * later tasks start it directly against TARGET_TEMPORAL_NAMESPACE /
+ * AI_WORKER_TASK_QUEUE rather than through the generation-fenced
+ * app.temporal_dispatch_routing path used by OCR/enrichment/forwarded-
+ * receipt during their Task 7 cutover window.
+ */
+export const MAILBOX_SCAN_WORKFLOW_TYPE = "MailboxScanWorkflow";
 
 export const WorkflowTypeSchema = z.enum([
   FOUNDATION_ECHO_WORKFLOW_TYPE,
   OCR_RECEIPT_WORKFLOW_TYPE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
 ]);
 export type WorkflowType = z.infer<typeof WorkflowTypeSchema>;
 

@@ -33,6 +33,7 @@ export {
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
   WorkflowResultSchema,
   WorkflowTypeSchema,
   type WorkflowResult,
@@ -140,6 +141,7 @@ export * from "./ocr.js";
 export * from "./duplicate-matches.js";
 export * from "./enrichment.js";
 export * from "./mailbox.js";
+export * from "./mailbox-discovery.js";
 export {
   IdempotencyKeyHeaderSchema,
   PersonalProfileSchema,

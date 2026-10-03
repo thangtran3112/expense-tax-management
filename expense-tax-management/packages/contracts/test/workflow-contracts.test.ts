@@ -8,6 +8,7 @@ import {
   JobReferenceV1Schema,
   LEGACY_AI_WORKER_TASK_QUEUE,
   LEGACY_TEMPORAL_NAMESPACE,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
   OCR_RECEIPT_WORKFLOW_TYPE,
   TARGET_TEMPORAL_NAMESPACE,
   WorkflowResultSchema,
@@ -19,6 +20,7 @@ const workflowTypes = [
   OCR_RECEIPT_WORKFLOW_TYPE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
 ] as const;
 
 describe("Temporal workflow compatibility", () => {
@@ -28,6 +30,7 @@ describe("Temporal workflow compatibility", () => {
       "OcrReceiptWorkflow",
       "ForwardedReceiptWorkflow",
       "ExpenseEnrichmentWorkflow",
+      "MailboxScanWorkflow",
     ]);
     expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
   });
@@ -37,6 +40,12 @@ describe("Temporal workflow compatibility", () => {
     expect(LEGACY_TEMPORAL_NAMESPACE).toBe("default");
     expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
     // The target queue constant must keep its existing name/value.
+    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
+  });
+
+  it("freezes the mailbox scan workflow type and its dispatch target (Phase 3D-B: TypeScript-only, no legacy Python implementation, so later tasks start it directly against TARGET_TEMPORAL_NAMESPACE/AI_WORKER_TASK_QUEUE instead of the generation-fenced routing path)", () => {
+    expect(MAILBOX_SCAN_WORKFLOW_TYPE).toBe("MailboxScanWorkflow");
+    expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
     expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
   });
 
