@@ -7,6 +7,8 @@ import { AppApiClientError, type AppApiClient } from "../clients/app-api.js";
 import { FoundryClientError, type FoundryClient } from "../clients/foundry.js";
 import { evaluateEnrichment } from "./enrichment.js";
 
+export { createMailboxActivities, type MailboxActivityDependencies } from "./mailbox.js";
+
 function permanentClientFailure(error: unknown): boolean {
   return error instanceof AppApiClientError && error.status !== undefined &&
     error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);

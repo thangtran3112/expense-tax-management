@@ -6,6 +6,17 @@
  * by the broker's own service principal (subject "mailbox-broker-app",
  * scope "mailbox:write") -- same convention as
  * routes/mailbox-connections.ts's internal routes.
+ *
+ * Phase 3D-B Task 3 (beyond the task-3 brief's literal file list --
+ * ruling, see task-3-report.md) adds a third, worker-facing route: a
+ * native Temporal Schedule's action args are fixed at creation time, so
+ * the daily-schedule's trigger workflow cannot carry a real `scanRunId`
+ * (App API mints that only when the schedule fires). This route is the
+ * one App-reachable entry point that lets the trigger workflow's own
+ * activity mint it, guarded by the worker's own service principal
+ * (subject "workflow-worker-mailbox", scope "mailbox:discover" -- the
+ * exact subject/scope pair 3D-A Task 5 already provisioned for this
+ * worker identity, never the broker's).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -23,6 +34,8 @@ export interface MailboxInternalRouteOptions {
   readonly mailboxScansDomain: MailboxScansDomain;
   /** Default mirrors the plan's exact machine subject: "mailbox-broker-app". */
   readonly brokerServiceSubject?: string;
+  /** Default mirrors 3D-A Task 5's exact worker machine subject: "workflow-worker-mailbox". */
+  readonly workerServiceSubject?: string;
 }
 
 const errors = { 401: ErrorResponseSchema, 403: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema };
@@ -77,6 +90,25 @@ const CandidatePagesResponseSchema = z.strictObject({
   }),
 });
 
+const ConnectionIdParamsSchema = z.strictObject({ connectionId: z.uuid() });
+
+const ScheduledScanBodySchema = z.strictObject({
+  /**
+   * The trigger workflow's own fixed Schedule args carry `tenantId`
+   * alongside `connectionId` (see mailbox-schedules.ts) specifically so
+   * this worker-facing route can call `startScheduledScan` without
+   * needing its own connectionId -> tenantId lookup -- domain/mailbox-
+   * scans.ts (Task 2, under concurrent re-review) is untouched.
+   */
+  tenantId: z.uuid(),
+  requestId: z.string().trim().min(1).max(500),
+});
+
+const ScheduledScanResponseSchema = z.strictObject({
+  status: z.enum(["started", "skipped_overlap"]),
+  scanRunId: z.uuid(),
+});
+
 export async function registerMailboxInternalRoutes(
   app: FastifyInstance,
   options: MailboxInternalRouteOptions,
@@ -84,6 +116,9 @@ export async function registerMailboxInternalRoutes(
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
   const brokerGuard = [
     serviceGuard(options.brokerServiceSubject ?? "mailbox-broker-app", ["mailbox:write"]),
+  ];
+  const workerGuard = [
+    serviceGuard(options.workerServiceSubject ?? "workflow-worker-mailbox", ["mailbox:discover"]),
   ];
 
   typedApp.post(
@@ -129,6 +164,28 @@ export async function registerMailboxInternalRoutes(
         idempotencyKey: request.body.idempotencyKey,
       });
       return { ...result, candidateIds: [...result.candidateIds] };
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/connections/:connectionId/scheduled-scans",
+    {
+      preHandler: workerGuard,
+      schema: {
+        hide: true,
+        params: ConnectionIdParamsSchema,
+        body: ScheduledScanBodySchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: ScheduledScanResponseSchema, ...errors },
+      },
+    },
+    async (request) => {
+      const result = await options.mailboxScansDomain.startScheduledScan({
+        tenantId: request.body.tenantId,
+        connectionId: request.params.connectionId,
+        requestId: request.body.requestId,
+      });
+      return { status: result.status, scanRunId: result.scanRun.id };
     },
   );
 }

@@ -18,6 +18,7 @@
  * `CLERK_MAILBOX_SERVICE_AUDIENCE`, new) for calls directly to the
  * broker.
  */
+import type { DiscoveryPageV1 } from "@expense-tax/contracts";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../config.js";
@@ -65,6 +66,30 @@ export interface MailboxApiRequestInput<T> {
   readonly body?: unknown;
 }
 
+/**
+ * Phase 3D-B Task 3. `DiscoveryPageV1` is a plain interface in
+ * `@expense-tax/contracts` (Temporal-boundary payloads are deliberately
+ * not Zod-validated there -- Task 1 Ruling 2 precedent), but
+ * `MailboxApiRequestInput.responseSchema` needs a real runtime schema;
+ * this one is local to the client that actually makes the HTTP call.
+ */
+const DiscoveryPageV1Schema = z.object({
+  scanRunId: z.string(),
+  pageSequence: z.number(),
+  candidateCount: z.number(),
+  retryCount: z.number(),
+});
+
+export interface StartScheduledScanResult {
+  readonly status: "started" | "skipped_overlap";
+  readonly scanRunId: string;
+}
+
+const StartScheduledScanResultSchema = z.object({
+  status: z.enum(["started", "skipped_overlap"]),
+  scanRunId: z.string(),
+});
+
 export interface MailboxAppApiClient {
   /** Mints (and caches) a Clerk M2M token scoped to the worker's mailbox identity, audience = App API. */
   mintAppToken(): Promise<string>;
@@ -74,6 +99,25 @@ export interface MailboxAppApiClient {
   requestAppApi<T>(input: MailboxApiRequestInput<T>): Promise<T>;
   /** Authenticated request directly against the mailbox broker (base URL from `config.services.mailboxBrokerBaseUrl`). */
   requestBroker<T>(input: MailboxApiRequestInput<T>): Promise<T>;
+  /**
+   * Phase 3D-B Task 3 handoff note: named convenience method built on top
+   * of `requestBroker`, rather than a pre-existing `.runDiscovery()` this
+   * client never had. Sends only `scanRunId` -- the broker resolves
+   * connectionId/fence state itself via its own `loadScanBinding` call to
+   * App API, never from the worker.
+   */
+  discoverPage(scanRunId: string): Promise<DiscoveryPageV1>;
+  /**
+   * Phase 3D-B Task 3. Mints (or replays) the scan run for a Temporal-
+   * Schedule-triggered scan. `tenantId` rides the Schedule's own fixed
+   * trigger-workflow args (see app-api/src/temporal/mailbox-schedules.ts)
+   * so this call never needs its own connectionId -> tenantId lookup.
+   */
+  startScheduledScan(input: {
+    readonly tenantId: string;
+    readonly connectionId: string;
+    readonly requestId: string;
+  }): Promise<StartScheduledScanResult>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -212,7 +256,7 @@ export function createMailboxAppApiClient(
     }
   }
 
-  return {
+  const client: MailboxAppApiClient = {
     mintAppToken: appTokenProvider,
     mintBrokerToken: brokerTokenProvider,
     requestAppApi(input) {
@@ -221,5 +265,21 @@ export function createMailboxAppApiClient(
     requestBroker(input) {
       return request(mailboxBrokerBaseUrl, brokerTokenProvider, input);
     },
+    discoverPage(scanRunId) {
+      return client.requestBroker({
+        path: `/internal/v1/mailbox/scan-runs/${scanRunId}/discover`,
+        method: "POST",
+        responseSchema: DiscoveryPageV1Schema,
+      });
+    },
+    startScheduledScan({ tenantId, connectionId, requestId }) {
+      return client.requestAppApi({
+        path: `/internal/v1/mailbox/connections/${connectionId}/scheduled-scans`,
+        method: "POST",
+        responseSchema: StartScheduledScanResultSchema,
+        body: { tenantId, requestId },
+      });
+    },
   };
+  return client;
 }

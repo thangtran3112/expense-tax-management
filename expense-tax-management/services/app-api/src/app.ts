@@ -115,6 +115,7 @@ import {
   createTemporalWorkflowStarter,
   type TemporalWorkflowStarter,
 } from "./temporal/client.js";
+import { createMailboxScanDispatch } from "./temporal/mailbox-schedules.js";
 import type { Kysely } from "kysely";
 
 const SENSITIVE_FIELD_NAMES = [
@@ -466,7 +467,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const mailboxScansDomain =
     options.mailboxScansDomain ??
     (options.config.mailboxEnabled
-      ? createMailboxScansDomain(database, { plansDomain })
+      ? createMailboxScanDispatch(
+          createMailboxScansDomain(database, { plansDomain }),
+          temporalStarter,
+        )
       : createDisabledMailboxScansDomain());
   // Always registered (same pattern as every other route group in this
   // file) so the customer-facing route is always present in the generated
@@ -489,6 +493,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     mailboxScansDomain,
     ...(options.config.clerk?.mailboxBrokerServiceSubject
       ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
+    ...(options.config.clerk?.mailboxWorkerServiceSubject
+      ? { workerServiceSubject: options.config.clerk.mailboxWorkerServiceSubject }
       : {}),
   });
   const exportsDomain =

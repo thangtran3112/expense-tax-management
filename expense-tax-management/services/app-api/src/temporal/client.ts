@@ -1,5 +1,9 @@
 import { Client, Connection } from "@temporalio/client";
-import type { JobReferenceV1, WorkflowType } from "@expense-tax/contracts";
+import type {
+  JobReferenceV1,
+  MailboxScanExecutionInputV1,
+  WorkflowType,
+} from "@expense-tax/contracts";
 
 export interface StartWorkflowInput {
   readonly workflowType: WorkflowType;
@@ -14,7 +18,13 @@ export interface StartWorkflowInput {
    * configured default namespace when omitted.
    */
   readonly namespace?: string;
-  readonly args: readonly [JobReferenceV1];
+  /**
+   * Phase 3D-B Task 3: widened to also carry the opaque mailbox-scan
+   * execution payload (`{schemaVersion, scanRunId}` only -- never fence/
+   * provider fields). Still exactly one positional arg either way, same
+   * as every existing workflow's `(jobReference)` signature.
+   */
+  readonly args: readonly [JobReferenceV1] | readonly [MailboxScanExecutionInputV1];
 }
 
 export interface StartWorkflowResult {
