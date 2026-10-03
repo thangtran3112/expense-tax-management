@@ -35,13 +35,13 @@
 **Interfaces:**
 - Produces: bucket name, writer service account email, read-only freshness-monitor identity, daily/monthly retention policy, and operator restore procedure.
 
-- [ ] Write failing policy checks requiring uniform bucket access, public-access prevention, versioning, seven-day retention lock, `daily/` expiration after 30 days, and `monthly/` expiration after 365 days.
-- [ ] Add Terraform for one dedicated backup bucket in the selected US GCP location.
-- [ ] Add a writer service account with `roles/storage.objectCreator` on this bucket only.
-- [ ] Add a separate GitHub OIDC/WIF freshness-monitor identity with condition-limited object metadata read; never grant read to the VPS writer.
-- [ ] Do not create or store a writer key in Terraform state; document explicit operator key creation and Secret Manager transfer.
-- [ ] Document restore through an operator identity with temporary object-view access rather than a persistent VPS reader key.
-- [ ] Run `terraform fmt -check`, `terraform validate`, and policy tests without applying.
+- [x] Write failing policy checks requiring uniform bucket access, public-access prevention, versioning, seven-day retention lock, `daily/` expiration after 30 days, and `monthly/` expiration after 365 days. (test-policy.sh, plain grep assertions matching this repo's existing Terraform-test style)
+- [x] Add Terraform for one dedicated backup bucket in the selected US GCP location. (`location = "US"`)
+- [x] Add a writer service account with `roles/storage.objectCreator` on this bucket only.
+- [x] Add a separate GitHub OIDC/WIF freshness-monitor identity with condition-limited object metadata read; never grant read to the VPS writer. (custom role: `storage.objects.list` only, no `storage.objects.get`; own WIF provider scoped to the freshness workflow, reusing the existing pool -- see README Ruling)
+- [x] Do not create or store a writer key in Terraform state; document explicit operator key creation and Secret Manager transfer. (no `google_service_account_key` resource -- enforced by test-policy.sh; manual steps in README.md)
+- [x] Document restore through an operator identity with temporary object-view access rather than a persistent VPS reader key. (README.md: exact add/remove-iam-policy-binding commands for a time-boxed grant)
+- [x] Run `terraform fmt -check`, `terraform validate`, and policy tests without applying. (all three green via the pinned `hashicorp/terraform:1.9` image; `plan`/`apply` never run)
 
 ### Task 2: Build Backup Container and Configuration Contract
 
