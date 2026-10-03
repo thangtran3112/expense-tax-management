@@ -162,7 +162,18 @@ export interface MailboxDiscoveryProviderAdapter extends MailboxProviderAdapter 
 - Modify: `expense-tax-management/services/workflow-worker/src/clients/mailbox-client.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-temporal.test.ts`
 
-**Interfaces:** `MailboxScanWorkflow.run(MailboxScanExecutionInputV1)` receives only scanRunId. Activities return only `MailboxCandidateBatchV1`, `MailboxScanCountResultV1`, or typed errors. Broker call is `MailboxAppApiClient.runDiscovery(scanRunId)` and broker calls App directly with `MailboxCandidateMetadataStagingV1`; worker never receives that payload.
+**Interfaces:** `MailboxScanWorkflow.run(MailboxScanExecutionInputV1)` receives only scanRunId. Activities return only `MailboxCandidateBatchV1`, `MailboxScanCountResultV1`, or typed errors.
+
+**Phase 3D-A Task 6 handoff correction (real interface differs from what this task originally assumed):** `MailboxAppApiClient` (`services/workflow-worker/src/clients/mailbox-client.ts`, built by 3D-A Task 3) is **not** a business-method interface — it has no `runDiscovery` method and 3D-A deliberately never added one ("no `discover`/`materialize` business methods ... those are 3D-B/C's job, which build concrete calls on top of this client rather than inventing routes here" — see that file's own header comment). Its real, exact shape is four plumbing primitives only:
+```ts
+export interface MailboxAppApiClient {
+  mintAppToken(): Promise<string>;
+  mintBrokerToken(): Promise<string>;
+  requestAppApi<T>(input: MailboxApiRequestInput<T>): Promise<T>;
+  requestBroker<T>(input: MailboxApiRequestInput<T>): Promise<T>;
+}
+```
+This task's activity must call the broker directly through `requestBroker<DiscoveryPageV1>({ path: ..., method: "POST", responseSchema: ..., body: { scanRunId } })` (or add its own named method, e.g. `runDiscovery`, to this same file/interface as part of this task's own "Modify: services/workflow-worker/src/clients/mailbox-client.ts" step) — it must not assume a pre-existing `.runDiscovery()` method already exists on the object `createMailboxAppApiClient` returns today. Broker calls App directly with `MailboxCandidateMetadataStagingV1`; worker never receives that payload.
 
 - [ ] **Step 1: Write failing tests** inspecting serialized workflow inputs/results/heartbeats/errors for absence of history/cursor IDs, pre-fence token, provider IDs, sender, subject, attachment metadata, body, and raw provider errors; assert only opaque IDs/counts/page sequence.
 - [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-workflows.test.ts test/mailbox-activities.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-temporal.test.ts`; expected FAIL.

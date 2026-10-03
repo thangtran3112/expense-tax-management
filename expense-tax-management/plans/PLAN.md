@@ -1,6 +1,6 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D plans revised to match `ARCHITECTURE.md` and ready for 3D-A.
+> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D-A implemented and phase-verified on `feature/phase-3d`, not yet merged or deployed, operator activation pending; 3D-B/3D-C not started.
 > **Last updated:** 2026-10-02
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 
@@ -67,7 +67,7 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 | Parallel | **TypeScript Temporal worker migration** | Tasks 1-5 merged; Task 6 shared Temporal source locally verified, awaiting PR; no production cutover | [migration plan](sub-plans/runtime-typescript-temporal-migration.md) / [historical handoff](HANDOFF.md) |
 | Parallel | **Local Clerk development bootstrap** | Development credentials and M2M checks complete; local sign-in, webhook, and scoped data flow pending | [sub-plan](sub-plans/local-clerk-development-bootstrap.md) |
 | 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
-| 2 | **3D-A - Mailbox broker and connection lifecycle** | Plan revised; ready | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
+| 2 | **3D-A - Mailbox broker and connection lifecycle** | Implemented on `dev` branch (worktree `feature/phase-3d`, Tasks 1-6 complete and phase-verified against real PostgreSQL); not merged, not deployed; operator activation pending | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
 | 3 | **3D-B - Mailbox discovery and review** | Blocked by 3D-A | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
 | 4 | **3D-C - Mailbox ingestion and provenance** | Blocked by 3D-B | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
 | Later | **6A/6B/6C - SQL, semantic, and AI search** | Deferred; replan before execution | `plans/sub-plans/phase-6*.md` |
@@ -83,6 +83,18 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 5. Phase 3D-C creates ingestion migration `020` and direct broker-to-App materialization.
 6. 3D-A source may merge to `dev` once Phase 3C is in; production activation of 3D-B/C requires runtime migration Task 7 cutover (`sub-plans/runtime-typescript-temporal-migration.md`), since 3D workflows run only on the TypeScript worker.
 7. Production rollout for Phase 3C/3D requires separate release planning and explicit deployment approval.
+
+### 3D-A Operator Activation (post-merge, pre-production)
+
+3D-A source is feature-complete and phase-verified on `dev` (pending merge) but the mailbox feature stays fully inert in production (`MAILBOX_FEATURE_ENABLED` unset/false) until an operator explicitly completes every item below, in order:
+
+1. **Vault bootstrap** — run `deploy/production/bootstrap-mailbox-vault-db.sh` against the production Postgres cluster to create the token-vault database and its separate runtime (DML-only) / migration (DDL-only) roles. Operator-only; never run by normal deploy.
+2. **Clerk mailbox identities** — provision the three real machine identities (`app-api-mailbox`, `workflow-worker-mailbox`, `mailbox-broker-app`) in production Clerk, then add the exact-value lock lines for the 4 `CLERK_RUNTIME_KEYS` in `infrastructure/gcp/expense-tax/sync-production-secret.sh` using the IDs just created.
+3. **Google OAuth client** — create the production Google OAuth 2.0 client (Gmail readonly scope only) and record its client ID/secret into the operator's `~/.zshrc`-sourced shell environment that `sync-production-secret.sh` reads.
+4. **Secret bundle with `MAILBOX_FEATURE_ENABLED=true`** — run the production secret sync with every required mailbox shell/database/Clerk-runtime key present (`scripts/lib/production-secret-bundle.mjs`'s `REQUIRED_SHELL_KEYS`/`REQUIRED_DATABASE_KEYS`/`CLERK_RUNTIME_KEYS`) so the generated bundle carries `MAILBOX_FEATURE_ENABLED=true` and real values instead of the fail-closed defaults.
+5. **Cloudflare Terraform apply** — run `terraform plan`/`apply` in `infrastructure/cloudflare/expense-tax/` (via `.github/workflows/expense-tax-cloudflare.yml`'s production-environment, manually-dispatched job) to create the `expense-mailbox.tobytran.dev` DNS record and Tunnel ingress rule for `/oauth/google/callback`.
+
+3D-B/3D-C source may also merge to `dev` once implemented, but their workflows' production activation additionally depends on runtime migration Task 7 cutover (3D workflows run only on the TypeScript worker) — independent of, and in addition to, the 3D-A list above.
 
 ## Remaining-Phase Constraints
 
