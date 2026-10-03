@@ -204,3 +204,137 @@ rm -f /tmp/preflight.$$
 ok "preflight accepts a fully valid environment and never prints the password"
 
 printf '\n%d checks passed (Part A+B)\n' "$PASS"
+
+# ---------------------------------------------------------------------------
+# Part C: receipt file selection (Task 4) -- pure filesystem logic, no
+# Docker/age/gcloud/postgres needed. Runs identically on macOS (BSD stat)
+# and Linux (GNU stat/the pinned container).
+# ---------------------------------------------------------------------------
+# shellcheck source=backup.sh
+source "$BACKUP_DIR/backup.sh"
+
+receipts_dir=$(mktemp -d)
+trap 'rm -rf "$receipts_dir"' EXIT
+mkdir -p "$receipts_dir/sub"
+epoch_of() { date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s; }
+set_mtime() {
+  # BSD touch -t has no UTC/Z notion and always treats its argument as
+  # local time; GNU touch -d understands "...Z" directly. Fix: always go
+  # through epoch_of() first, then (on BSD) format THAT epoch back as a
+  # local-time touch -t argument -- touch -t will reinterpret it as local
+  # time and land on the same epoch either way.
+  local file="$1" iso="$2" epoch
+  epoch=$(epoch_of "$iso")
+  if date -r "$epoch" +%Y%m%d%H%M.%S >/tmp/.touchfmt.$$ 2>/dev/null; then
+    touch -t "$(cat /tmp/.touchfmt.$$)" "$file"
+  else
+    touch -d "@$epoch" "$file"
+  fi
+  rm -f /tmp/.touchfmt.$$
+}
+
+last_cutoff=$(epoch_of "2026-01-10T00:00:00Z")
+current_cutoff=$(epoch_of "2026-01-15T00:00:00Z")
+
+echo before  > "$receipts_dir/before.pdf";      set_mtime "$receipts_dir/before.pdf" "2026-01-05T00:00:00Z"
+echo in      > "$receipts_dir/in-window.pdf";   set_mtime "$receipts_dir/in-window.pdf" "2026-01-12T00:00:00Z"
+echo at      > "$receipts_dir/at-cutoff.pdf";   set_mtime "$receipts_dir/at-cutoff.pdf" "2026-01-15T00:00:00Z"
+echo after   > "$receipts_dir/sub/after.pdf";   set_mtime "$receipts_dir/sub/after.pdf" "2026-01-20T00:00:00Z"
+
+daily_selection=$(select_receipt_files "$receipts_dir" daily "$last_cutoff" "$current_cutoff" | sort)
+expected_daily=$'at-cutoff.pdf\nin-window.pdf'
+[[ "$daily_selection" == "$expected_daily" ]] \
+  || fail "daily selection mismatch: got [$daily_selection] want [$expected_daily]"
+ok "daily mode selects only (last_cutoff, current_cutoff], at-cutoff inclusive"
+
+full_selection=$(select_receipt_files "$receipts_dir" full "$last_cutoff" "$current_cutoff" | sort)
+expected_full=$'at-cutoff.pdf\nbefore.pdf\nin-window.pdf'
+[[ "$full_selection" == "$expected_full" ]] \
+  || fail "full selection mismatch: got [$full_selection] want [$expected_full]"
+ok "full mode selects every file up to current_cutoff, excludes files after it"
+
+empty_selection=$(select_receipt_files "$receipts_dir" daily "$current_cutoff" "$current_cutoff")
+[[ -z "$empty_selection" ]] || fail "unchanged-receipts window should select nothing"
+ok "daily mode on an unchanged window selects zero files"
+
+printf '\n%d checks passed (Part A+B+C)\n' "$PASS"
+
+# ---------------------------------------------------------------------------
+# Part D: manifest assembly (Task 4) -- determine_mode/build_receipt_archive/
+# build_manifest/validate_manifest. The receipt archive step shells out to
+# `tar --sort=name --mtime=@0 ...` (GNU-only flags, for a byte-reproducible
+# archive); macOS ships bsdtar, which lacks them. Ruling: skip this part
+# (not fake it) on a non-GNU-tar host and prove it instead inside
+# test-backup-docker.sh's pinned Linux image and in CI (ubuntu-latest ships
+# GNU tar by default) -- same precedent as the flock skip in Part A.
+# ---------------------------------------------------------------------------
+if ! tar --version 2>&1 | grep -q GNU; then
+  log "skip: Part D manifest-assembly checks (no GNU tar on this host; proven in test-backup-docker.sh + CI)"
+else
+  d=$(mktemp -d)
+  trap 'rm -rf "$d" "$receipts_dir"' EXIT
+  staging="$d/staging"; mkdir -p "$staging/dumps"
+  echo '-- fake globals' > "$staging/globals.sql"
+  echo 'fake dump 1' > "$staging/dumps/db1.dump"
+  jq -n --arg v "17.4" \
+    '{postgresql_version:$v, databases:["db1"], files:[
+      {name:"globals.sql", bytes: 16, sha256: "'"$(sha256_file "$staging/globals.sql")"'"},
+      {name:"dumps/db1.dump", bytes: 12, sha256: "'"$(sha256_file "$staging/dumps/db1.dump")"'"}
+    ]}' > "$staging/database-inventory.json"
+
+  export RECEIPT_STORAGE_DIR="$d/receipts"
+  mkdir -p "$RECEIPT_STORAGE_DIR"
+  echo r1 > "$RECEIPT_STORAGE_DIR/r1.pdf"; set_mtime "$RECEIPT_STORAGE_DIR/r1.pdf" "2026-01-12T00:00:00Z"
+  export BACKUP_HOST_ID=test-host
+  export BACKUP_IMAGE_TAGS="app-api=sha-abc,foundry=sha-def"
+  export BACKUP_MIGRATION_VERSIONS="app=0042"
+
+  build_receipt_archive "$staging" full 0 "$(epoch_of 2026-01-15T00:00:00Z)"
+  [[ -f "$staging/receipts.tar" ]] || fail "receipts.tar not created"
+  ok "build_receipt_archive produces receipts.tar"
+
+  mode_json=$(determine_mode "$d/no-such-marker.json" "$(epoch_of 2026-01-15T00:00:00Z)" run-1)
+  [[ "$(jq -r .mode <<< "$mode_json")" == "full" ]] || fail "determine_mode: no marker must mean full"
+  ok "determine_mode: no marker means full"
+
+  build_manifest "$staging" run-1 "2026-01-15T00:00:00Z" "$mode_json"
+  validate_manifest "$staging"
+  ok "build_manifest + validate_manifest succeed for a well-formed staging dir"
+
+  jq -e '.deployed_image_tags["app-api"] == "sha-abc" and .schema_migration_versions["app"] == "0042"' \
+    "$staging/manifest.json" >/dev/null || fail "manifest did not record image tags/migration versions"
+  ok "manifest records BACKUP_IMAGE_TAGS and BACKUP_MIGRATION_VERSIONS"
+
+  jq -e '.compose_checksum == null' "$staging/manifest.json" >/dev/null \
+    || fail "compose_checksum should be null when BACKUP_COMPOSE_FILE is unset"
+  ok "manifest leaves compose_checksum null when unset"
+
+  # Marker continuity: same month as a prior full -> daily, carrying that
+  # full run's id forward and resuming from its cutoff.
+  marker="$d/marker.json"
+  jq -n '{cutoff_epoch: 1000, last_full_period: "2026-01", parent_full_backup_id: "full-run-0"}' > "$marker"
+  mode_json=$(determine_mode "$marker" "$(epoch_of 2026-01-20T00:00:00Z)" run-2)
+  [[ "$(jq -r .mode <<< "$mode_json")" == "daily" ]] || fail "determine_mode: same month as prior full must mean daily"
+  [[ "$(jq -r .parent_full_backup_id <<< "$mode_json")" == "full-run-0" ]] || fail "determine_mode: daily must carry the full run's id forward"
+  [[ "$(jq -r .last_cutoff_epoch <<< "$mode_json")" == "1000" ]] || fail "determine_mode: daily must resume from the marker's cutoff"
+  ok "determine_mode: same month as prior full means daily, carrying its id and cutoff"
+
+  mode_json=$(determine_mode "$marker" "$(epoch_of 2026-02-01T00:00:00Z)" run-3)
+  [[ "$(jq -r .mode <<< "$mode_json")" == "full" ]] || fail "determine_mode: a new month must start a new full"
+  [[ "$(jq -r .parent_full_backup_id <<< "$mode_json")" == "run-3" ]] || fail "determine_mode: a new full's parent is itself"
+  ok "determine_mode: a new calendar month starts a new full backup chain"
+
+  # Tamper with a dumped file after the manifest was built: validate_manifest
+  # must reject it rather than encrypt/upload a mismatched checksum.
+  echo 'tampered' >> "$staging/dumps/db1.dump"
+  # Subshell: validate_manifest calls die() -> exit on failure, which would
+  # otherwise terminate this whole sourced test script, not just the check.
+  if ( validate_manifest "$staging" ) >/tmp/validate_tamper.$$ 2>&1; then
+    cat /tmp/validate_tamper.$$ >&2
+    fail "validate_manifest accepted a tampered dump file"
+  fi
+  rm -f /tmp/validate_tamper.$$
+  ok "validate_manifest rejects a checksum mismatch before encryption"
+
+  printf '\n%d checks passed (Part A+B+C+D)\n' "$PASS"
+fi
