@@ -50,6 +50,24 @@ type AttemptRow = Selectable<AppDatabase["app.mailbox_oauth_attempts"]>;
  * exchange completes. completeConnection overwrites all three atomically.
  */
 const PENDING_PLACEHOLDER = "pending-activation";
+/**
+ * Task 6 fix: account_email's placeholder must independently satisfy
+ * MailboxConnectionV1Schema's `z.email()` format -- the public contract
+ * every customer-facing and broker-facing response serializes a
+ * connection row through (toMailboxConnectionV1/toPublicConnection),
+ * including the brand-new `pending` row the customer-facing
+ * `POST .../google/start` route always returns in the same response that
+ * creates it. `PENDING_PLACEHOLDER` ("pending-activation") is not a
+ * valid email, so every first-ever connection attempt 500'd with a
+ * FastifyError: ResponseSerializationError the instant that route tried
+ * to serialize its own response -- caught by Task 6's real-PostgreSQL
+ * verification suite (test/integration/app-domain-3d-a-mailbox.test.ts),
+ * not by any existing test, since prior suites either call this domain
+ * directly (no response serialization) or fake the whole domain with an
+ * already-valid placeholder email. The reserved `.invalid` TLD (RFC
+ * 2606) keeps the sentinel obviously non-routable and non-functional.
+ */
+const PENDING_EMAIL_PLACEHOLDER = "pending-activation@mailbox.invalid";
 
 const HEX64 = /^[a-f0-9]{64}$/;
 
@@ -325,7 +343,7 @@ async function findOrCreateConnectionId(
         owner_user_id: input.actorUserId,
         provider: "gmail",
         provider_account_id: PENDING_PLACEHOLDER,
-        account_email: PENDING_PLACEHOLDER,
+        account_email: PENDING_EMAIL_PLACEHOLDER,
         status: "pending",
         granted_scopes: [],
         timezone: input.timezone,
