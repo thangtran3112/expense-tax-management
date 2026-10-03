@@ -178,12 +178,26 @@ describe("mailbox discovery migration 019 – role grants", () => {
   });
 });
 
-describe("mailbox discovery migration 019 – down()", () => {
-  it("drops every table this migration creates and the added connection columns, in dependency order", () => {
-    expect(migration).toMatch(/dropTable\("app\.mailbox_scan_page_outcomes"\)/);
-    expect(migration).toMatch(/dropTable\("app\.mailbox_candidates"\)/);
-    expect(migration).toMatch(/dropTable\("app\.mailbox_scan_runs"\)/);
-    expect(migration).toMatch(/DROP COLUMN IF EXISTS next_page_sequence/);
-    expect(migration).toMatch(/DROP COLUMN IF EXISTS current_history_id/);
+describe("mailbox discovery migration 019 – down() is forward-only (binding constraint: migrations never roll back persisted data)", () => {
+  it("throws instead of dropping any table or column -- actually invoked, not just asserted from source text", async () => {
+    await expect(migration019.down()).rejects.toThrow(/forward-only/i);
+  });
+
+  it("carries no DROP TABLE/DROP COLUMN statement in down() (source-text backstop against a future regression re-adding destructive rollback)", () => {
+    const downMatch = migration.match(/export async function down\(\)[\s\S]*$/);
+    expect(downMatch).not.toBeNull();
+    const downBody = downMatch![0];
+    expect(downBody).not.toMatch(/dropTable|DROP TABLE|DROP COLUMN/);
+  });
+});
+
+describe("mailbox discovery migration 019 – scope-targeted review queue indexes", () => {
+  it("adds one partial index per nullable scope column (same split-by-scope reasoning as migration 018's active-uniqueness indexes)", () => {
+    expect(migration).toMatch(
+      /CREATE INDEX mailbox_candidates_personal_scope_index[\s\S]*ON app\.mailbox_candidates \(tenant_id, candidate_personal_profile_id, status\)[\s\S]*WHERE candidate_personal_profile_id IS NOT NULL/,
+    );
+    expect(migration).toMatch(
+      /CREATE INDEX mailbox_candidates_business_scope_index[\s\S]*ON app\.mailbox_candidates \(tenant_id, candidate_business_id, status\)[\s\S]*WHERE candidate_business_id IS NOT NULL/,
+    );
   });
 });

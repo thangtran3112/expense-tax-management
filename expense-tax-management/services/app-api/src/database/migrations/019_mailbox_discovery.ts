@@ -232,6 +232,24 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     CREATE INDEX mailbox_candidates_scan_run_index
       ON app.mailbox_candidates (scan_run_id)
   `.execute(database);
+  /* Scope-targeted review queue lookup: one partial index per nullable
+     scope column (same split-by-scope reasoning as migration 018's
+     mailbox_connections_active_personal_unique/_active_business_unique --
+     a single composite index spanning both nullable columns would not
+     let Postgres use an index-only scan for "candidates in review for
+     this Personal profile" without also matching every row whose
+     business_id happens to be NULL). Non-unique: candidates have no
+     per-scope uniqueness requirement, only a query-shape one. */
+  await sql`
+    CREATE INDEX mailbox_candidates_personal_scope_index
+      ON app.mailbox_candidates (tenant_id, candidate_personal_profile_id, status)
+      WHERE candidate_personal_profile_id IS NOT NULL
+  `.execute(database);
+  await sql`
+    CREATE INDEX mailbox_candidates_business_scope_index
+      ON app.mailbox_candidates (tenant_id, candidate_business_id, status)
+      WHERE candidate_business_id IS NOT NULL
+  `.execute(database);
 
   /* Terminal-immutability trigger: processed/duplicate/skipped/failed rows
      are fully immutable (no further transition, not even a same-status
@@ -303,18 +321,22 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   `.execute(database);
 }
 
-export async function down(database: Kysely<unknown>): Promise<void> {
-  await database.schema.dropTable("app.mailbox_scan_page_outcomes").ifExists().execute();
-  await sql`DROP TRIGGER IF EXISTS mailbox_candidates_terminal_guard_trigger ON app.mailbox_candidates`.execute(database);
-  await sql`DROP FUNCTION IF EXISTS app.prevent_mailbox_candidate_terminal_update()`.execute(database);
-  await database.schema.dropTable("app.mailbox_candidates").ifExists().execute();
-  await database.schema.dropTable("app.mailbox_scan_runs").ifExists().execute();
-  await sql`
-    ALTER TABLE app.mailbox_connections
-      DROP CONSTRAINT IF EXISTS mailbox_connections_next_page_sequence_check,
-      DROP COLUMN IF EXISTS next_page_sequence,
-      DROP COLUMN IF EXISTS pre_fence_token,
-      DROP COLUMN IF EXISTS current_cursor_digest,
-      DROP COLUMN IF EXISTS current_history_id
-  `.execute(database);
+/**
+ * Forward-only: this migration is never rolled back. A destructive down()
+ * would drop app.mailbox_scan_runs/mailbox_candidates/
+ * mailbox_scan_page_outcomes and the cursor-fence columns added to
+ * app.mailbox_connections -- i.e. permanently destroy persisted scan
+ * history, candidate review state, and in-flight cursor fences the moment
+ * any operator or tool invoked it. runMigrations() (database/migrate.ts)
+ * only ever calls migrateToLatest(); nothing in this repository invokes a
+ * migration's down() at runtime or in a test (confirmed: no
+ * `.down(` call anywhere outside this file). Roll forward with a new
+ * migration instead of rolling back.
+ */
+export async function down(): Promise<void> {
+  throw new Error(
+    "Migration 019 is forward-only: rollback is not supported, as it would " +
+      "destroy persisted mailbox scan/candidate data and cursor-fence state. " +
+      "Write a new forward migration instead.",
+  );
 }
