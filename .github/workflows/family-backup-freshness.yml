@@ -1,0 +1,68 @@
+name: Family Backup Freshness
+
+# Hourly RPO check (vps-backup-and-restore.md Task 6): authenticates as the
+# SEPARATE, list-only freshness-monitor identity (infrastructure/gcp/backup)
+# -- never the VPS writer -- and fails loudly as the backup content ages,
+# without ever reading or downloading a single backup object's content.
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check-freshness:
+    name: Check latest backup age
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud (list-only freshness-monitor identity)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_BACKUP_FRESHNESS_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BACKUP_FRESHNESS_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+
+      - name: Install gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Find the latest backup object's age
+        env:
+          GCP_BACKUP_BUCKET: ${{ vars.GCP_BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          : "${GCP_BACKUP_BUCKET:?GCP_BACKUP_BUCKET repository variable is required}"
+
+          # storage.objects.list only -- never storage.objects.get. No
+          # backup content is ever read or downloaded by this identity.
+          latest_updated="$(gcloud storage objects list "gs://${GCP_BACKUP_BUCKET}" \
+            --format='value(updated)' | sort -r | head -1)"
+
+          if [[ -z "$latest_updated" ]]; then
+            echo "::error::No backup objects found in gs://${GCP_BACKUP_BUCKET} at all"
+            exit 1
+          fi
+
+          now_epoch=$(date -u +%s)
+          latest_epoch=$(date -u -d "$latest_updated" +%s)
+          age_hours=$(( (now_epoch - latest_epoch) / 3600 ))
+
+          echo "Latest backup object updated: ${latest_updated} (${age_hours}h ago)"
+
+          if (( age_hours >= 24 )); then
+            echo "::error::RPO BREACH: latest backup is ${age_hours}h old (>= 24h RPO)"
+            exit 1
+          elif (( age_hours >= 22 )); then
+            echo "::error::PAGE: latest backup is ${age_hours}h old (>= 22h, RPO breach imminent)"
+            exit 1
+          elif (( age_hours >= 18 )); then
+            echo "::warning::Latest backup is ${age_hours}h old (>= 18h) -- investigate before it becomes a page"
+          else
+            echo "Backup is fresh (${age_hours}h old)"
+          fi

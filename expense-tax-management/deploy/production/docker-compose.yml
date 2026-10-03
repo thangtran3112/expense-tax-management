@@ -200,6 +200,40 @@ services:
       retries: 12
     networks: [default]
 
+  # One-shot encrypted backup (Task 6 of vps-backup-and-restore.md). Not
+  # part of normal `docker compose up`: only runs via
+  # `docker compose --profile backup run --rm backup` (manual/ad hoc) or
+  # the family-app-backup systemd timer, which invokes the pinned image
+  # directly rather than through Compose -- see infrastructure/backup/README.md
+  # and infrastructure/vps/steps/40-backup.sh. Defined here too so an
+  # operator can run a backup identically to the automated path without
+  # hand-typing the full `docker run` invocation.
+  backup:
+    image: ${BACKUP_IMAGE:?BACKUP_IMAGE is required}
+    profiles: ["backup"]
+    read_only: true
+    tmpfs:
+      - /staging:size=512m,mode=1700
+    environment:
+      BACKUP_GCS_URI: ${BACKUP_GCS_URI:?BACKUP_GCS_URI is required}
+      BACKUP_HOST_ID: ${BACKUP_HOST_ID:?BACKUP_HOST_ID is required}
+      AGE_RECIPIENT: ${AGE_RECIPIENT:?AGE_RECIPIENT is required}
+      RECEIPT_STORAGE_DIR: /receipts
+      BACKUP_STATE_DIR: /state
+      BACKUP_CIPHERTEXT_DIR: /ciphertext
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/writer-key.json
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD_FILE: /run/secrets/pgpassword
+    volumes:
+      - /etc/family-app/backup-pgpassword:/run/secrets/pgpassword:ro
+      - /etc/family-app/backup-writer-key.json:/run/secrets/writer-key.json:ro
+      - /opt/family-app/backup/state:/state
+      - /opt/family-app/backup/ciphertext:/ciphertext
+      - expense_tax_production_storage:/receipts:ro
+    networks: [database]
+
 networks:
   default:
     name: expense-tax-production_default

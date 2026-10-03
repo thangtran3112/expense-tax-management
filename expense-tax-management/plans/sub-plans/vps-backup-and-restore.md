@@ -147,15 +147,15 @@ GOOGLE_APPLICATION_CREDENTIALS
 **Interfaces:**
 - Produces: at least two attempts per day, startup catch-up after downtime, and local plus off-host failure/staleness signals.
 
-- [ ] Write failing tests requiring bounded randomized delay, persistent timer catch-up, single-flight lock, two-hour runtime deadline, hourly failure retry, and a maximum 24-hour successful-backup age.
-- [ ] Configure timer at least every 12 hours with `Persistent=true` and no more than 15 minutes randomized delay so one failed run still leaves recovery margin.
-- [ ] Enforce a two-hour service runtime limit; timeout is failure, kills the container, and preserves no plaintext.
-- [ ] Retry hourly at most four times within a six-hour systemd start-limit window, then stop retries and page. The normal 12-hour timer remains independent.
-- [ ] Use `flock` to reject concurrent backup runs.
-- [ ] Install root-only writer credential, password file, public age recipient, and state directory through VPS bootstrap.
-- [ ] Add local health command that fails when latest successful upload reaches 24 hours old.
-- [ ] Add hourly GitHub Actions freshness check using the separate read-only WIF identity; warn at 18 hours, page at 22 hours, and declare RPO breach at 24 hours without exposing object content.
-- [ ] Verify service logs contain no PostgreSQL password, GCP key, environment bundle, or receipt content.
+- [x] Write failing tests requiring bounded randomized delay, persistent timer catch-up, single-flight lock, two-hour runtime deadline, hourly failure retry, and a maximum 24-hour successful-backup age. (test-systemd-units.sh for the units; single-flight lock proven inside backup.sh's own test-backup.sh Part A; freshness age in test-check-backup-freshness.sh. Fast, Docker-free, wired into ci:test.)
+- [x] Configure timer at least every 12 hours with `Persistent=true` and no more than 15 minutes randomized delay so one failed run still leaves recovery margin.
+- [x] Enforce a two-hour service runtime limit; timeout is failure, kills the container, and preserves no plaintext. (`RuntimeMaxSec=7200` on both the main and retry service; plaintext never leaves tmpfs regardless of how the container exits, per Task 5.)
+- [x] Retry hourly at most four times within a six-hour systemd start-limit window, then stop retries and page. The normal 12-hour timer remains independent. (self-chaining `OnFailure=family-app-backup-retry.service` + `StartLimitIntervalSec=21600`/`StartLimitBurst=4` on the retry unit itself; `sleep 3600` spaces attempts. "Page" = the unit simply stops succeeding, surfaced by the freshness check below, not a separate paging integration.)
+- [x] Use `flock` to reject concurrent backup runs. (Ruling: enforced INSIDE backup.sh itself, not duplicated at the systemd level -- see infrastructure/backup/README.md -- so it also rejects a concurrent manual `docker run` outside systemd, which a unit-level lock could not see.)
+- [x] Install root-only writer credential, password file, public age recipient, and state directory through VPS bootstrap. (`infrastructure/vps/steps/40-backup.sh`, wired into `bootstrap.sh --only backup`; validated locally via bash -n/shellcheck and the required-arg guard rails -- **not run against a live VPS**, consistent with this task's "no VPS access" scope.)
+- [x] Add local health command that fails when latest successful upload reaches 24 hours old. (`check-backup-freshness.sh` + test-check-backup-freshness.sh, 5/5 fast checks.)
+- [x] Add hourly GitHub Actions freshness check using the separate read-only WIF identity; warn at 18 hours, page at 22 hours, and declare RPO breach at 24 hours without exposing object content. (`.github/workflows/family-backup-freshness.yml`; `storage.objects.list` only, no `.get`; actionlint-clean. **Not run live** -- needs Task 1 actually applied and real repository variables.)
+- [x] Verify service logs contain no PostgreSQL password, GCP key, environment bundle, or receipt content. (backup.sh itself never logs secret values, proven in test-backup.sh Part B; test-systemd-units.sh additionally greps the checked-in unit files themselves for any literal secret pattern.)
 
 ### Task 7: Implement Restore Tooling
 

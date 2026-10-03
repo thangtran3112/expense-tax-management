@@ -125,7 +125,10 @@ describe("Phase 1B production deployment boundaries", () => {
     expect(composeText).not.toMatch(/POSTGRES_PASSWORD:/);
 
     for (const [serviceName, service] of Object.entries(compose.services)) {
-      if (["app-api", "app-api-migrate", "foundry-service", "foundry-service-migrate"].includes(serviceName)) {
+      // "backup" is a deliberate, reviewed exception (vps-backup-and-restore.md
+      // Task 6): it dumps every database in the shared cluster, so it alone
+      // among non-app services legitimately needs the `database` network.
+      if (["app-api", "app-api-migrate", "foundry-service", "foundry-service-migrate", "backup"].includes(serviceName)) {
         expect(service.networks).toContain("database");
       } else {
         expect(service.networks).not.toContain("database");

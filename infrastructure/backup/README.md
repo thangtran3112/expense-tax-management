@@ -18,6 +18,18 @@ Architecture context: [`ARCHITECTURE.md`](../../expense-tax-management/plans/ARC
 | `test-backup.sh` | **Fast, Docker-free.** Wired into `pnpm ci:test` via `check:vps-backup-infrastructure`. |
 | `test-backup-docker.sh` | **Slow, Docker.** Full dump→encrypt→upload→decrypt round trip against a disposable PostgreSQL 17 + fake-GCS. Not wired into CI. Run manually (below). |
 | `test-restore.sh` | **Slow, Docker.** End-to-end seeded-source → empty-destination restore proof (full backup + one ordered daily delta). Not wired into CI. Run manually (below). |
+| `family-app-backup.service` / `.timer` / `family-app-backup-retry.service` | Task 6 systemd units. Installed by `infrastructure/vps/steps/40-backup.sh` (opt-in `bootstrap.sh --only backup`). |
+| `check-backup-freshness.sh` | Local health command: fails when the latest successful backup is ≥24h old. Fast, Docker-free; wired into CI via `check:vps-backup-infrastructure`. |
+| `test-systemd-units.sh` | Fast, Docker-free static checks on the three unit files above (timer cadence, runtime deadlines, retry bounds, read-only/tmpfs run contract, no literal secrets). Wired into CI. |
+| `test-check-backup-freshness.sh` | Fast, Docker-free checks for `check-backup-freshness.sh`. Wired into CI. |
+
+See also [`../vps/README.md`](../vps/README.md) "Backup (opt-in)" for how
+`40-backup.sh` installs these units onto a real VPS, and
+[`../../.github/workflows/family-backup-freshness.yml`](../../.github/workflows/family-backup-freshness.yml)
+for the hourly off-host staleness check (18h warn / 22h page / 24h RPO
+breach), which authenticates as Task 1's separate, list-only
+freshness-monitor identity -- never the VPS writer, and never able to read
+backup content.
 
 ## `restore.sh` environment contract
 
@@ -122,6 +134,15 @@ docker run --rm -v "$PWD/infrastructure/backup:/mnt:ro" koalaman/shellcheck:stab
   delta could outlive the full backup it depends on; both prefixes'
   lifecycle rules live in the same Task 1 Terraform and can be re-tuned
   together.
+- **The single-flight `flock` lives inside `backup.sh` itself, not in the
+  systemd unit.** A unit-level lock could not see (and therefore could not
+  reject) a concurrent manual `docker run ... backup.sh` invocation
+  outside systemd; `acquire_single_flight_lock()` operates on a file
+  inside the persistent, shared `$BACKUP_STATE_DIR`, so it works
+  identically regardless of what started the container. Cost if wrong: a
+  redundant systemd-level lock would still need to exist anyway to cover
+  the non-systemd invocation path, so it would be pure duplication, not an
+  additional safety margin.
 - **`flock` contention is skipped (not faked) on non-Linux dev machines.**
   `flock(1)` is util-linux; it is not present on stock macOS. Production
   and CI (GitHub Actions `ubuntu-latest`) are both Linux, where it is
