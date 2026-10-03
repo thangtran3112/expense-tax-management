@@ -199,9 +199,13 @@ describe("App API job routes", () => {
         tenantId: TENANT_ID,
         scope: { personalProfileId: PROFILE_ID },
         workflowType: "FoundationEchoWorkflow",
-        taskQueue: "expense-tax-processing",
         actorServicePrincipal: "platform-admin",
       }),
+    );
+    // Task 7 Stage A: the route must not supply a task queue itself --
+    // createJobInTransaction derives it from the dispatch-routing row.
+    expect(processingJobsDomain.createJob).toHaveBeenCalledWith(
+      expect.not.objectContaining({ taskQueue: expect.anything() }),
     );
   });
 

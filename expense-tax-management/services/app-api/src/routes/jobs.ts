@@ -1,5 +1,4 @@
 import {
-  AI_WORKER_TASK_QUEUE,
   DispatchPendingJobsResponseSchema,
   ErrorResponseSchema,
   FOUNDATION_ECHO_WORKFLOW_TYPE,
@@ -89,7 +88,6 @@ export async function registerJobRoutes(
           tenantId: request.body.tenantId,
           scope,
           workflowType: FOUNDATION_ECHO_WORKFLOW_TYPE,
-          taskQueue: AI_WORKER_TASK_QUEUE,
           allowedResultSchemaVersion: "foundation-echo-v1",
           actorServicePrincipal: actorServicePrincipal(request),
           requestId: request.id,

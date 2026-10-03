@@ -1,5 +1,4 @@
 import {
-  AI_WORKER_TASK_QUEUE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   OCR_RECEIPT_WORKFLOW_TYPE,
@@ -224,7 +223,6 @@ export function createOcrJobsDomain(
                 ? { personalProfileId: input.scope.profileId }
                 : { businessId: input.scope.businessId },
             workflowType: input.workflowType ?? OCR_RECEIPT_WORKFLOW_TYPE,
-            taskQueue: AI_WORKER_TASK_QUEUE,
             allowedResultSchemaVersion: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
             targetAggregateType: "expense",
             requestedByUserId: input.actorUserId,

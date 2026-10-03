@@ -24,6 +24,7 @@ const WORKFLOW_TYPE = FOUNDATION_ECHO_WORKFLOW_TYPE;
 
 let postgresContainerId = "";
 let runtimePassword = "";
+let migratorPassword = "";
 let database: Kysely<AppDatabase>;
 let temporalClient: Client;
 
@@ -69,6 +70,45 @@ function executeSql(sql: string): string {
   return result.stdout.trim();
 }
 
+/**
+ * Task 7 Stage A: app.temporal_dispatch_routing grants the runtime role
+ * SELECT only -- this test must use migrator credentials to point the
+ * singleton row's queue at this run's isolated TASK_QUEUE (namespace stays
+ * the seeded 'default', matching generation 1), so createJob's enqueue
+ * fence stamps TASK_QUEUE instead of colliding with other suites on the
+ * real shared queue 'expense-tax-ai-worker'.
+ */
+function executeMigratorSql(sql: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "exec",
+      "-e",
+      `PGPASSWORD=${migratorPassword}`,
+      postgresContainerId,
+      "psql",
+      "-X",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "--host",
+      "127.0.0.1",
+      "--username",
+      "expense_app_migrator",
+      "--dbname",
+      "expense_tax_db",
+      "--tuples-only",
+      "--no-align",
+      "--pset",
+      "footer=off",
+      "--command",
+      sql,
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
 function seedTenantWithPersonalProfile(): { tenantId: string; profileId: string } {
   const userId = randomUUID();
   const tenantId = randomUUID();
@@ -110,7 +150,9 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
     }).trim();
     runtimePassword =
       config.services.postgres?.environment?.APP_RUNTIME_DB_PASSWORD ?? "";
-    if (!postgresContainerId || !runtimePassword) {
+    migratorPassword =
+      config.services.postgres?.environment?.APP_MIGRATOR_DB_PASSWORD ?? "";
+    if (!postgresContainerId || !runtimePassword || !migratorPassword) {
       throw new Error("Phase 0L PostgreSQL prerequisites are missing");
     }
     database = createAppDatabase(
@@ -118,12 +160,18 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
     );
     const connection = await Connection.connect({ address: "127.0.0.1:7233" });
     temporalClient = new Client({ connection, namespace: "default" });
+    executeMigratorSql(
+      `UPDATE app.temporal_dispatch_routing SET task_queue = '${TASK_QUEUE}';`,
+    );
   });
 
   afterAll(async () => {
     if (!postgresContainerId || !runtimePassword) return;
     runSql(`DELETE FROM app.tenants WHERE slug LIKE '0l-${runKey}-%';`);
     runSql(`DELETE FROM app.users WHERE primary_email LIKE '0l-${runKey}-%';`);
+    executeMigratorSql(
+      `UPDATE app.temporal_dispatch_routing SET task_queue = 'expense-tax-ai-worker';`,
+    );
     await database.destroy();
   });
 
@@ -135,7 +183,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
       tenantId,
       scope: { personalProfileId: profileId },
       workflowType: WORKFLOW_TYPE,
-      taskQueue: TASK_QUEUE,
       allowedResultSchemaVersion: "test-v1",
       actorServicePrincipal: "platform-admin",
       requestId: `0l-${runKey}-create`,
@@ -174,7 +221,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
         tenantId,
         scope: {} as never,
         workflowType: WORKFLOW_TYPE,
-        taskQueue: TASK_QUEUE,
         allowedResultSchemaVersion: "test-v1",
         actorServicePrincipal: "platform-admin",
         requestId: `0l-${runKey}-neither-scope`,
@@ -194,7 +240,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
       tenantId,
       scope: { personalProfileId: profileId },
       workflowType: WORKFLOW_TYPE,
-      taskQueue: TASK_QUEUE,
       allowedResultSchemaVersion: "test-v1",
       actorServicePrincipal: "platform-admin",
       requestId: `0l-${runKey}-dispatch`,
@@ -250,7 +295,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
       tenantId,
       scope: { personalProfileId: profileId },
       workflowType: WORKFLOW_TYPE,
-      taskQueue: TASK_QUEUE,
       allowedResultSchemaVersion: "test-v1",
       actorServicePrincipal: "platform-admin",
       requestId: `0l-${runKey}-lifecycle-create`,
@@ -347,7 +391,6 @@ describe.skipIf(!integrationEnabled)("Phase 0L processing jobs", () => {
       tenantId,
       scope: { personalProfileId: profileId },
       workflowType: WORKFLOW_TYPE,
-      taskQueue: TASK_QUEUE,
       allowedResultSchemaVersion: "test-v1",
       actorServicePrincipal: "platform-admin",
       requestId: `0l-${runKey}-schema-mismatch-create`,

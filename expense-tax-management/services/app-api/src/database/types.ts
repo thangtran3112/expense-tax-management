@@ -418,6 +418,21 @@ export interface ProcessingJobTable {
   updated_at: GeneratedTimestamp;
   dispatched_at: NullableTimestamp;
   completed_at: NullableTimestamp;
+  dispatch_generation: Generated<number>;
+  dispatch_namespace: Generated<string>;
+}
+
+/**
+ * Singleton row (app.temporal_dispatch_routing). Runtime role has
+ * SELECT-only grants on this table; only the migrator/owner role (used by
+ * the `advance` operator command) may UPDATE it.
+ */
+export interface TemporalDispatchRoutingTable {
+  readonly singleton: Generated<boolean>;
+  readonly generation: number;
+  readonly temporal_namespace: string;
+  readonly task_queue: string;
+  readonly updated_at: GeneratedTimestamp;
 }
 
 export interface ProcessingJobDispatchOutboxTable {
@@ -724,6 +739,7 @@ export interface AppDatabase {
   readonly "app.entitlement_snapshot_outbox": EntitlementSnapshotOutboxTable;
   readonly "app.processing_jobs": ProcessingJobTable;
   readonly "app.processing_job_dispatch_outbox": ProcessingJobDispatchOutboxTable;
+  readonly "app.temporal_dispatch_routing": TemporalDispatchRoutingTable;
   readonly "app.expense_files": ExpenseFileTable;
   readonly "app.upload_sessions": UploadSessionTable;
   readonly "app.export_bundles": ExportBundleTable;
