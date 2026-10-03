@@ -46,7 +46,7 @@ import {
   createProcessingJobsDomain,
   type ProcessingJobsDomain,
 } from "./domain/processing-jobs.js";
-import { registerErrorHandlers } from "./errors.js";
+import { DomainError, registerErrorHandlers } from "./errors.js";
 import { registerAuthPlugin } from "./plugins/auth.js";
 import {
   registerDatabasePlugin,
@@ -82,6 +82,12 @@ import { registerInboundEmailRoutes } from "./routes/inbound-email.js";
 import { registerClerkWebhookRoutes, type ClerkWebhookRouteOptions } from "./routes/clerk-webhooks.js";
 import { registerAuthCheckRoutes } from "./routes/auth-check.js";
 import { registerDuplicateMatchRoutes } from "./routes/duplicate-matches.js";
+import { registerMailboxConnectionRoutes } from "./routes/mailbox-connections.js";
+import {
+  createMailboxConnectionsDomain,
+  type MailboxConnectionsDomain,
+} from "./domain/mailbox-connections.js";
+import { createMailboxBrokerClient } from "./integrations/mailbox-broker-client.js";
 import type { ClerkIdentityMappingDomain } from "./domain/clerk-identity.js";
 import {
   createClerkWebhookHandler,
@@ -197,6 +203,36 @@ export interface BuildAppOptions {
   readonly clerkWebhookVerifySignature?: ClerkWebhookRouteOptions["verifySignature"];
   readonly clerkIdentityDomain?: ClerkIdentityMappingDomain;
   readonly tagDomain?: TagDomain;
+  readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
+}
+
+/**
+ * Fix round 1 (Important) -- used only when `config.mailboxEnabled` is
+ * explicitly false (the deliberate, documented default), never as a
+ * fallback for incomplete-but-enabled config: `createAppConfig` already
+ * fails startup in that case (`validateMailboxConfiguration`), so this
+ * function is reached only by genuine, intentional "feature is off"
+ * deployments. Every method returns a typed, documented
+ * `DomainError.featureDisabled()` (404, code `FEATURE_DISABLED`) instead
+ * of a generic/ambiguous error, so a caller can tell "this isn't broken,
+ * it's turned off" from "something crashed". Routes stay registered
+ * either way, so the customer-facing route is always present in the
+ * generated OpenAPI spec/TS client.
+ */
+function createDisabledMailboxConnectionsDomain(): MailboxConnectionsDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    startConnection: disabled,
+    getConnection: disabled,
+    consumeOAuthState: disabled,
+    completeConnection: disabled,
+    acquireTokenOperationLease: disabled,
+    advanceTokenGeneration: disabled,
+    releaseTokenOperationLease: disabled,
+    recordRevocation: disabled,
+  };
 }
 
 function loggerWithRedaction(logger: BuildAppOptions["logger"]): LoggerOption {
@@ -375,6 +411,50 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     deduplicationDomain: (deduplicationDomain.resolveMatch
       ? deduplicationDomain
       : createDeduplicationDomain(database)) as Parameters<typeof registerDuplicateMatchRoutes>[1]["deduplicationDomain"],
+  });
+  // Fix round 1: real construction only when the feature is explicitly
+  // enabled (`createAppConfig` already fails startup if enabled but
+  // incompletely configured, so every field below is guaranteed present
+  // whenever `mailboxEnabled` is true); `options.mailboxConnectionsDomain`
+  // always wins, for tests.
+  const mailboxBrokerClient =
+    options.config.mailboxEnabled &&
+    options.config.clerk?.mailboxBrokerBaseUrl !== undefined &&
+    options.config.clerk.mailboxServiceAudience !== undefined &&
+    options.config.clerk.mailboxAppApiMachineSecretKey !== undefined &&
+    options.config.clerk.mailboxAppApiSubject !== undefined
+      ? createMailboxBrokerClient({
+          baseUrl: options.config.clerk.mailboxBrokerBaseUrl,
+          issuerUrl: options.config.clerk.issuerUrl,
+          jwksUrl: options.config.clerk.jwksUrl,
+          credentials: {
+            audience: options.config.clerk.mailboxServiceAudience,
+            machineSecretKey: options.config.clerk.mailboxAppApiMachineSecretKey,
+            subject: options.config.clerk.mailboxAppApiSubject,
+          },
+        })
+      : undefined;
+  const mailboxConnectionsDomain =
+    options.mailboxConnectionsDomain ??
+    (mailboxBrokerClient && options.config.mailboxAllowedRedirectOrigins
+      ? createMailboxConnectionsDomain(database, mailboxBrokerClient, {
+          allowedRedirectOrigins: options.config.mailboxAllowedRedirectOrigins,
+        })
+      : createDisabledMailboxConnectionsDomain());
+  // Always registered (same pattern as every other route group in this
+  // file) so the customer-facing route is always present in the generated
+  // OpenAPI spec/TS client; when the feature is disabled, every call fails
+  // closed with a typed FEATURE_DISABLED (404) via
+  // createDisabledMailboxConnectionsDomain above, not a generic error.
+  app.register(registerMailboxConnectionRoutes, {
+    mailboxConnectionsDomain,
+    identityResolver: identityDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
+    ...(options.config.clerk?.mailboxBrokerPublicBaseUrl
+      ? { mailboxBrokerPublicBaseUrl: options.config.clerk.mailboxBrokerPublicBaseUrl }
+      : {}),
   });
   const exportsDomain =
     options.exportsDomain ??

@@ -1,4 +1,4 @@
-import { createAppApiClient, type DuplicateResolutionAction, type SuggestionResolveRequest } from "@expense-tax/contracts";
+import { createAppApiClient, type DuplicateResolutionAction, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
 import type { OfficeSession } from "./session";
 import { getAppAuthorization, type ClerkGetToken } from "./clerk";
 
@@ -546,6 +546,137 @@ export async function mergeTags(
   if (status !== 204 && !result.data) {
     throw new TagMutationError(status === 409 ? "Tag version conflict during merge. Refresh to see latest." : "Tag merge unavailable", status);
   }
+}
+
+// ------------------------------------------------------------------ //
+// Mailbox connection API (Personal and Business scope)
+// ------------------------------------------------------------------ //
+
+export class MailboxConnectionError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(status === 401 || status === 403 ? "Office authorization required" : message);
+    this.name = "MailboxConnectionError";
+  }
+}
+
+/**
+ * Fix round 1 (Critical): no `sessionNonce` field. Office JavaScript cannot
+ * securely bind the browser to this OAuth attempt via a cookie it sets
+ * itself (host-only on the Office origin, never reaches the mailbox
+ * broker's callback origin, and can't be `HttpOnly`). App API generates
+ * the session nonce itself and hands the browser a link to the broker's
+ * own `/oauth/google/begin`, where the broker's origin sets that cookie
+ * before redirecting to Google.
+ */
+export interface StartMailboxConnectionInput {
+  readonly redirectOrigin: string;
+  readonly timezone: string;
+  readonly localScanTime: string;
+  readonly requestId: string;
+}
+
+/**
+ * Fix round 2 (Important) -- `scope` is explicit, not derived from
+ * `session.scope`: the approved mockup requires offering every scope the
+ * user is authorized for (Personal and each authorized business), not
+ * just whichever one the current Office session happens to be viewing.
+ */
+export async function startMailboxConnection(
+  session: OfficeSession,
+  scope: Scope,
+  input: StartMailboxConnectionInput,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.POST("/api/v1/tenants/{tenantId}/mailbox-connections/google/start", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+    body: { scope, ...input },
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Mailbox connection unavailable", result.response?.status);
+  }
+  return result.data;
+}
+
+function mailboxScopeQuery(scope: Scope) {
+  return scope.kind === "personal" ? { profileId: scope.profileId } : { businessId: scope.businessId };
+}
+
+/**
+ * Fix round 1 (Important) -- the minimal authenticated, scope-authorized
+ * read the Office mailbox page needs to render real connect/connected/
+ * needs-attention/revoked states instead of static scaffolding. `scope` is
+ * explicit (fix round 2) for the same reason as `startMailboxConnection`.
+ */
+export async function fetchMailboxConnection(
+  session: OfficeSession,
+  scope: Scope,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/mailbox-connections/google", {
+    params: { path: { tenantId: session.tenantId }, query: mailboxScopeQuery(scope) },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Mailbox connection status unavailable", result.response?.status);
+  }
+  return result.data.connection;
+}
+
+/**
+ * Fix round 2 (Important) -- the authorized scope choices for the
+ * mailbox-connect picker: every active business the user's current
+ * session can see, via the same `GET .../businesses` route other
+ * tenant-wide listings use. Archived businesses are excluded (not an
+ * authorized choice for a new connection).
+ */
+export async function fetchAuthorizedBusinesses(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/businesses", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Business list unavailable", result.response?.status);
+  }
+  return result.data.items.filter((business) => business.status === "active");
+}
+
+/**
+ * Fix round 3 (Important) -- the caller's own Personal profile, so the
+ * mailbox scope-picker can always offer it (not just when the current
+ * Office session already happens to be Personal-scoped). `null` is a
+ * normal response (no Personal-profile access in this tenant), not an
+ * error. Scope-authorized server-side (`getOwnPersonalProfile`): tenant
+ * role alone never grants it, and there is no way to request a different
+ * member's profile.
+ */
+export async function fetchOwnPersonalProfile(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/personal-profiles/mine", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Personal profile lookup unavailable", result.response?.status);
+  }
+  return result.data.profile;
 }
 
 // ------------------------------------------------------------------ //

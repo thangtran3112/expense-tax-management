@@ -35,6 +35,15 @@ test("worker joins immutable main-only image builds while Python stays available
   assert.ok(images.some(({ image }) => image === "expense-tax-ai-worker"));
 });
 
+test("Phase 3D-A Task 5: mailbox broker joins the immutable main-only image matrix", () => {
+  const deploy = YAML.parse(readRepo(".github/workflows/expense-tax-deploy.yml"));
+  const images = deploy.jobs.build.strategy.matrix.include;
+  assert.deepEqual(images.find(({ image }) => image === "expense-tax-mailbox-broker"), {
+    image: "expense-tax-mailbox-broker",
+    dockerfile: "expense-tax-management/services/mailbox-broker/Dockerfile",
+  });
+});
+
 test("Task 7 Stage B: production Compose starts workflow-worker idle on expense-tax/expense-tax-processing", () => {
   const compose = YAML.parse(readPackage("deploy/production/docker-compose.yml"));
   const worker = compose.services["workflow-worker"];

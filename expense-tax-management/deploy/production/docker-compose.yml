@@ -11,6 +11,13 @@ services:
       PORT: "8100"
       APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG is required}
       AUTH_PROVIDER: ${AUTH_PROVIDER:?AUTH_PROVIDER is required}
+      # Phase 3D-A Task 5: hardcoded literal, never a bundle variable, so an
+      # ordinary dev->main release's production env file (no MAILBOX_* or
+      # CLERK_MAILBOX_* keys at all) still deploys. deploy.sh overlays
+      # docker-compose.mailbox.yml (which sets this to "true" and adds the
+      # mailbox broker/credentials) only when the validated env file itself
+      # sets MAILBOX_FEATURE_ENABLED=true.
+      MAILBOX_FEATURE_ENABLED: "false"
       APP_TENANT_TOKEN_ISSUER: ${APP_TENANT_TOKEN_ISSUER:?APP_TENANT_TOKEN_ISSUER is required}
       APP_TENANT_TOKEN_AUDIENCE: ${APP_TENANT_TOKEN_AUDIENCE:?APP_TENANT_TOKEN_AUDIENCE is required}
       APP_TENANT_JWKS_URL: ${APP_TENANT_JWKS_URL:?APP_TENANT_JWKS_URL is required}

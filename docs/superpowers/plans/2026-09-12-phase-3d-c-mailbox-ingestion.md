@@ -8,13 +8,13 @@
 
 **Architecture:** Broker owns Gmail refetch and streams bytes directly to an App signed upload endpoint. App stages into bounded storage, scans before READY, then creates a normal storage-backed OCR job using immutable owner/service actor and deterministic entitlement-selected `modeKey`. Structured fields use a direct broker-to-App callback and transaction-level expense/dedup path. Worker orchestrates opaque candidate IDs/counts only.
 
-**Tech Stack:** TypeScript Fastify/Kysely/PostgreSQL, Node streams, bounded temp/object storage, malware scanner, existing file/OCR/job domains, Phase 3B dedup, Python Temporal SDK/httpx, Next.js 16 React 19 Office Web, Vitest/Pytest.
+**Tech Stack:** TypeScript Fastify/Kysely/PostgreSQL, Node streams, bounded temp/object storage, malware scanner, existing file/OCR/job domains, Phase 3B dedup, TypeScript Temporal SDK (`services/workflow-worker`), Next.js 16 React 19 Office Web, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md`
 
 ## Global Constraints
 
-- Phase 3C migration 016 and 3D-A migration 017 and 3D-B migration 018 must be complete. 3D-C owns migration `019` only.
+- Phase 3C migration 016, runtime migration Task 7 Stage A migration 017, 3D-A migration 018, and 3D-B migration 019 must be complete. 3D-C owns migration `020` only.
 - Consume exact A/B names unchanged: `MailboxConnectionV1`, `MailboxConnectionRecordV1`, `MailboxScope`, `MailboxProviderAdapter`, `MailboxDiscoveryProviderAdapter`, `MailboxBrokerDiscoveryAppClient`, `MailboxErrorCodeV1`, `mailboxIdempotencyKey`, `MailboxScanRunV1`, `MailboxCandidateV1`, `MailboxCandidateOutcomeV1`.
 - No reuse of current OCR workflow for mailbox attachments: current workflow passes receipt bytes through Temporal. Mailbox workflow calls broker/App direct opaque callbacks; after App storage is READY, existing OCR worker reads by file ID through normal job-bound storage URL.
 - Temporal inputs/results/heartbeats/errors contain only opaque scan/candidate/job IDs, counts, page sequence, and typed errors. No Gmail cursor/history ID, pre-fence token, message/thread ID, sender, subject, attachment bytes/metadata, HTML, or structured fields.
@@ -22,7 +22,8 @@
 - Parser consumes bounded byte stream/buffer with pre-allocation length check, bounded decode, node/depth/deadline checks; no unbounded string conversion, external fetch, script execution, XML DTD/entity expansion, or decompression beyond Gmail bound.
 - Connected source is App-owned, `expense_sources.source_type = "connected_mailbox"`, includes `mailbox_candidate_id`, and remains pending-review through Phase 3B dedup. No automatic merge.
 - A creates mailbox Office page/API base; B modifies it for scan/review; C modifies it only for ingestion status. A creates broker/worker base; B creates scan modules; C creates ingestion modules.
-- Remote GCP/Clerk writes require explicit execution-time confirmation. Local commits and all remote git operations follow `AGENTS.md`.
+- This plan's workflows run only on the TypeScript `services/workflow-worker`; production activation requires runtime migration Task 7 cutover (`sub-plans/runtime-typescript-temporal-migration.md`).
+- Remote Clerk writes require explicit execution-time confirmation. Local commits and all remote git operations follow `AGENTS.md`.
 
 ---
 
@@ -69,24 +70,28 @@ interface MailboxIngestionProviderAdapter extends MailboxDiscoveryProviderAdapte
 }
 ```
 
-### Task 1: Contracts and Migration 019 with Connected Provenance
+### Task 1: Contracts and Migration 020 with Connected Provenance
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/packages/contracts/src/mailbox-ingestion.ts`
 - Modify: `expense-tax-management/packages/contracts/src/index.ts`
 - Create: `expense-tax-management/packages/contracts/test/mailbox-ingestion.test.ts`
-- Create: `expense-tax-management/services/app-api/src/database/migrations/019_mailbox_ingestion.ts`
+- Create: `expense-tax-management/services/app-api/src/database/migrations/020_mailbox_ingestion.ts`
 - Modify: `expense-tax-management/services/app-api/src/database/types.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-ingestion-database.test.ts`
 
-- [ ] **Step 1: Write failing tests** for migration prerequisite `016,017,018`, exact contract fields, 5 x 25 MiB caps, no raw content, and connected source constraints.
+- [ ] **Step 1: Write failing tests** for migration prerequisite `016,017,018,019`, exact contract fields, 5 x 25 MiB caps, no raw content, and connected source constraints.
 - [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/contracts exec vitest run test/mailbox-ingestion.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-ingestion-database.test.ts`; expected FAIL.
-- [ ] **Step 3: Alter Phase 3B source schema exclusively in migration 019.** Extend `source_type` check to `manual_upload|forwarded_email|connected_mailbox`; add nullable `mailbox_candidate_id`; require connected rows to have candidate ID, no inbound email requirement, and exact tenant/scope match through trigger/FK. Add unique `(tenant_id, mailbox_candidate_id)`. Do not modify historical migration 015.
+- [ ] **Step 3: Alter Phase 3B source schema exclusively in migration 020.** Extend `source_type` check to `manual_upload|forwarded_email|connected_mailbox`; add nullable `mailbox_candidate_id`; require connected rows to have candidate ID, no inbound email requirement, and exact tenant/scope match through trigger/FK. Add unique `(tenant_id, mailbox_candidate_id)`. Do not modify historical migration 015.
 - [ ] **Step 4: Add `app.mailbox_ingestion_operations`.** Store operation kind, candidate/connection IDs, normalized request hash, original result, status/version, and permanent key with unique `(tenant_id, operation_key, idempotency_key)`; reject same-key/different-payload.
 - [ ] **Step 5: Run:** `pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/app-api typecheck`; expected PASS with no generated drift.
-- [ ] **Step 6: Commit:** `git add packages/contracts/src/mailbox-ingestion.ts packages/contracts/src/index.ts packages/contracts/test/mailbox-ingestion.test.ts services/app-api/src/database/migrations/019_mailbox_ingestion.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-ingestion-database.test.ts packages/contracts/generated && git commit -m "feat(mailbox): add connected ingestion schema"`
+- [ ] **Step 6: Commit:** `git add packages/contracts/src/mailbox-ingestion.ts packages/contracts/src/index.ts packages/contracts/test/mailbox-ingestion.test.ts services/app-api/src/database/migrations/020_mailbox_ingestion.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-ingestion-database.test.ts packages/contracts/generated && git commit -m "feat(mailbox): add connected ingestion schema"`
 
 ### Task 2: Bounded Broker Streaming and Structured Parser
+
+**Local testability:** Fully local with fakes (synthetic streams/HTML fixtures). No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/mailbox-broker/src/ingestion.ts`
@@ -109,6 +114,8 @@ interface MailboxIngestionProviderAdapter extends MailboxDiscoveryProviderAdapte
 - [ ] **Step 6: Commit:** `git add services/mailbox-broker/src/ingestion.ts services/mailbox-broker/src/structured-receipt.ts services/mailbox-broker/src/routes/connections.ts services/mailbox-broker/src/app-client.ts services/mailbox-broker/test/app-client.test.ts services/mailbox-broker/test/ingestion.test.ts services/mailbox-broker/test/structured-receipt.test.ts && git commit -m "feat(mailbox): bound attachment and HTML processing"`
 
 ### Task 3: App Streaming-to-Storage, Malware Scan, and OCR Handoff
+
+**Local testability:** Fully local with fakes (fake malware-scanner adapter, local storage). No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/app-api/src/storage/bounded-stream.ts`
@@ -136,6 +143,8 @@ interface MailboxIngestionProviderAdapter extends MailboxDiscoveryProviderAdapte
 
 ### Task 4: Structured Receipt Transaction and Shared Dedup Evidence
 
+**Local testability:** Fully local with fakes (test PostgreSQL transaction tests). No Google credentials or production access needed.
+
 **Files:**
 - Modify: `expense-tax-management/services/app-api/src/domain/mailbox-ingestion.ts`
 - Modify: `expense-tax-management/services/app-api/src/domain/deduplication.ts`
@@ -159,24 +168,28 @@ interface MailboxIngestionProviderAdapter extends MailboxDiscoveryProviderAdapte
 
 ### Task 5: Direct Broker/App Materialization and Opaque Worker Activity
 
+**Local testability:** Fully local with fakes (fake broker/App HTTP clients, Temporal test environment). No Google credentials or production access needed.
+
 **Files:**
 - Modify: `expense-tax-management/services/mailbox-broker/src/ingestion.ts`
 - Modify: `expense-tax-management/services/mailbox-broker/src/structured-receipt.ts`
 - Modify: `expense-tax-management/services/mailbox-broker/src/routes/connections.ts`
-- Create: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_ingestion.py`
-- Create: `expense-tax-management/services/ai-worker/tests/test_mailbox_ingestion.py`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_workflows.py`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/run_worker.py`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_client.py`
+- Create: `expense-tax-management/services/workflow-worker/src/activities/mailbox-ingestion.ts`
+- Create: `expense-tax-management/services/workflow-worker/test/mailbox-ingestion.test.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/workflows/mailbox-scan.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/worker.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/clients/mailbox-client.ts`
 
-- [ ] **Step 1: Write failing tests** for broker direct signed upload/materialization callbacks, exact `mailbox-broker-app` callback identity, worker App identity `ai-worker-mailbox` with App audience/scopes, opaque workflow payloads, permanent callback keys, and no current OCR byte/result reuse.
-- [ ] **Step 2: Run red:** `uv --directory services/ai-worker run pytest tests/test_mailbox_ingestion.py tests/test_mailbox_workflows.py`; expected FAIL.
+- [ ] **Step 1: Write failing tests** for broker direct signed upload/materialization callbacks, exact `mailbox-broker-app` callback identity, worker App identity `workflow-worker-mailbox` with App audience/scopes, opaque workflow payloads, permanent callback keys, and no current OCR byte/result reuse.
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-ingestion.test.ts test/mailbox-workflows.test.ts`; expected FAIL.
 - [ ] **Step 3: Implement direct callbacks.** Broker calls App upload grant/upload/result routes directly; structured result calls App direct. Worker receives candidate IDs/counts and invokes only broker operation by opaque ID; broker/App return opaque `MailboxMaterializationResultV1`.
-- [ ] **Step 4: Implement `MailboxOcrReceiptWorkflow`.** It receives only `JobReferenceV1`; one activity loads job-bound file ID, downloads bytes, runs deterministic OCR extraction, submits the validated result and shared transaction-level dedup evidence directly to App, and returns only `MailboxMaterializationResultV1`/typed error. Bytes and extraction fields remain inside activity memory and never become workflow input, result, heartbeat, exception, or history. App-created READY file and normal processing job use this workflow through existing dispatch.
-- [ ] **Step 5: Run:** `uv --directory services/ai-worker run pytest && uv --directory services/ai-worker run ruff check src tests && uv --directory services/ai-worker run ruff format --check src tests && pnpm --filter @expense-tax/mailbox-broker test`; expected PASS.
-- [ ] **Step 6: Commit:** `git add services/mailbox-broker/src/ingestion.ts services/mailbox-broker/src/structured-receipt.ts services/mailbox-broker/src/routes/connections.ts services/ai-worker/src/ai_worker/mailbox_ingestion.py services/ai-worker/src/ai_worker/mailbox_workflows.py services/ai-worker/src/ai_worker/mailbox_client.py services/ai-worker/src/ai_worker/run_worker.py services/ai-worker/tests/test_mailbox_ingestion.py services/ai-worker/tests/test_mailbox_workflows.py && git commit -m "feat(mailbox): use direct materialization callbacks"`
+- [ ] **Step 4: Implement `MailboxOcrReceiptWorkflow`.** It receives only `JobReferenceV1`; one activity loads job-bound file ID, downloads bytes, runs deterministic OCR extraction, submits the validated result and shared transaction-level dedup evidence directly to App, and returns only `MailboxMaterializationResultV1`/typed error. Bytes and extraction fields remain inside activity memory and never become workflow input, result, heartbeat, exception, or history. App-created READY file and normal processing job use this workflow through existing dispatch on task queue `expense-tax-processing`.
+- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/workflow-worker test && pnpm --filter @expense-tax/workflow-worker lint && pnpm --filter @expense-tax/workflow-worker typecheck && pnpm --filter @expense-tax/mailbox-broker test`; expected PASS.
+- [ ] **Step 6: Commit:** `git add services/mailbox-broker/src/ingestion.ts services/mailbox-broker/src/structured-receipt.ts services/mailbox-broker/src/routes/connections.ts services/workflow-worker/src/activities/mailbox-ingestion.ts services/workflow-worker/src/workflows/mailbox-scan.ts services/workflow-worker/src/worker.ts services/workflow-worker/src/clients/mailbox-client.ts services/workflow-worker/test/mailbox-ingestion.test.ts && git commit -m "feat(mailbox): use direct materialization callbacks"`
 
 ### Task 6: Office Ingestion Status UI
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Modify: `expense-tax-management/frontend/office-web/src/app/(office)/mailbox/page.tsx`
@@ -193,13 +206,16 @@ interface MailboxIngestionProviderAdapter extends MailboxDiscoveryProviderAdapte
 
 ### Task 7: C End-to-End Verification
 
+**Local testability:** Integration suite is fully local with fakes (test PostgreSQL, fake Gmail/Clerk). The e2e suite against a real Gmail test account/mailbox and production-shaped Compose is **operator-gated**; it does not block `dev` merge and runs before any production activation decision, after runtime migration Task 7 cutover.
+
 **Files:**
 - Create: `expense-tax-management/test/integration/app-domain-3d-c-mailbox.test.ts`
 - Create: `expense-tax-management/test/e2e/connected-mailbox.e2e.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/no-sensitive-data.test.ts`
 
-- [ ] **Step 1: Test** migration sequence 016/017/018/019, direct upload, bounded scan/cleanup, exactly 5 x 25 MiB, READY gating, storage-backed OCR job actor/mode, direct structured transaction, connected source constraint, transaction-level pending dedup, Phase 3C handoff, Office status, disconnect, and permanent replay.
-- [ ] **Step 2: Assert** Temporal payload/history/heartbeat/error, App rows, broker/App logs, HTTP responses, browser storage, and VPS files contain no cursor/history ID, pre-fence token, Gmail ID, token/code/verifier/client secret, body/HTML/MIME, or attachment bytes.
-- [ ] **Step 3: Run full verification:** `pnpm --filter @expense-tax/mailbox-broker run lint && pnpm --filter @expense-tax/mailbox-broker run typecheck && pnpm --filter @expense-tax/mailbox-broker run test && pnpm --filter @expense-tax/mailbox-broker run build && pnpm --filter @expense-tax/office-web run lint && pnpm --filter @expense-tax/office-web run typecheck && pnpm --filter @expense-tax/office-web run test && pnpm --filter @expense-tax/office-web run build && pnpm --filter @expense-tax/app-api run lint && pnpm --filter @expense-tax/app-api run typecheck && pnpm --filter @expense-tax/app-api run test && pnpm --filter @expense-tax/app-api run build && pnpm --filter @expense-tax/foundry-service run lint && pnpm --filter @expense-tax/foundry-service run typecheck && pnpm --filter @expense-tax/foundry-service run test && pnpm --filter @expense-tax/foundry-service run build && uv --directory services/ai-worker run ruff check src tests && uv --directory services/ai-worker run ruff format --check src tests && uv --directory services/ai-worker run pytest && pnpm contracts:generate && pnpm contracts:check && git diff --check`; expected PASS with generated drift absent.
+- [ ] **Step 1: Test** migration sequence 016/017/018/019/020, direct upload, bounded scan/cleanup, exactly 5 x 25 MiB, READY gating, storage-backed OCR job actor/mode, direct structured transaction, connected source constraint, transaction-level pending dedup, Phase 3C handoff, Office status, disconnect, and permanent replay.
+- [ ] **Step 2: Assert** Temporal payload/history/heartbeat/error, App rows, broker token-vault database, broker/App logs, HTTP responses, browser storage, and VPS files contain no plaintext cursor/history ID, pre-fence token, Gmail ID, token/code/verifier/client secret, body/HTML/MIME, or attachment bytes.
+- [ ] **Step 3: Run full verification:** `pnpm --filter @expense-tax/mailbox-broker run lint && pnpm --filter @expense-tax/mailbox-broker run typecheck && pnpm --filter @expense-tax/mailbox-broker run test && pnpm --filter @expense-tax/mailbox-broker run build && pnpm --filter @expense-tax/office-web run lint && pnpm --filter @expense-tax/office-web run typecheck && pnpm --filter @expense-tax/office-web run test && pnpm --filter @expense-tax/office-web run build && pnpm --filter @expense-tax/app-api run lint && pnpm --filter @expense-tax/app-api run typecheck && pnpm --filter @expense-tax/app-api run test && pnpm --filter @expense-tax/app-api run build && pnpm --filter @expense-tax/foundry-service run lint && pnpm --filter @expense-tax/foundry-service run typecheck && pnpm --filter @expense-tax/foundry-service run test && pnpm --filter @expense-tax/foundry-service run build && pnpm --filter @expense-tax/workflow-worker run lint && pnpm --filter @expense-tax/workflow-worker run typecheck && pnpm --filter @expense-tax/workflow-worker run test && pnpm --filter @expense-tax/workflow-worker run build && pnpm contracts:generate && pnpm contracts:check && git diff --check`; expected PASS with generated drift absent.
 - [ ] **Step 4: Run reserved-word and diff checks:** `if grep -R -nE 'T\\x42D|T\\x4fDO|placeh\\x6clder|Similar\\x20to\\x20Task|handle\\x20edge\\x20cases|appropriate\\x20error' docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md; then exit 1; fi; git diff --check`; expected no grep output and clean diff check.
-- [ ] **Step 5: Run integration:** `PHASE_3D_INTEGRATION=1 pnpm exec vitest run test/integration/app-domain-3d-c-mailbox.test.ts && pnpm exec vitest run test/e2e/connected-mailbox.e2e.test.ts`; expected PASS through migration 019, all replay/authorization/security checks, and no remote writes.
+- [ ] **Step 5: Run integration:** `PHASE_3D_INTEGRATION=1 pnpm exec vitest run test/integration/app-domain-3d-c-mailbox.test.ts`; expected PASS through migration 020, all replay/authorization/security checks, and no remote writes.
+- [ ] **Step 6 (operator-gated, after Task 7 cutover):** `pnpm exec vitest run test/e2e/connected-mailbox.e2e.test.ts` against a provisioned test Google account and the VPS Compose stack; expected PASS with no remote writes outside the test mailbox.

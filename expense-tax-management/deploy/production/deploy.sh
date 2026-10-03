@@ -3,6 +3,14 @@ set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+# Phase 3D-A Task 5 (controller ruling): opt-in overlay, included by the
+# compose helper function below only when the validated production env
+# sets MAILBOX_FEATURE_ENABLED=true. Referenced with a `:-` default so
+# this variable (and MAILBOX_FEATURE_ENABLED itself) stay safe to read
+# before load_env_file exports them, and so a standalone extraction of
+# that helper alone (e.g. a test harness) still behaves exactly like the
+# pre-mailbox single-file invocation.
+MAILBOX_COMPOSE_FILE="$SCRIPT_DIR/docker-compose.mailbox.yml"
 TARGET_ENV_FILE="${PRODUCTION_ENV_FILE:-/etc/expense-tax-management/production.env}"
 INCOMING_ENV_FILE="${DEPLOY_ENV_FILE:-${2:-$TARGET_ENV_FILE}}"
 STATE_FILE="${DEPLOYED_IMAGE_TAG_FILE:-/opt/expense-tax-management/app/deployed-image-tag}"
@@ -26,6 +34,21 @@ KNOWN_ENV_KEYS=(
   CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET
   STORAGE_BACKEND STORAGE_LOCAL_BASE_URL STORAGE_URL_SIGNING_KEY
   INBOUND_EMAIL_BASE_ADDRESS INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET
+  # Phase 3D-A Task 5: mailbox broker, opt-in. The production env file
+  # always carries MAILBOX_FEATURE_ENABLED (true or false); every other
+  # key here is only ever present -- with a real value -- when it is true
+  # (production-secret-bundle.mjs emits none of them otherwise). Allowing
+  # them unconditionally is harmless: an unknown-key line still fails
+  # load_env_file regardless of this list's contents.
+  MAILBOX_FEATURE_ENABLED
+  MAILBOX_BROKER_PUBLIC_BASE_URL MAILBOX_ALLOWED_REDIRECT_ORIGINS
+  CLERK_MAILBOX_SERVICE_AUDIENCE
+  CLERK_MAILBOX_APP_API_SUBJECT CLERK_MAILBOX_WORKER_SUBJECT CLERK_MAILBOX_BROKER_SUBJECT
+  CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY
+  MAILBOX_VAULT_KEYS MAILBOX_VAULT_ACTIVE_KEY_ID
+  MAILBOX_BROKER_DATABASE_URL MAILBOX_BROKER_MIGRATION_DATABASE_URL
+  MAILBOX_SERVICE_TOKEN_ISSUER MAILBOX_SERVICE_TOKEN_AUDIENCE MAILBOX_SERVICE_JWKS_URL
+  GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOGLE_OAUTH_REDIRECT_URI
 )
 
 die() {
@@ -116,7 +139,11 @@ validate_auth_values() {
 }
 
 compose() {
-  docker compose --project-name "$PROJECT_NAME" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  local mailbox_overlay=()
+  if [[ -n "${MAILBOX_COMPOSE_FILE:-}" && "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
+    mailbox_overlay=(-f "$MAILBOX_COMPOSE_FILE")
+  fi
+  docker compose --project-name "$PROJECT_NAME" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" "${mailbox_overlay[@]}" "$@"
 }
 
 require_shared_temporal() {
@@ -174,11 +201,36 @@ workflow_worker_image_exists() {
   return 1
 }
 
+# Phase 3D-A Task 5 (controller ruling): same optional-image treatment as
+# workflow-worker above, kept as its own self-contained function (not a
+# shared helper) so a standalone extraction of either function -- e.g. a
+# test harness -- continues to behave identically to before this task.
+mailbox_broker_image_exists() {
+  local tag=$1
+  local image="ghcr.io/thangtran3112/family-app/expense-tax-mailbox-broker:${tag}"
+  docker image inspect "$image" >/dev/null 2>&1 && return 0
+
+  local attempts="${WORKFLOW_WORKER_PROBE_ATTEMPTS:-3}" delay="${WORKFLOW_WORKER_PROBE_DELAY_SECONDS:-2}" attempt
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    docker manifest inspect "$image" >/dev/null 2>&1 && return 0
+    ((attempt < attempts)) && sleep "$delay"
+  done
+  return 1
+}
+
 validate_env_file "$INCOMING_ENV_FILE"
 if [[ -e "$TARGET_ENV_FILE" ]]; then validate_env_file "$TARGET_ENV_FILE"; fi
 load_env_file "$INCOMING_ENV_FILE"
 validate_auth_values
 export IMAGE_TAG
+# Phase 3D-A Task 5 (controller ruling): MAILBOX_FEATURE_ENABLED is only
+# known once the production env file is loaded above, so the mailbox
+# broker is appended here -- never inline in the static array declaration
+# -- so an ordinary dev->main deploy (MAILBOX_FEATURE_ENABLED=false or
+# unset) runs with exactly the pre-mailbox seven services.
+if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
+  APPLICATION_SERVICES+=(mailbox-broker)
+fi
 compose config --quiet
 require_shared_temporal
 
@@ -226,6 +278,25 @@ rollback() {
       compose rm --force --stop workflow-worker || true
     fi
 
+    # Phase 3D-A Task 5 (controller ruling): mailbox-broker is optional the
+    # same way, for the same reason -- only relevant when
+    # MAILBOX_FEATURE_ENABLED=true put it in APPLICATION_SERVICES in the
+    # first place; an ordinary (mailbox-disabled) rollback never has it in
+    # rollback_services at all, so this is a no-op there.
+    local has_mailbox_broker=0 rollback_service
+    for rollback_service in "${rollback_services[@]}"; do
+      [[ "$rollback_service" == "mailbox-broker" ]] && has_mailbox_broker=1
+    done
+    if ((has_mailbox_broker == 1)) && ! mailbox_broker_image_exists "$previous_tag"; then
+      printf 'mailbox-broker has no image for tag %s; rolling back without it\n' "$previous_tag" >&2
+      local filtered_services=()
+      for rollback_service in "${rollback_services[@]}"; do
+        [[ "$rollback_service" == "mailbox-broker" ]] || filtered_services+=("$rollback_service")
+      done
+      rollback_services=("${filtered_services[@]}")
+      compose rm --force --stop mailbox-broker || true
+    fi
+
     if ! compose pull "${rollback_services[@]}"; then rollback_status=1; fi
     if ! compose up -d "${rollback_services[@]}"; then rollback_status=1; fi
     if ! HEALTH_CHECK_REQUIRED_WORKERS="$required_workers" PRODUCTION_ENV_FILE="$COMPOSE_ENV_FILE" "$SCRIPT_DIR/health-check.sh"; then rollback_status=1; fi
@@ -256,6 +327,9 @@ fi
 compose pull
 compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
+if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
+  compose run --rm mailbox-broker-migrate
+fi
 compose up -d "${APPLICATION_SERVICES[@]}"
 "$SCRIPT_DIR/health-check.sh"
 verify_running_images "$IMAGE_TAG" "${APPLICATION_SERVICES[@]}"

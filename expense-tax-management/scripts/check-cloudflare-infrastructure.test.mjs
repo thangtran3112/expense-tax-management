@@ -85,6 +85,29 @@ describe("Cloudflare workflow condition checks", () => {
     expect(main.indexOf(guardedFoundryRoute)).toBeLessThan(main.indexOf(genericFoundryRoute));
   });
 
+  it("Phase 3D-A Task 5: routes both mailbox OAuth paths before the catch-all, with no generic mailbox route", () => {
+    const callbackRoute = [
+      "        hostname = var.mailbox_hostname",
+      "        path     = \"/oauth/google/callback\"",
+      "        service  = \"http://127.0.0.1:8300\"",
+    ].join("\n");
+    const beginRoute = [
+      "        hostname = var.mailbox_hostname",
+      "        path     = \"/oauth/google/begin\"",
+      "        service  = \"http://127.0.0.1:8300\"",
+    ].join("\n");
+    const catchAll = "        service = \"http_status:404\"";
+
+    expect(main).toContain(callbackRoute);
+    expect(main).toContain(beginRoute);
+    expect(main.indexOf(callbackRoute)).toBeLessThan(main.indexOf(catchAll));
+    expect(main.indexOf(beginRoute)).toBeLessThan(main.indexOf(catchAll));
+    // No generic (path-less) mailbox_hostname rule -- every other broker
+    // route must fall through to the catch-all, unreachable from the Tunnel.
+    expect(main).not.toContain("hostname = var.mailbox_hostname\n        service  = \"http://127.0.0.1:8300\"\n      },");
+    expect(main).toContain('mailbox = var.mailbox_hostname');
+  });
+
   it("verifies exact state bucket membership in requested project before mutations", () => {
     expect(state).toContain("gcloud storage buckets list --project=\"$PROJECT_ID\" --format='value(name)'");
     expect(state).toMatch(/grep -Fqx \"\$BUCKET\"/);

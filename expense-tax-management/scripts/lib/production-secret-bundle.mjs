@@ -30,6 +30,71 @@ const CLERK_RUNTIME_KEYS = [
   "CLERK_FOUNDRY_SERVICE_SUBJECT",
 ];
 
+/**
+ * Phase 3D-A Task 5 (controller ruling): mailbox production wiring is
+ * opt-in. These four categories below are only ever consulted -- and
+ * only ever land in the bundle -- when the operator's shell sets
+ * MAILBOX_FEATURE_ENABLED=true; an ordinary dev->main release's shell
+ * never sets it, so the bundle carries MAILBOX_FEATURE_ENABLED=false and
+ * none of these keys at all (see buildProductionBundle below).
+ *
+ * Category treatment mirrors the brief's own design for each key once
+ * enabled:
+ * - MAILBOX_REQUIRED_SHELL_KEYS: operator-supplied secrets/config with no
+ *   safe inert default (an encryption key, a machine secret, the real
+ *   public broker hostname, the real allowed redirect origins) -- hard
+ *   failure if missing while enabled.
+ * - MAILBOX_REQUIRED_DATABASE_KEYS: same rewriteDatabaseUrl treatment as
+ *   the four existing App/Foundry URLs. Named MAILBOX_BROKER_* (matching
+ *   services/mailbox-broker/src/config.ts's and database/migrate.ts's
+ *   actual required env var names), not the brief's stale
+ *   MAILBOX_VAULT_DATABASE_URL* -- see task-5-report.md ruling.
+ * - MAILBOX_CLERK_RUNTIME_KEYS: optional, shell-overridable, otherwise
+ *   fail-closed (same as CLERK_RUNTIME_KEYS above).
+ * - MAILBOX_SERVICE_TOKEN_ISSUER/_AUDIENCE/MAILBOX_SERVICE_JWKS_URL (the
+ *   broker's own inbound-verifier config) are NOT separate keys at all --
+ *   final-review Critical finding: hardcoding them to an inert placeholder
+ *   (the original "matches APP_SERVICE_TOKEN_*'s precedent" design) is
+ *   unsafe here because, unlike APP_SERVICE_TOKEN_* (dead in production --
+ *   only the never-shipped `legacy` AUTH_PROVIDER path reads it), the
+ *   broker's `createServiceVerifier` is its ONLY inbound verifier, used on
+ *   every request. App API/workflow-worker mint their outbound tokens
+ *   against the REAL CLERK_ISSUER_URL/CLERK_JWKS_URL/
+ *   CLERK_MAILBOX_SERVICE_AUDIENCE, so a placeholder issuer/audience here
+ *   would 401 every single App->broker and worker->broker call the moment
+ *   the feature is activated. Derived below, after this object, from the
+ *   same real values -- never independently configurable, so they can
+ *   never drift from what callers actually mint.
+ */
+const MAILBOX_REQUIRED_SHELL_KEYS = [
+  "CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY",
+  "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
+  "CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY",
+  "MAILBOX_VAULT_KEYS",
+  "MAILBOX_VAULT_ACTIVE_KEY_ID",
+  "MAILBOX_BROKER_PUBLIC_BASE_URL",
+  "MAILBOX_ALLOWED_REDIRECT_ORIGINS",
+  "GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+  "GOOGLE_OAUTH_REDIRECT_URI",
+];
+const MAILBOX_REQUIRED_DATABASE_KEYS = [
+  "MAILBOX_BROKER_DATABASE_URL",
+  "MAILBOX_BROKER_MIGRATION_DATABASE_URL",
+];
+const MAILBOX_CLERK_RUNTIME_KEYS = [
+  "CLERK_MAILBOX_SERVICE_AUDIENCE",
+  "CLERK_MAILBOX_APP_API_SUBJECT",
+  "CLERK_MAILBOX_WORKER_SUBJECT",
+  "CLERK_MAILBOX_BROKER_SUBJECT",
+];
+const MAILBOX_FAIL_CLOSED_RUNTIME_VALUES = {
+  CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_3J9hMailboxSvcAud01",
+  CLERK_MAILBOX_APP_API_SUBJECT: "app-api-mailbox-not-configured",
+  CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox-not-configured",
+  CLERK_MAILBOX_BROKER_SUBJECT: "mailbox-broker-app-not-configured",
+};
+
 const FAIL_CLOSED_RUNTIME_VALUES = {
   AUTH_PROVIDER: "clerk",
   APP_TENANT_TOKEN_ISSUER: "https://identity.not-configured.invalid",
@@ -162,6 +227,36 @@ export function buildProductionBundle({
   for (const key of GENERATED_KEYS) {
     values[key] = current[key] === undefined ? generateSecret(randomBytes) : current[key];
     assertGeneratedSecret(key, values[key]);
+  }
+
+  const mailboxEnabled = shell.MAILBOX_FEATURE_ENABLED?.trim().toLowerCase() === "true";
+  values.MAILBOX_FEATURE_ENABLED = mailboxEnabled ? "true" : "false";
+  if (mailboxEnabled) {
+    requireValues(shell, MAILBOX_REQUIRED_SHELL_KEYS);
+    requireValues(database, MAILBOX_REQUIRED_DATABASE_KEYS);
+    for (const key of MAILBOX_REQUIRED_DATABASE_KEYS) {
+      values[key] = rewriteDatabaseUrl(key, database[key]);
+    }
+    for (const key of MAILBOX_REQUIRED_SHELL_KEYS) values[key] = shell[key];
+    Object.assign(
+      values,
+      MAILBOX_FAIL_CLOSED_RUNTIME_VALUES,
+      Object.fromEntries(
+        MAILBOX_CLERK_RUNTIME_KEYS
+          .filter((key) => shell[key] !== undefined)
+          .map((key) => [key, shell[key]]),
+      ),
+    );
+    // Final-review Critical fix: derive the broker's inbound-verifier
+    // config from the same real values App API/workflow-worker already
+    // mint their outbound tokens against (set above/earlier in `values`),
+    // instead of an independently-configurable (and previously inert)
+    // placeholder. CLERK_ISSUER_URL/CLERK_JWKS_URL are always present in
+    // `values` by this point (CLERK_RUNTIME_KEYS, unconditional);
+    // CLERK_MAILBOX_SERVICE_AUDIENCE was just set above.
+    values.MAILBOX_SERVICE_TOKEN_ISSUER = values.CLERK_ISSUER_URL;
+    values.MAILBOX_SERVICE_JWKS_URL = values.CLERK_JWKS_URL;
+    values.MAILBOX_SERVICE_TOKEN_AUDIENCE = values.CLERK_MAILBOX_SERVICE_AUDIENCE;
   }
 
   for (const [key, value] of Object.entries(values)) assertSafeValue(key, value);

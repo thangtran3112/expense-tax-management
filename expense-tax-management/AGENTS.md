@@ -73,7 +73,7 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 
 - Production mutation requires explicit deployment approval.
 - VPS hosts APIs, Temporal, workers, and stateful orchestration; no always-on GCP compute.
-- Current production GCP owns Secret Manager/IAM/GitHub OIDC/WIF; Phase 3D may add only its approved scale-to-zero mailbox broker.
+- Current production GCP owns Secret Manager/IAM/GitHub OIDC/WIF; Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
 - Secret Manager production bundle retains exactly one non-destroyed version.
 - Temporal database bootstrap remains an explicit operator-only Task 8; normal deploy never runs `bootstrap-temporal-db.sh`.
 - Current infrastructure sources: `infrastructure/vps/`, `infrastructure/cloudflare/expense-tax/`, `.github/workflows/expense-tax-deploy.yml`.

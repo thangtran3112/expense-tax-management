@@ -39,6 +39,7 @@ const config: WorkerConfig = {
   services: {
     appApiBaseUrl: "http://app-api:8100",
     foundryBaseUrl: "http://foundry-service:8200",
+    mailboxBrokerBaseUrl: "http://mailbox-broker:8300",
   },
   clerk: {
     issuerUrl: "https://clerk.test",
@@ -52,6 +53,16 @@ const config: WorkerConfig = {
       audience: "mch_foundryAudience",
       machineSecretKey: "ak_test_foundry_secret",
       subject: "mch_foundry",
+    },
+    mailboxApp: {
+      audience: "mch_appAudience",
+      machineSecretKey: "ak_test_mailbox_secret",
+      subject: "workflow-worker-mailbox",
+    },
+    mailboxBroker: {
+      audience: "mch_mailboxAudience",
+      machineSecretKey: "ak_test_mailbox_secret",
+      subject: "workflow-worker-mailbox",
     },
   },
 };

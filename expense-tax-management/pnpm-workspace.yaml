@@ -7,3 +7,5 @@ allowBuilds:
   esbuild: true
   protobufjs: false
   unrs-resolver: true
+minimumReleaseAgeExclude:
+  - googleapis@183.0.0

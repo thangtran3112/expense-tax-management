@@ -1,0 +1,81 @@
+# Phase 3D-A Task 5: mailbox broker opt-in overlay.
+#
+# Controller ruling: mailbox production wiring must be opt-in so that
+# ordinary dev->main releases (required for the runtime Task 7 cutover)
+# never require mailbox secrets, vault DB, or Clerk mailbox identities.
+# deploy.sh includes this file in `docker compose -f ... -f ...` only when
+# the validated production env file sets MAILBOX_FEATURE_ENABLED=true; the
+# base docker-compose.yml stays deployable on its own with no MAILBOX_* or
+# CLERK_MAILBOX_* variables.
+#
+# Compose merges `environment:` (a mapping) across `-f` files by key, so
+# the `app-api`/`workflow-worker` blocks below only ADD keys to those
+# services' environment -- they do not redefine the services themselves.
+services:
+  app-api:
+    environment:
+      MAILBOX_FEATURE_ENABLED: "true"
+      # Compose-internal literal, like APP_API_BASE_URL/FOUNDRY_BASE_URL
+      # elsewhere in this file -- never a bundle variable.
+      MAILBOX_BROKER_BASE_URL: http://mailbox-broker:8300
+      MAILBOX_BROKER_PUBLIC_BASE_URL: ${MAILBOX_BROKER_PUBLIC_BASE_URL:?MAILBOX_BROKER_PUBLIC_BASE_URL is required}
+      CLERK_MAILBOX_SERVICE_AUDIENCE: ${CLERK_MAILBOX_SERVICE_AUDIENCE:?CLERK_MAILBOX_SERVICE_AUDIENCE is required}
+      CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY:?CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY is required}
+      CLERK_MAILBOX_APP_API_SUBJECT: ${CLERK_MAILBOX_APP_API_SUBJECT:?CLERK_MAILBOX_APP_API_SUBJECT is required}
+      CLERK_MAILBOX_BROKER_SUBJECT: ${CLERK_MAILBOX_BROKER_SUBJECT:?CLERK_MAILBOX_BROKER_SUBJECT is required}
+      CLERK_MAILBOX_WORKER_SUBJECT: ${CLERK_MAILBOX_WORKER_SUBJECT:?CLERK_MAILBOX_WORKER_SUBJECT is required}
+      MAILBOX_ALLOWED_REDIRECT_ORIGINS: ${MAILBOX_ALLOWED_REDIRECT_ORIGINS:?MAILBOX_ALLOWED_REDIRECT_ORIGINS is required}
+
+  workflow-worker:
+    environment:
+      MAILBOX_BROKER_BASE_URL: http://mailbox-broker:8300
+      CLERK_MAILBOX_SERVICE_AUDIENCE: ${CLERK_MAILBOX_SERVICE_AUDIENCE:?CLERK_MAILBOX_SERVICE_AUDIENCE is required}
+      CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY:?CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY is required}
+      CLERK_MAILBOX_WORKER_SUBJECT: ${CLERK_MAILBOX_WORKER_SUBJECT:?CLERK_MAILBOX_WORKER_SUBJECT is required}
+
+  mailbox-broker:
+    image: ghcr.io/thangtran3112/family-app/expense-tax-mailbox-broker:${IMAGE_TAG}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+    ports:
+      - "127.0.0.1:8300:8300"
+    environment:
+      PORT: "8300"
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG is required}
+      MAILBOX_BROKER_DATABASE_URL: ${MAILBOX_BROKER_DATABASE_URL:?MAILBOX_BROKER_DATABASE_URL is required}
+      MAILBOX_SERVICE_TOKEN_ISSUER: ${MAILBOX_SERVICE_TOKEN_ISSUER:?MAILBOX_SERVICE_TOKEN_ISSUER is required}
+      MAILBOX_SERVICE_TOKEN_AUDIENCE: ${MAILBOX_SERVICE_TOKEN_AUDIENCE:?MAILBOX_SERVICE_TOKEN_AUDIENCE is required}
+      MAILBOX_SERVICE_JWKS_URL: ${MAILBOX_SERVICE_JWKS_URL:?MAILBOX_SERVICE_JWKS_URL is required}
+      CLERK_MAILBOX_APP_API_SUBJECT: ${CLERK_MAILBOX_APP_API_SUBJECT:?CLERK_MAILBOX_APP_API_SUBJECT is required}
+      CLERK_MAILBOX_WORKER_SUBJECT: ${CLERK_MAILBOX_WORKER_SUBJECT:?CLERK_MAILBOX_WORKER_SUBJECT is required}
+      CLERK_ISSUER_URL: ${CLERK_ISSUER_URL:?CLERK_ISSUER_URL is required}
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:?CLERK_JWKS_URL is required}
+      APP_API_BASE_URL: http://app-api:8100
+      CLERK_APP_SERVICE_AUDIENCE: ${CLERK_APP_SERVICE_AUDIENCE:?CLERK_APP_SERVICE_AUDIENCE is required}
+      CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY:?CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY is required}
+      CLERK_MAILBOX_BROKER_SUBJECT: ${CLERK_MAILBOX_BROKER_SUBJECT:?CLERK_MAILBOX_BROKER_SUBJECT is required}
+      MAILBOX_VAULT_KEYS: ${MAILBOX_VAULT_KEYS:?MAILBOX_VAULT_KEYS is required}
+      MAILBOX_VAULT_ACTIVE_KEY_ID: ${MAILBOX_VAULT_ACTIVE_KEY_ID:?MAILBOX_VAULT_ACTIVE_KEY_ID is required}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:?GOOGLE_OAUTH_CLIENT_ID is required}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:?GOOGLE_OAUTH_CLIENT_SECRET is required}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:?GOOGLE_OAUTH_REDIRECT_URI is required}
+      MAILBOX_ALLOWED_REDIRECT_ORIGINS: ${MAILBOX_ALLOWED_REDIRECT_ORIGINS:?MAILBOX_ALLOWED_REDIRECT_ORIGINS is required}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8300/health/live >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [default, database]
+
+  mailbox-broker-migrate:
+    image: ghcr.io/thangtran3112/family-app/expense-tax-mailbox-broker:${IMAGE_TAG}
+    restart: "no"
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+    command: ["node", "dist/database/migrate.js"]
+    environment:
+      MAILBOX_BROKER_MIGRATION_DATABASE_URL: ${MAILBOX_BROKER_MIGRATION_DATABASE_URL:?MAILBOX_BROKER_MIGRATION_DATABASE_URL is required}
+    networks: [default, database]

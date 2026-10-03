@@ -1,0 +1,30 @@
+{
+  "name": "@expense-tax/mailbox-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run --dir test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "db:migrate": "node dist/database/migrate.js"
+  },
+  "dependencies": {
+    "@expense-tax/contracts": "workspace:*",
+    "fastify": "^5.12.3",
+    "fastify-type-provider-zod": "^7.0.0",
+    "googleapis": "^183.0.0",
+    "jose": "^6.2.12",
+    "kysely": "^0.29.5",
+    "pg": "^8.23.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  }
+}

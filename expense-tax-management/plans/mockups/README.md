@@ -44,4 +44,8 @@ Every folder now carries `mobile-375.png`, `tablet-768.png`, `desktop-1440.png`,
 
 **Review:** approved by Toby Tran on 2026-09-09. See `rebaseline/REVIEW.md`.
 
+## Feature-Specific Gates
+
+- [x] **Office mailbox gate -> Phase 3D-A Task 4**: connect/account/status/schedule/reviewer base for the connected-Gmail mailbox page; 1440/768/375 renders. **Approved by Toby Tran on 2026-10-03** — explicit scope choice required (no preselected radio, Connect disabled until chosen), Mailbox nav stays between Forwarding/Settings, `/mailbox` usable on mobile (no Capture hand-off). Candidate-review placeholder sizing deferred to Phase 3D-B. See `office-mailbox/REVIEW.md` and `office-mailbox/NOTES.md`.
+
 > Historical note: 30 legacy PNGs passed structural checks on 2026-09-06. That evidence does not approve the new three-application architecture.

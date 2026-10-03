@@ -6,21 +6,22 @@
 
 **Goal:** Add single-flight scheduled/manual scans, fenced Gmail discovery, deterministic candidate staging/classification, and Office review on top of 3D-A.
 
-**Architecture:** App API owns scan/candidate rows, cursor fences, lease CAS, entitlement checks, and review authorization. Broker reads Gmail and calls App staging directly. Temporal and Python orchestrate only opaque run/candidate IDs, counts, page sequence, and typed errors; they never receive or return Gmail cursor/history IDs or provider metadata.
+**Architecture:** App API owns scan/candidate rows, cursor fences, lease CAS, entitlement checks, and review authorization. Broker reads Gmail and calls App staging directly. Temporal and the TypeScript workflow worker orchestrate only opaque run/candidate IDs, counts, page sequence, and typed errors; they never receive or return Gmail cursor/history IDs or provider metadata.
 
-**Tech Stack:** TypeScript Fastify/Kysely/PostgreSQL, Temporal client/worker, Python Temporal SDK/httpx, Gmail API through 3D-A broker, Zod/OpenAPI, Vitest/Pytest.
+**Tech Stack:** TypeScript Fastify/Kysely/PostgreSQL, Temporal client/worker, TypeScript Temporal SDK (`services/workflow-worker`), Gmail API through 3D-A broker, Zod/OpenAPI, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md`
 
 ## Global Constraints
 
-- Phase 3C migration 016 must be complete. 3D-B owns migration `018` after 3D-A migration `017`; 3D-C owns `019` after 018.
+- Phase 3C migration 016 and runtime migration Task 7 Stage A migration 017 must be complete. 3D-B owns migration `019` after 3D-A migration `018`; 3D-C owns `020` after 019.
 - Consume A names unchanged: `MailboxConnectionV1`, `MailboxConnectionRecordV1`, `MailboxScope`, `MailboxProviderAdapter`, `MailboxErrorCodeV1`, `MailboxBrokerConnectionAppClient`, `MailboxAppApiClient`, and `mailboxIdempotencyKey`.
 - Temporal inputs/results/heartbeats/errors contain only `scanRunId`, `candidateId`, counts, page sequence, and typed errors. No history ID, cursor, pre-fence token, message ID, thread ID, sender, subject, attachment metadata, or provider error body.
 - Broker stages complete candidate metadata directly to App; worker receives only staged App IDs/counts.
 - Initial Gmail sync uses 30-day default lookback, 90-day hard maximum, 100-message maximum, pre-fence/replay. Incremental sync handles history 404 with bounded full-sync recovery.
 - Every App staging callback binds `expectedConnectionVersion`, `cursorBeforeDigest`, `preFenceToken`, and `pageSequence`; App atomically advances cursor and rejects out-of-order pages.
 - No Pub/Sub, Gmail modification, Outlook implementation, live LLM, raw body/MIME/HTML/token persistence, automatic duplicate merge, or cross-scope routing.
+- Workflows and activities here run only on the TypeScript `services/workflow-worker`. Source may merge to `dev` once 3D-A is in, but production activation requires runtime migration Task 7 cutover (`sub-plans/runtime-typescript-temporal-migration.md`).
 - B modifies A-owned mailbox page/API base and A worker/broker base files only for scan/review integration. B creates scan workflow/activity/classification modules; C creates ingestion modules and modifies existing pages for ingestion status.
 - Permanent operation uniqueness returns original result for identical replay and typed conflict for same key/different payload.
 
@@ -99,23 +100,27 @@ export interface MailboxDiscoveryProviderAdapter extends MailboxProviderAdapter 
 
 `MailboxCandidateMetadataStagingV1` and `MailboxCandidateMetadataStagingResultV1` are B-owned broker-to-App contracts. Their `nextHistoryId` is actual Gmail cursor and crosses only broker-to-App. Provider message/thread IDs are never returned to worker or Temporal. `preFenceToken` and cursor digests are opaque App/broker values and never workflow fields.
 
-### Task 1: Contracts and Migration 018
+### Task 1: Contracts and Migration 019
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/packages/contracts/src/mailbox-discovery.ts`
 - Modify: `expense-tax-management/packages/contracts/src/index.ts`
 - Create: `expense-tax-management/packages/contracts/test/mailbox-discovery.test.ts`
-- Create: `expense-tax-management/services/app-api/src/database/migrations/018_mailbox_discovery.ts`
+- Create: `expense-tax-management/services/app-api/src/database/migrations/019_mailbox_discovery.ts`
 - Modify: `expense-tax-management/services/app-api/src/database/types.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-discovery-database.test.ts`
 
-- [ ] **Step 1: Write failing tests** for exact contracts, no provider metadata in execution/batch/count contracts, five-attachment manifest, migration prerequisite `016,017`, unique candidate/message key, unique permanent operation key, and terminal candidate immutability.
+- [ ] **Step 1: Write failing tests** for exact contracts, no provider metadata in execution/batch/count contracts, five-attachment manifest, migration prerequisite `016,017,018`, unique candidate/message key, unique permanent operation key, and terminal candidate immutability.
 - [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/contracts exec vitest run test/mailbox-discovery.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-discovery-database.test.ts`; expected FAIL.
-- [ ] **Step 3: Implement contracts and 018.** Add scan runs, candidates, durable page outcomes/retries, cursor fence columns, and indexes. Store provider message ID only in App candidate row.
+- [ ] **Step 3: Implement contracts and 019.** Add scan runs, candidates, durable page outcomes/retries, cursor fence columns, and indexes. Store provider message ID only in App candidate row.
 - [ ] **Step 4: Run:** `pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/app-api typecheck`; expected PASS.
-- [ ] **Step 5: Commit:** `git add packages/contracts/src/mailbox-discovery.ts packages/contracts/src/index.ts packages/contracts/test/mailbox-discovery.test.ts services/app-api/src/database/migrations/018_mailbox_discovery.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-discovery-database.test.ts packages/contracts/generated && git commit -m "feat(mailbox): add discovery schema"`
+- [ ] **Step 5: Commit:** `git add packages/contracts/src/mailbox-discovery.ts packages/contracts/src/index.ts packages/contracts/test/mailbox-discovery.test.ts services/app-api/src/database/migrations/019_mailbox_discovery.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-discovery-database.test.ts packages/contracts/generated && git commit -m "feat(mailbox): add discovery schema"`
 
 ### Task 2: Lease, Scan Domain, and Fenced Page Callback
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/app-api/src/domain/mailbox-scans.ts`
@@ -142,27 +147,44 @@ export interface MailboxDiscoveryProviderAdapter extends MailboxProviderAdapter 
 
 ### Task 3: Scan Schedule and Opaque Worker Orchestration
 
+**Local testability:** Fully local with fakes (Temporal test environment, fake Clerk JWKS). No Google credentials or production access needed.
+
 **Files:**
 - Create: `expense-tax-management/services/app-api/src/temporal/mailbox-schedules.ts`
-- Create: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_workflows.py`
-- Create: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_activities.py`
-- Create: `expense-tax-management/services/ai-worker/tests/test_mailbox_workflows.py`
-- Create: `expense-tax-management/services/ai-worker/tests/test_mailbox_activities.py`
+- Create: `expense-tax-management/services/workflow-worker/src/workflows/mailbox-scan.ts`
+- Create: `expense-tax-management/services/workflow-worker/src/activities/mailbox.ts`
+- Create: `expense-tax-management/services/workflow-worker/test/mailbox-workflows.test.ts`
+- Create: `expense-tax-management/services/workflow-worker/test/mailbox-activities.test.ts`
 - Modify: `expense-tax-management/services/app-api/src/temporal/client.ts`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/run_worker.py`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_client.py`
+- Modify: `expense-tax-management/services/workflow-worker/src/worker.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/workflows/index.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/activities/index.ts`
+- Modify: `expense-tax-management/services/workflow-worker/src/clients/mailbox-client.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-temporal.test.ts`
 
-**Interfaces:** `MailboxScanWorkflow.run(MailboxScanExecutionInputV1)` receives only scanRunId. Activities return only `MailboxCandidateBatchV1`, `MailboxScanCountResultV1`, or typed errors. Broker call is `MailboxAppApiClient.runDiscovery(scanRunId)` and broker calls App directly with `MailboxCandidateMetadataStagingV1`; worker never receives that payload.
+**Interfaces:** `MailboxScanWorkflow.run(MailboxScanExecutionInputV1)` receives only scanRunId. Activities return only `MailboxCandidateBatchV1`, `MailboxScanCountResultV1`, or typed errors.
+
+**Phase 3D-A Task 6 handoff correction (real interface differs from what this task originally assumed):** `MailboxAppApiClient` (`services/workflow-worker/src/clients/mailbox-client.ts`, built by 3D-A Task 3) is **not** a business-method interface — it has no `runDiscovery` method and 3D-A deliberately never added one ("no `discover`/`materialize` business methods ... those are 3D-B/C's job, which build concrete calls on top of this client rather than inventing routes here" — see that file's own header comment). Its real, exact shape is four plumbing primitives only:
+```ts
+export interface MailboxAppApiClient {
+  mintAppToken(): Promise<string>;
+  mintBrokerToken(): Promise<string>;
+  requestAppApi<T>(input: MailboxApiRequestInput<T>): Promise<T>;
+  requestBroker<T>(input: MailboxApiRequestInput<T>): Promise<T>;
+}
+```
+This task's activity must call the broker directly through `requestBroker<DiscoveryPageV1>({ path: ..., method: "POST", responseSchema: ..., body: { scanRunId } })` (or add its own named method, e.g. `runDiscovery`, to this same file/interface as part of this task's own "Modify: services/workflow-worker/src/clients/mailbox-client.ts" step) — it must not assume a pre-existing `.runDiscovery()` method already exists on the object `createMailboxAppApiClient` returns today. Broker calls App directly with `MailboxCandidateMetadataStagingV1`; worker never receives that payload.
 
 - [ ] **Step 1: Write failing tests** inspecting serialized workflow inputs/results/heartbeats/errors for absence of history/cursor IDs, pre-fence token, provider IDs, sender, subject, attachment metadata, body, and raw provider errors; assert only opaque IDs/counts/page sequence.
-- [ ] **Step 2: Run red:** `uv --directory services/ai-worker run pytest tests/test_mailbox_workflows.py tests/test_mailbox_activities.py && pnpm --filter @expense-tax/app-api test -- test/mailbox-temporal.test.ts`; expected FAIL.
-- [ ] **Step 3: Implement daily `02:00` schedule** with stable `mailbox-schedule-${connectionId}`, manual workflow `mailbox-scan-${runId}`, overlap skip, entitlement/connection recheck, and lease release.
-- [ ] **Step 4: Implement worker identity.** `MailboxAppApiClient` signs worker-to-App scan endpoints with existing App audience, subject `ai-worker-mailbox`, scopes `mailbox:discover`/`mailbox:materialize`; add config, negative JWT tests, and provisioning references.
-- [ ] **Step 5: Run:** `uv --directory services/ai-worker run pytest tests/test_mailbox_workflows.py tests/test_mailbox_activities.py && pnpm --filter @expense-tax/app-api test -- test/mailbox-temporal.test.ts`; expected PASS.
-- [ ] **Step 6: Commit:** `git add services/app-api/src/temporal/mailbox-schedules.ts services/app-api/src/temporal/client.ts services/app-api/test/mailbox-temporal.test.ts services/ai-worker/src/ai_worker/mailbox_workflows.py services/ai-worker/src/ai_worker/mailbox_activities.py services/ai-worker/src/ai_worker/mailbox_client.py services/ai-worker/src/ai_worker/run_worker.py services/ai-worker/tests/test_mailbox_workflows.py services/ai-worker/tests/test_mailbox_activities.py && git commit -m "feat(mailbox): orchestrate opaque scans"`
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-workflows.test.ts test/mailbox-activities.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-temporal.test.ts`; expected FAIL.
+- [ ] **Step 3: Implement daily `02:00` schedule** with stable `mailbox-schedule-${connectionId}`, manual workflow `mailbox-scan-${runId}`, overlap skip, entitlement/connection recheck, and lease release. Register `MailboxScanWorkflow` on task queue `expense-tax-processing`, namespace `expense-tax`.
+- [ ] **Step 4: Implement worker identity.** `MailboxAppApiClient` signs worker-to-App scan endpoints with existing App audience, subject `workflow-worker-mailbox`, scopes `mailbox:discover`/`mailbox:materialize`; add config, negative JWT tests, and provisioning references.
+- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-workflows.test.ts test/mailbox-activities.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-temporal.test.ts`; expected PASS.
+- [ ] **Step 6: Commit:** `git add services/app-api/src/temporal/mailbox-schedules.ts services/app-api/src/temporal/client.ts services/app-api/test/mailbox-temporal.test.ts services/workflow-worker/src/workflows/mailbox-scan.ts services/workflow-worker/src/activities/mailbox.ts services/workflow-worker/src/worker.ts services/workflow-worker/src/workflows/index.ts services/workflow-worker/src/activities/index.ts services/workflow-worker/src/clients/mailbox-client.ts services/workflow-worker/test/mailbox-workflows.test.ts services/workflow-worker/test/mailbox-activities.test.ts && git commit -m "feat(mailbox): orchestrate opaque scans"`
 
 ### Task 4: Gmail Fenced Discovery and Direct App Staging
+
+**Local testability:** Mostly local with fakes (stub Gmail API responses). Real-Gmail verification of 404-history recovery and rate-limit backoff against a live test mailbox is **operator-gated** (deferred to Task 6 end-to-end verification against a provisioned test Google account).
 
 **Files:**
 - Create: `expense-tax-management/services/mailbox-broker/src/discovery.ts`
@@ -170,18 +192,20 @@ export interface MailboxDiscoveryProviderAdapter extends MailboxProviderAdapter 
 - Create: `expense-tax-management/services/mailbox-broker/test/discovery.test.ts`
 - Modify: `expense-tax-management/services/mailbox-broker/src/routes/connections.ts`
 - Modify: `expense-tax-management/services/app-api/src/routes/mailbox-internal.ts`
-- Modify: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_activities.py`
-- Modify: `expense-tax-management/services/ai-worker/tests/test_mailbox_activities.py`
+- Modify: `expense-tax-management/services/workflow-worker/src/activities/mailbox.ts`
+- Modify: `expense-tax-management/services/workflow-worker/test/mailbox-activities.test.ts`
 
 - [ ] **Step 1: Write failing tests** for full pre-fence, bounded lookback, 100 messages, incremental pagination, 404 full-sync recovery, 401 reauth, 429/5xx retry, direct broker->App staging, page fence values, and worker opaque output.
-- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/discovery.test.ts && uv --directory services/ai-worker run pytest tests/test_mailbox_activities.py`; expected FAIL.
-- [ ] **Step 3: Implement broker discovery.** Broker obtains connection secret and all Gmail cursor/fence state internally through App-bound `scanRunId`; it builds metadata staging callback, calls App directly, and returns only candidate IDs/counts/page sequence to worker.
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/discovery.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-activities.test.ts`; expected FAIL.
+- [ ] **Step 3: Implement broker discovery.** Broker obtains the connection's decrypted access token and all Gmail cursor/fence state internally through App-bound `scanRunId`; it builds metadata staging callback, calls App directly, and returns only candidate IDs/counts/page sequence to worker.
 - [ ] **Step 3a: Add broker-authenticated candidate binding.** App exposes `POST /internal/v1/mailbox/candidates/:candidateId/broker-binding`, authenticated as `mailbox-broker-app` with `mailbox:materialize`; it returns `MailboxBrokerCandidateBindingV1` only to broker. Broker uses provider IDs from this binding to refetch the message; worker and Office never receive them.
 - [ ] **Step 4: Implement 404 recovery.** Re-read App-bound run state, create new internal pre-fence token, perform bounded full sync/replay, and submit ordered callbacks; never expose cursor/history values to worker.
-- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/app-api test -- test/mailbox-internal.test.ts && uv --directory services/ai-worker run pytest tests/test_mailbox_activities.py`; expected PASS.
-- [ ] **Step 6: Commit:** `git add services/mailbox-broker/src/discovery.ts services/mailbox-broker/src/google-mailbox.ts services/mailbox-broker/src/routes/connections.ts services/mailbox-broker/test/discovery.test.ts services/app-api/src/routes/mailbox-internal.ts services/ai-worker/src/ai_worker/mailbox_activities.py services/ai-worker/tests/test_mailbox_activities.py && git commit -m "feat(mailbox): stage fenced Gmail candidates"`
+- [ ] **Step 5: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/app-api test -- test/mailbox-internal.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-activities.test.ts`; expected PASS.
+- [ ] **Step 6: Commit:** `git add services/mailbox-broker/src/discovery.ts services/mailbox-broker/src/google-mailbox.ts services/mailbox-broker/src/routes/connections.ts services/mailbox-broker/test/discovery.test.ts services/app-api/src/routes/mailbox-internal.ts services/workflow-worker/src/activities/mailbox.ts services/workflow-worker/test/mailbox-activities.test.ts && git commit -m "feat(mailbox): stage fenced Gmail candidates"`
 
 ### Task 5: Deterministic Classification and Review
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/mailbox-broker/src/classification.ts`
@@ -203,10 +227,12 @@ export interface MailboxDiscoveryProviderAdapter extends MailboxProviderAdapter 
 
 ### Task 6: B Verification and C Handoff
 
+**Local testability:** Fully local with fakes for unit/integration suites. End-to-end verification against a real Gmail test account/mailbox is **operator-gated** and does not block `dev` merge; run it before any production activation decision.
+
 **Files:**
 - Create: `expense-tax-management/test/integration/app-domain-3d-b-mailbox.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/discovery-security.test.ts`
 
 - [ ] **Step 1: Test** lease single flight, permanent replay, page ordering/fences, cursor atomicity, 404 recovery, entitlement pause, review auth, and serialized Temporal payload redaction.
-- [ ] **Step 2: Run:** `pnpm test && pnpm lint && pnpm typecheck && pnpm build && pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/office-web test && pnpm --filter @expense-tax/app-api test && pnpm test:integration -- test/integration/app-domain-3d-b-mailbox.test.ts && uv --directory services/ai-worker run pytest && git diff --check`; expected PASS with generated drift absent.
-- [ ] **Step 3: Handoff.** C consumes `MailboxScanRunV1`, `MailboxCandidateV1`, `MailboxCandidateOutcomeV1`, App candidate routes, direct broker staging boundary, and migration 018. C must not place cursor/history/fence values in Temporal.
+- [ ] **Step 2: Run:** `pnpm test && pnpm lint && pnpm typecheck && pnpm build && pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/office-web test && pnpm --filter @expense-tax/app-api test && pnpm --filter @expense-tax/workflow-worker test && pnpm test:integration -- test/integration/app-domain-3d-b-mailbox.test.ts && git diff --check`; expected PASS with generated drift absent.
+- [ ] **Step 3: Handoff.** C consumes `MailboxScanRunV1`, `MailboxCandidateV1`, `MailboxCandidateOutcomeV1`, App candidate routes, direct broker staging boundary, and migration 019. C must not place cursor/history/fence values in Temporal. Production activation of this plan's workflows requires runtime migration Task 7 cutover.

@@ -359,6 +359,38 @@ esac
     expect(bootstrap).not.toMatch(/docker exec[^\n]*(PASSWORD|SECRET|TOKEN)=/);
   });
 
+  it("bootstraps the mailbox vault's migrator role with NOCREATEDB, not CREATEDB (Task 5 fix round 1)", () => {
+    const bootstrap = readProductionFile("bootstrap-mailbox-vault-db.sh");
+    expect(bootstrap).toContain("POSTGRES_SUPERUSER_PASSWORD");
+    expect(bootstrap).toContain("MAILBOX_VAULT_MIGRATOR_DB_PASSWORD");
+    expect(bootstrap).toContain("MAILBOX_VAULT_RUNTIME_DB_PASSWORD");
+    expect(bootstrap).toContain("docker exec -i");
+    expect(bootstrap).toContain("ON_ERROR_STOP=1");
+    expect(bootstrap).toContain("CREATE DATABASE mailbox_vault");
+    expect(bootstrap).not.toMatch(/docker exec[^\n]*(PASSWORD|SECRET|TOKEN)=/);
+
+    // The migrator role must never be able to create databases -- it owns
+    // exactly one (mailbox_vault, granted via OWNER at CREATE DATABASE
+    // time), never more. Match the exact CREATE/ALTER ROLE lines so a bare
+    // substring check can't be fooled by NOCREATEDB itself containing the
+    // substring "CREATEDB".
+    expect(bootstrap).toContain(
+      "CREATE ROLE mailbox_vault_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(bootstrap).toContain(
+      "ALTER ROLE mailbox_vault_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(bootstrap).not.toMatch(/ROLE mailbox_vault_migrator LOGIN NOSUPERUSER CREATEDB\b/);
+
+    // Each role's self-check must verify rolcreatedb = false exactly once
+    // -- a duplicated condition in one role's check is not a substitute
+    // for a missing check on the other role's.
+    const runtimeCheck = bootstrap.match(/WHERE rolname = 'mailbox_vault_runtime'\s+AND rolsuper = false([\s\S]*?)\) THEN/);
+    const migratorCheck = bootstrap.match(/WHERE rolname = 'mailbox_vault_migrator'\s+AND rolsuper = false([\s\S]*?)\) THEN/);
+    expect(runtimeCheck?.[1].match(/rolcreatedb = false/g)).toHaveLength(1);
+    expect(migratorCheck?.[1].match(/rolcreatedb = false/g)).toHaveLength(1);
+  });
+
   it("health checks only loopback endpoints and scripts are strict shell", () => {
     const health = readProductionFile("health-check.sh");
     expect(health).toContain("127.0.0.1:8100/health/live");

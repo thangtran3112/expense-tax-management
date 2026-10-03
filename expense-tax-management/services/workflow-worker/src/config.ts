@@ -16,12 +16,45 @@ export interface WorkerConfig {
   readonly services: {
     readonly appApiBaseUrl: string;
     readonly foundryBaseUrl: string;
+    /**
+     * Phase 3D-A Task 3: Compose-internal mailbox broker origin
+     * (`http://mailbox-broker:8300`, hardcoded Compose literal per the
+     * brief -- still parsed like any other base URL here).
+     *
+     * Phase 3D-A Task 5 (controller ruling): optional -- present only when
+     * the operator's production Compose override wires the mailbox broker
+     * (`MAILBOX_FEATURE_ENABLED=true`). An ordinary dev->main release's
+     * base Compose carries no mailbox env at all, and nothing in this
+     * worker's production startup (`worker.ts`) constructs
+     * `createMailboxAppApiClient` yet (3D-B/C's job), so these fields are
+     * unused today -- undefined is a safe, inert default.
+     */
+    readonly mailboxBrokerBaseUrl?: string;
   };
   readonly clerk: {
     readonly issuerUrl: string;
     readonly jwksUrl: string;
     readonly app: MachineCredentialConfig;
     readonly foundry: MachineCredentialConfig;
+    /**
+     * Phase 3D-A Task 3: the worker's mailbox-scoped credential calling
+     * App API's mailbox routes (`mailbox:discover`/`mailbox:materialize`).
+     * Audience is the existing `CLERK_APP_SERVICE_AUDIENCE` -- the same
+     * App target `clerk.app` already calls -- but under the distinct
+     * mailbox-scoped subject/secret, so a leaked mailbox credential
+     * cannot reach non-mailbox App routes.
+     */
+    readonly mailboxApp?: MachineCredentialConfig;
+    /**
+     * Phase 3D-A Task 3: the worker's credential calling the mailbox
+     * broker directly (3D-B/C). Same subject/secret as `mailboxApp` --
+     * one Clerk machine identity, two request-time audiences -- targeting
+     * the new `CLERK_MAILBOX_SERVICE_AUDIENCE`.
+     *
+     * Optional for the same reason as `services.mailboxBrokerBaseUrl`
+     * above (Task 5 controller ruling).
+     */
+    readonly mailboxBroker?: MachineCredentialConfig;
   };
 }
 
@@ -42,6 +75,24 @@ function machineSecretSchema(key: string): z.ZodType<string> {
   ).refine(
     (value) => !PlaceholderPattern.test(value),
     `${key} must not be a placeholder`,
+  );
+}
+
+/**
+ * Phase 3D-A mailbox subjects (`app-api-mailbox` / `workflow-worker-
+ * mailbox` / `mailbox-broker-app`, per the plan's exact machine subjects)
+ * are human-readable per-identity names, not Clerk `mch_`-format resource
+ * IDs like the existing `CLERK_APP_SERVICE_SUBJECT`/
+ * `CLERK_FOUNDRY_SERVICE_SUBJECT` values `machineIdSchema` validates.
+ * App API's own config.ts (Task 2) already treats these as plain
+ * required strings (no `mch_` regex) for the same reason. A dedicated,
+ * looser schema here keeps the existing `machineIdSchema` contract
+ * (and every value it already validates) completely unchanged.
+ */
+function mailboxSubjectSchema(key: string): z.ZodType<string> {
+  return RequiredStringSchema.regex(
+    /^[a-z][a-z0-9-]*$/,
+    `${key} must be a lowercase-hyphenated mailbox subject`,
   );
 }
 
@@ -120,6 +171,7 @@ const WorkerEnvironmentSchema = z.object({
     .pipe(z.literal(AI_WORKER_TASK_QUEUE)),
   APP_API_BASE_URL: baseUrlSchema("APP_API_BASE_URL"),
   FOUNDRY_BASE_URL: baseUrlSchema("FOUNDRY_BASE_URL"),
+  MAILBOX_BROKER_BASE_URL: baseUrlSchema("MAILBOX_BROKER_BASE_URL").optional(),
   CLERK_ISSUER_URL: clerkUrlSchema("CLERK_ISSUER_URL"),
   CLERK_JWKS_URL: clerkUrlSchema("CLERK_JWKS_URL"),
   CLERK_APP_SERVICE_AUDIENCE: machineIdSchema(
@@ -138,12 +190,95 @@ const WorkerEnvironmentSchema = z.object({
   CLERK_FOUNDRY_SERVICE_SUBJECT: machineIdSchema(
     "CLERK_FOUNDRY_SERVICE_SUBJECT",
   ),
+  CLERK_MAILBOX_SERVICE_AUDIENCE: machineIdSchema(
+    "CLERK_MAILBOX_SERVICE_AUDIENCE",
+  ).optional(),
+  CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: machineSecretSchema(
+    "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
+  ).optional(),
+  CLERK_MAILBOX_WORKER_SUBJECT: mailboxSubjectSchema(
+    "CLERK_MAILBOX_WORKER_SUBJECT",
+  ).optional(),
 });
+
+/**
+ * Phase 3D-A Task 5 (controller ruling): the four mailbox env vars above
+ * are optional individually (so an ordinary dev->main release's base
+ * Compose -- no mailbox env at all -- parses cleanly), but must be set
+ * together or not at all: a partially-configured mailbox credential is a
+ * deploy misconfiguration, not a valid "half enabled" state.
+ */
+const MAILBOX_WORKER_KEYS = [
+  "MAILBOX_BROKER_BASE_URL",
+  "CLERK_MAILBOX_SERVICE_AUDIENCE",
+  "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
+  "CLERK_MAILBOX_WORKER_SUBJECT",
+] as const;
 
 export function workerConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): WorkerConfig {
   const parsed = WorkerEnvironmentSchema.parse(env);
+
+  const mailboxPresence = MAILBOX_WORKER_KEYS.map((key) => parsed[key] !== undefined);
+  const mailboxPresentCount = mailboxPresence.filter(Boolean).length;
+  if (mailboxPresentCount !== 0 && mailboxPresentCount !== MAILBOX_WORKER_KEYS.length) {
+    throw new Error(
+      `Mailbox worker configuration is incomplete: ${MAILBOX_WORKER_KEYS.join(", ")} must all be set together or all omitted`,
+    );
+  }
+  const mailboxConfigured = mailboxPresentCount === MAILBOX_WORKER_KEYS.length;
+
+  const services: WorkerConfig["services"] = mailboxConfigured
+    ? {
+        appApiBaseUrl: parsed.APP_API_BASE_URL,
+        foundryBaseUrl: parsed.FOUNDRY_BASE_URL,
+        mailboxBrokerBaseUrl: parsed.MAILBOX_BROKER_BASE_URL as string,
+      }
+    : {
+        appApiBaseUrl: parsed.APP_API_BASE_URL,
+        foundryBaseUrl: parsed.FOUNDRY_BASE_URL,
+      };
+
+  const clerk: WorkerConfig["clerk"] = mailboxConfigured
+    ? {
+        issuerUrl: parsed.CLERK_ISSUER_URL,
+        jwksUrl: parsed.CLERK_JWKS_URL,
+        app: {
+          audience: parsed.CLERK_APP_SERVICE_AUDIENCE,
+          machineSecretKey: parsed.CLERK_APP_MACHINE_SECRET_KEY,
+          subject: parsed.CLERK_APP_SERVICE_SUBJECT,
+        },
+        foundry: {
+          audience: parsed.CLERK_FOUNDRY_SERVICE_AUDIENCE,
+          machineSecretKey: parsed.CLERK_FOUNDRY_MACHINE_SECRET_KEY,
+          subject: parsed.CLERK_FOUNDRY_SERVICE_SUBJECT,
+        },
+        mailboxApp: {
+          audience: parsed.CLERK_APP_SERVICE_AUDIENCE,
+          machineSecretKey: parsed.CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY as string,
+          subject: parsed.CLERK_MAILBOX_WORKER_SUBJECT as string,
+        },
+        mailboxBroker: {
+          audience: parsed.CLERK_MAILBOX_SERVICE_AUDIENCE as string,
+          machineSecretKey: parsed.CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY as string,
+          subject: parsed.CLERK_MAILBOX_WORKER_SUBJECT as string,
+        },
+      }
+    : {
+        issuerUrl: parsed.CLERK_ISSUER_URL,
+        jwksUrl: parsed.CLERK_JWKS_URL,
+        app: {
+          audience: parsed.CLERK_APP_SERVICE_AUDIENCE,
+          machineSecretKey: parsed.CLERK_APP_MACHINE_SECRET_KEY,
+          subject: parsed.CLERK_APP_SERVICE_SUBJECT,
+        },
+        foundry: {
+          audience: parsed.CLERK_FOUNDRY_SERVICE_AUDIENCE,
+          machineSecretKey: parsed.CLERK_FOUNDRY_MACHINE_SECRET_KEY,
+          subject: parsed.CLERK_FOUNDRY_SERVICE_SUBJECT,
+        },
+      };
 
   return {
     temporal: {
@@ -151,23 +286,7 @@ export function workerConfigFromEnv(
       namespace: parsed.TEMPORAL_NAMESPACE,
       taskQueue: parsed.AI_WORKER_TASK_QUEUE,
     },
-    services: {
-      appApiBaseUrl: parsed.APP_API_BASE_URL,
-      foundryBaseUrl: parsed.FOUNDRY_BASE_URL,
-    },
-    clerk: {
-      issuerUrl: parsed.CLERK_ISSUER_URL,
-      jwksUrl: parsed.CLERK_JWKS_URL,
-      app: {
-        audience: parsed.CLERK_APP_SERVICE_AUDIENCE,
-        machineSecretKey: parsed.CLERK_APP_MACHINE_SECRET_KEY,
-        subject: parsed.CLERK_APP_SERVICE_SUBJECT,
-      },
-      foundry: {
-        audience: parsed.CLERK_FOUNDRY_SERVICE_AUDIENCE,
-        machineSecretKey: parsed.CLERK_FOUNDRY_MACHINE_SECRET_KEY,
-        subject: parsed.CLERK_FOUNDRY_SERVICE_SUBJECT,
-      },
-    },
+    services,
+    clerk,
   };
 }

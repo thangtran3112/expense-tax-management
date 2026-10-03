@@ -45,3 +45,9 @@ variable "foundry_hostname" {
   description = "Foundry application hostname."
   default     = "expense-foundry.tobytran.dev"
 }
+
+variable "mailbox_hostname" {
+  type        = string
+  description = "Mailbox broker OAuth hostname (Phase 3D-A Task 5)."
+  default     = "expense-mailbox.tobytran.dev"
+}

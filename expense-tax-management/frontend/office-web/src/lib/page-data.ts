@@ -1,4 +1,6 @@
-import { fetchDuplicateMatches, fetchLedger, fetchTags, fetchTaxReport } from "./api";
+import type { Scope } from "@expense-tax/contracts";
+
+import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
 import type { OfficeSession } from "./session";
 
@@ -50,4 +52,44 @@ export function loadTags(
   organizationId: string | null | undefined,
 ) {
   return fetchTags(session, getToken, organizationId);
+}
+
+/**
+ * Fix round 1 (Important) -- the real connection-status read the Office
+ * mailbox page needs instead of static scaffolding. `scope` is explicit
+ * (fix round 2), not derived from `session.scope` -- see api.ts.
+ */
+export function loadMailboxConnection(
+  session: OfficeSession,
+  scope: Scope,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchMailboxConnection(session, scope, getToken, organizationId);
+}
+
+/**
+ * Fix round 2 (Important) -- the authorized scope choices (Personal, when
+ * known, plus every active business) for the mailbox-connect picker.
+ */
+export function loadAuthorizedBusinesses(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchAuthorizedBusinesses(session, getToken, organizationId);
+}
+
+/**
+ * Fix round 3 (Important) -- always offer the caller's own Personal
+ * profile in the mailbox scope-picker, even under a business-scoped
+ * Office session (previously omitted -- see fix round 2's Ruling, now
+ * closed by App API's new scope-authorized lookup).
+ */
+export function loadOwnPersonalProfile(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchOwnPersonalProfile(session, getToken, organizationId);
 }
