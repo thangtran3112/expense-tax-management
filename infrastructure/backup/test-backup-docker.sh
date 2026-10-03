@@ -121,8 +121,8 @@ for db in expense_app expense_foundry temporal temporal_visibility mailbox_broke
     fbk-test-backup:local --list /d.dump >/dev/null \
     || fail "pg_restore --list failed for $db dump (post-hoc re-validation)"
 done
-jq -e '.databases | index("postgres") == null' "$inventory" >/dev/null \
-  || fail "admin 'postgres' database must be excluded from the backup set"
+jq -e '.databases | index("postgres") != null' "$inventory" >/dev/null \
+  || fail "the admin 'postgres' database must be included -- every non-template database, full stop"
 
 sha_recorded=$(jq -r '.files[] | select(.name == "globals.sql") | .sha256' "$inventory")
 sha_actual=$(sha256sum "$WORKDIR/dump-out/globals.sql" | awk '{print $1}')

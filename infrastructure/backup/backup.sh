@@ -45,17 +45,17 @@ psql_admin() {
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -v ON_ERROR_STOP=1 "$@"
 }
 
-# Every real database except the maintenance templates and the bootstrap
-# "postgres" catalog-only database. Ruling: the plan says "excluding
-# templates"; "postgres" itself is never an application database in this
-# cluster (infrastructure/vps/steps/30-postgres.sh only ever stores app
-# data in app-created databases), so it is excluded too to keep the backup
-# set exactly "every family PostgreSQL database" per ARCHITECTURE.md
-# rather than also the empty admin catalog. Cost if wrong: an operator
-# restore is missing an empty, re-creatable database.
+# Every non-template database, full stop -- including the admin
+# "postgres" catalog database. Ruling (fix round 1, overriding an earlier
+# Ruling here that excluded "postgres" as "never an application
+# database"): the plan's own requirement is "every non-template
+# database," not "every database we judge likely to hold app data" -- a
+# future extension or accidentally persisted data in "postgres" would
+# otherwise be silently unrecoverable, and a correct invariant is cheaper
+# than a judgment call applied once and never revisited.
 discover_databases() {
   psql_admin -tAc \
-    "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY datname"
+    "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
 }
 
 dump_globals() {
