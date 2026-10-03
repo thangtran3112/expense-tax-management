@@ -2,15 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OfficeSession } from "./session";
-import {
-  MAILBOX_SESSION_NONCE_COOKIE,
-  clearMailboxSessionNonceCookie,
-  connectMailboxGoogle,
-  createMailboxSessionNonce,
-  mailboxStatusDisplay,
-  readMailboxSessionNonceCookie,
-  writeMailboxSessionNonceCookie,
-} from "./mailbox";
+import { connectMailboxGoogle, mailboxStatusDisplay } from "./mailbox";
 
 const personalSession: OfficeSession = {
   apiBaseUrl: "http://app.test",
@@ -20,46 +12,7 @@ const personalSession: OfficeSession = {
 };
 
 afterEach(() => {
-  clearMailboxSessionNonceCookie();
   vi.restoreAllMocks();
-});
-
-describe("mailbox session nonce — creation", () => {
-  it("creates a 64-char hex nonce with real entropy (not a fixed/all-same value)", () => {
-    const first = createMailboxSessionNonce();
-    const second = createMailboxSessionNonce();
-    expect(first).toMatch(/^[a-f0-9]{64}$/);
-    expect(second).toMatch(/^[a-f0-9]{64}$/);
-    expect(first).not.toBe(second);
-  });
-});
-
-describe("mailbox session nonce — cookie transport, never localStorage", () => {
-  it("writes the nonce to a Secure, SameSite=Lax, non-persistent cookie", () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
-    const nonce = createMailboxSessionNonce();
-
-    writeMailboxSessionNonceCookie(nonce);
-
-    expect(document.cookie).toContain(`${MAILBOX_SESSION_NONCE_COOKIE}=${nonce}`);
-    expect(setItemSpy).not.toHaveBeenCalled();
-  });
-
-  it("reads back exactly the nonce it wrote", () => {
-    const nonce = createMailboxSessionNonce();
-    writeMailboxSessionNonceCookie(nonce);
-    expect(readMailboxSessionNonceCookie()).toBe(nonce);
-  });
-
-  it("returns null when no cookie is set", () => {
-    expect(readMailboxSessionNonceCookie()).toBeNull();
-  });
-
-  it("clears the cookie so a later read returns null", () => {
-    writeMailboxSessionNonceCookie(createMailboxSessionNonce());
-    clearMailboxSessionNonceCookie();
-    expect(readMailboxSessionNonceCookie()).toBeNull();
-  });
 });
 
 describe("mailboxStatusDisplay — connection status rendering", () => {
@@ -79,14 +32,14 @@ describe("mailboxStatusDisplay — connection status rendering", () => {
 });
 
 describe("connectMailboxGoogle", () => {
-  it("writes the cookie with the same raw nonce it sends to the server, never touching localStorage", async () => {
+  it("never touches localStorage, and returns the broker's begin URL unchanged", async () => {
     const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
     const client = {
       POST: vi.fn().mockResolvedValue({
         data: {
           connection: { id: "connection-1", status: "pending" },
           attempt: { id: "attempt-1" },
-          authorizationUrl: "https://accounts.google.test/auth",
+          authorizationUrl: "https://expense-mailbox.test/oauth/google/begin?authorizationUrl=...&nonce=...",
         },
       }),
     };
@@ -98,18 +51,16 @@ describe("connectMailboxGoogle", () => {
       requestId: "request-1",
     });
 
-    expect(result.authorizationUrl).toBe("https://accounts.google.test/auth");
-    expect(client.POST).toHaveBeenCalledOnce();
-    const [, requestInit] = client.POST.mock.calls[0] as [string, { body: { sessionNonce: string } }];
-    const sentNonce = requestInit.body.sessionNonce;
-    expect(readMailboxSessionNonceCookie()).toBe(sentNonce);
+    expect(result.authorizationUrl).toBe(
+      "https://expense-mailbox.test/oauth/google/begin?authorizationUrl=...&nonce=...",
+    );
     expect(setItemSpy).not.toHaveBeenCalled();
   });
 
-  it("sends the active scope, redirect origin, and requestId through to App API", async () => {
+  it("sends no sessionNonce field -- App API generates it server-side", async () => {
     const client = {
       POST: vi.fn().mockResolvedValue({
-        data: { connection: {}, attempt: {}, authorizationUrl: "https://accounts.google.test/auth" },
+        data: { connection: {}, attempt: {}, authorizationUrl: "https://expense-mailbox.test/oauth/google/begin" },
       }),
     };
     const getToken = vi.fn().mockResolvedValue("office-token");
@@ -125,12 +76,13 @@ describe("connectMailboxGoogle", () => {
       "/api/v1/tenants/{tenantId}/mailbox-connections/google/start",
       expect.objectContaining({
         params: { path: { tenantId: "tenant-1" } },
-        body: expect.objectContaining({
+        body: {
           scope: { kind: "personal", profileId: "profile-1" },
           redirectOrigin: "https://expense-office.test",
-          requestId: "request-2",
+          timezone: expect.any(String),
           localScanTime: "07:30",
-        }),
+          requestId: "request-2",
+        },
       }),
     );
   });

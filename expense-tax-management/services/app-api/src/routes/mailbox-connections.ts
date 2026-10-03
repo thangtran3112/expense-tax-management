@@ -40,6 +40,15 @@ export interface MailboxConnectionsRouteOptions {
   readonly identityResolver?: IdentityResolver;
   /** Default mirrors the plan's exact machine subject: "mailbox-broker-app". */
   readonly brokerServiceSubject?: string;
+  /**
+   * Fix round 1 (Critical) -- the broker's PUBLIC base URL. Required to
+   * serve the customer-facing start route for real (it wraps the broker's
+   * Google authorization URL into a link to this origin's own
+   * `/oauth/google/begin`, where the broker sets its session-nonce cookie
+   * before redirecting to Google -- see `config.ts`'s
+   * `mailboxBrokerPublicBaseUrl` doc comment for why).
+   */
+  readonly mailboxBrokerPublicBaseUrl?: string;
 }
 
 function actorUserId(request: FastifyRequest): string {
@@ -105,9 +114,13 @@ const AdvanceResponseSchema = z.strictObject({
 
 const ReleaseBodySchema = z.strictObject({ leaseId: z.uuid() });
 
+// Fix round 1 (Critical): no `sessionNonce` field -- Office JavaScript
+// cannot securely bind the browser to this OAuth attempt via a cookie it
+// sets itself (host-only on the Office origin, never reaches the broker's
+// callback origin, and can't be HttpOnly). App API now generates the
+// session nonce itself (domain/mailbox-connections.ts's startConnection).
 const StartBodySchema = z.strictObject({
   scope: MailboxScopeSchema,
-  sessionNonce: z.string().trim().min(16).max(512),
   redirectOrigin: z.string().trim().min(1).max(2048),
   timezone: z.string().trim().min(1).max(100),
   localScanTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -116,7 +129,26 @@ const StartBodySchema = z.strictObject({
 const StartResponseSchema = z.strictObject({
   connection: MailboxConnectionV1Schema,
   attempt: MailboxOAuthAttemptV1Schema,
+  /**
+   * The broker's PUBLIC `/oauth/google/begin?...` URL, not the raw Google
+   * URL directly -- the field name is unchanged (minimal client churn);
+   * only the value's origin and purpose changed. The browser must
+   * navigate here first so the broker's own origin can set its session-
+   * nonce cookie before redirecting to Google.
+   */
   authorizationUrl: z.string().trim().min(1),
+});
+
+const ConnectionQuerySchema = z
+  .object({
+    profileId: z.uuid().optional(),
+    businessId: z.uuid().optional(),
+  })
+  .refine((value) => (value.profileId === undefined) !== (value.businessId === undefined), {
+    message: "Exactly one of profileId or businessId is required",
+  });
+const ConnectionResponseSchema = z.strictObject({
+  connection: MailboxConnectionV1Schema.nullable(),
 });
 
 // Mirrors the exact body shape services/mailbox-broker/src/app-client.ts's
@@ -264,13 +296,47 @@ export async function registerMailboxConnectionRoutes(
           actorUserId: actorUserId(request),
           tenantId: request.params.tenantId,
           scope: request.body.scope,
-          sessionNonce: request.body.sessionNonce,
           redirectOrigin: request.body.redirectOrigin,
           timezone: request.body.timezone,
           localScanTime: request.body.localScanTime,
           requestId: request.body.requestId,
         });
-        return reply.code(201).send(result);
+        if (!options.mailboxBrokerPublicBaseUrl) {
+          throw new Error("mailboxBrokerPublicBaseUrl is not configured");
+        }
+        const beginUrl = new URL("/oauth/google/begin", options.mailboxBrokerPublicBaseUrl);
+        beginUrl.searchParams.set("authorizationUrl", result.authorizationUrl);
+        beginUrl.searchParams.set("nonce", result.sessionNonce);
+        return reply.code(201).send({
+          connection: result.connection,
+          attempt: result.attempt,
+          authorizationUrl: beginUrl.toString(),
+        });
+      },
+    );
+
+    typedApp.get(
+      "/api/v1/tenants/:tenantId/mailbox-connections/google",
+      {
+        preHandler: customerGuard,
+        schema: {
+          params: TenantIdParamsSchema,
+          querystring: ConnectionQuerySchema,
+          security: [{ tenantBearer: [] }],
+          response: { 200: ConnectionResponseSchema, ...errors },
+        },
+      },
+      async (request) => {
+        const scope =
+          request.query.profileId !== undefined
+            ? ({ kind: "personal" as const, profileId: request.query.profileId })
+            : ({ kind: "business" as const, businessId: request.query.businessId as string });
+        const connection = await options.mailboxConnectionsDomain.getConnection({
+          actorUserId: actorUserId(request),
+          tenantId: request.params.tenantId,
+          scope,
+        });
+        return { connection };
       },
     );
   }

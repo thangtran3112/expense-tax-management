@@ -64,12 +64,26 @@ It is a separate service, not a separate host: isolating Google OAuth
 credentials and Gmail calls behind one process keeps App API and the
 workflow worker free of Google client libraries and refresh-token handling.
 
-The public OAuth callback is the only broker route the Cloudflare Tunnel
-exposes; every other broker route is internal-only and reachable solely over
-the VPS Docker network. Application routes enforce:
+**Ruling (Task 4, fix round 1):** the browser must touch the broker's own
+origin *before* Google, not only after, so the broker can set its session-
+nonce binding cookie itself. A cookie Office JavaScript sets is host-only on
+the Office origin and never reaches the broker's callback origin, and
+JavaScript cannot set `HttpOnly` -- so the one-time OAuth attempt had no
+way to be bound to the initiating browser session at all under the
+original single-public-route design. The Cloudflare Tunnel therefore
+exposes **two** browser-facing broker routes on the same existing
+hostname/tunnel (an additive ingress-rule change, not a new host):
 
+- Public: `GET /oauth/google/begin`, the browser's first stop. Wraps the
+  already-built Google authorization URL; stateless (decrypts and
+  validates the embedded OAuth `state` via the same logic the callback
+  itself uses -- no DB row, no new secret), and only on success does it set
+  the `Secure; HttpOnly; SameSite=Lax` session-nonce cookie and redirect to
+  Google. App API's customer-facing start route returns this URL (not
+  Google's directly); Office never creates, stores, or transports the
+  nonce itself.
 - Public: `GET /oauth/google/callback`, protected by encrypted one-time OAuth
-  state and bounded rate limits.
+  state, the cookie `/oauth/google/begin` set, and bounded rate limits.
 - Internal: Clerk M2M issuer, exact mailbox-broker audience, exact App/worker
   subjects, and route-specific scopes.
 - Health: GET/HEAD only, no customer data.
@@ -130,31 +144,45 @@ IDs remain opaque strings behind App-owned connection/candidate records.
 ## OAuth Flow and Token Lifecycle
 
 1. Office calls App API to start a Gmail connection with explicit default scope,
-   timezone, and schedule.
+   timezone, and schedule. Office supplies no session nonce of its own (fix
+   round 1 ruling, above): App API generates it.
 2. App API verifies owner/admin connection permission, effective entitlement, and
    current membership to the requested Personal profile or Business.
 3. App API creates pending connection and one-time OAuth attempt metadata. No code
    verifier, token, or client secret is stored in App PostgreSQL.
-4. App API calls broker `POST /internal/v1/oauth/google/start` with connection and
-   attempt IDs using Clerk M2M.
+4. App API generates the session nonce and calls broker
+   `POST /internal/v1/mailbox/oauth/start` with connection/attempt IDs and the
+   nonce using Clerk M2M.
 5. Broker returns a Google authorization URL using offline access, PKCE, exact
    readonly scope, encrypted state, and a short expiry. State uses AES-256-GCM
    authenticated encryption. It contains key ID, connection/attempt IDs, initiating
-   user/session nonce, PKCE verifier, issued-at, expiry, and redirect-origin binding.
-   Browser cannot read or modify it.
-6. Google redirects to broker `GET /oauth/google/callback`.
-7. Broker selects state key by key ID, verifies AEAD tag, expiry, redirect origin,
-   initiating session binding, and one-time pending attempt, then compares a
+   user/session nonce digest, PKCE verifier, issued-at, expiry, and redirect-origin
+   binding. Browser cannot read or modify it. App API wraps this URL and the raw
+   nonce into a link to the broker's own `GET /oauth/google/begin` and returns
+   that link to Office instead of Google's URL directly.
+6. Office navigates the browser to the broker's `/oauth/google/begin` link.
+   The broker re-validates the embedded state (same logic the callback below
+   uses), then -- and only on success -- sets its own `Secure; HttpOnly;
+   SameSite=Lax` session-nonce cookie and 302s the browser to the real Google
+   authorization URL.
+7. Google redirects to broker `GET /oauth/google/callback`, carrying the
+   cookie `/oauth/google/begin` set (browser and broker share an origin, so
+   this works; it could not when the cookie was set by Office JavaScript on
+   a different origin).
+8. Broker selects state key by key ID, verifies AEAD tag, expiry, redirect origin,
+   the session-nonce cookie's digest against the one embedded in state, and
+   one-time pending attempt, then compares a
    constant-time state digest with App API before exchanging the code.
-8. Broker validates returned scopes and Gmail profile, inserts one token-vault
+9. Broker validates returned scopes and Gmail profile, inserts one token-vault
    row for the connection, and stores the refresh token as AES-256-GCM
    ciphertext with nonce, key ID, and generation 1. Short-lived access tokens
    exist only in broker memory.
-9. Broker calls authenticated App API completion endpoint with connection ID,
-   attempt ID, opaque vault reference, provider account ID, email, granted
-   scopes, and initial Gmail history ID. No token value crosses this boundary.
-10. App API atomically activates connection and closes attempt. Broker redirects
-    browser to Office connection result page.
+10. Broker calls authenticated App API completion endpoint with connection ID,
+    attempt ID, opaque vault reference, provider account ID, email, granted
+    scopes, and initial Gmail history ID. No token value crosses this boundary.
+11. App API atomically activates connection and closes attempt. Broker clears
+    its session-nonce cookie and redirects the browser to Office's `/mailbox`
+    connection result page.
 
 Google may emit a new refresh token through the OAuth client's `tokens` event.
 Broker writes a new vault-row generation, verifies it, then disables/destroys

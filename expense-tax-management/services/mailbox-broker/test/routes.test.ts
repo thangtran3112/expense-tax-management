@@ -464,4 +464,136 @@ describe("mailbox-broker routes", () => {
       expect(combined).not.toContain(secretState);
     });
   });
+
+  // ------------------------------------------------------------------ //
+  // Fix round 1 (Critical) — the begin route is where the broker's own
+  // origin sets the HttpOnly session-nonce cookie BEFORE redirecting the
+  // browser to Google. Office JavaScript can no longer set this cookie
+  // (it would be host-only on the Office origin, never sent to the
+  // broker's callback origin, and couldn't be HttpOnly either).
+  // ------------------------------------------------------------------ //
+
+  describe("GET /oauth/google/begin", () => {
+    function fakeGoogleAuthorizationUrl(state: string): string {
+      return `https://accounts.google.test/o/oauth2/auth?state=${encodeURIComponent(state)}&client_id=fake`;
+    }
+
+    it("sets the HttpOnly session-nonce cookie and redirects to the exact authorizationUrl", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const sessionNonce = "a".repeat(32);
+      const state = createOAuthState({
+        connectionId: randomUUID(),
+        attemptId: randomUUID(),
+        sessionNonce,
+        redirectOrigin: ALLOWED_ORIGIN,
+        ttlSeconds: 600,
+        vaultKeys,
+      });
+      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(authorizationUrl);
+      const setCookie = String(response.headers["set-cookie"]);
+      expect(setCookie).toContain(`${SESSION_NONCE_COOKIE}=${sessionNonce}`);
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("Secure");
+      expect(setCookie).toContain("SameSite=Lax");
+    });
+
+    it("rejects a nonce that doesn't match the state's embedded digest", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const state = createOAuthState({
+        connectionId: randomUUID(),
+        attemptId: randomUUID(),
+        sessionNonce: "a".repeat(32),
+        redirectOrigin: ALLOWED_ORIGIN,
+        ttlSeconds: 600,
+        vaultKeys,
+      });
+      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${"b".repeat(32)}`,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    });
+
+    it("rejects an expired state", async () => {
+      const { app, vaultKeys } = await createTestApp();
+      const sessionNonce = "a".repeat(32);
+      const state = createOAuthState({
+        connectionId: randomUUID(),
+        attemptId: randomUUID(),
+        sessionNonce,
+        redirectOrigin: ALLOWED_ORIGIN,
+        ttlSeconds: -1,
+        vaultKeys,
+      });
+      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("rejects an authorizationUrl with no state query parameter", async () => {
+      const { app } = await createTestApp();
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent("https://accounts.google.test/o/oauth2/auth?client_id=fake")}&nonce=${"a".repeat(32)}`,
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("rejects a redirect origin outside the allowlist, even with a validly-signed state", async () => {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+      });
+      apps.add(app);
+      const sessionNonce = "a".repeat(32);
+      const state = createOAuthState({
+        connectionId: randomUUID(),
+        attemptId: randomUUID(),
+        sessionNonce,
+        redirectOrigin: "https://evil.test",
+        ttlSeconds: 600,
+        vaultKeys,
+      });
+      const authorizationUrl = fakeGoogleAuthorizationUrl(state.state);
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/oauth/google/begin?authorizationUrl=${encodeURIComponent(authorizationUrl)}&nonce=${encodeURIComponent(sessionNonce)}`,
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+  });
 });

@@ -6,13 +6,32 @@
  * Task 2) already calls; guarded for the "app-api" caller only, scope
  * "oauth:start".
  *
+ * `GET /oauth/google/begin` -- public (Fix round 1, Critical). The ONLY
+ * place the browser touches the broker's own origin before Google, so it's
+ * the only place the broker can legally set a cookie that its own later
+ * `/oauth/google/callback` will receive back (cookies are origin-scoped --
+ * a cookie set by Office JavaScript on the Office origin is a host-only
+ * cookie that never reaches the broker's callback origin, and JavaScript
+ * can't set `HttpOnly` anyway). App API's customer-facing start route now
+ * returns this URL (wrapping the real Google `authorizationUrl` + the raw
+ * session nonce) instead of the raw Google URL directly; Office merely
+ * navigates the browser here. This route re-validates the embedded OAuth
+ * `state` via the exact same `consumeOAuthState` the callback itself uses
+ * (stateless, no DB row -- calling it here and again at the callback is
+ * safe and intentional) before trusting anything in the query string, so
+ * it cannot be used as an open redirect: a `state` that doesn't decrypt,
+ * hasn't expired, doesn't match the supplied nonce's digest, or whose
+ * embedded redirect origin isn't on the allowlist is rejected before any
+ * cookie is set or redirect issued.
+ *
  * `GET /oauth/google/callback` -- public, no service auth (Google redirects
  * the end user's browser here). Calls App API's one-time state-consume CAS
  * BEFORE exchanging the authorization code with Google (brief: "Broker
  * calls App consume endpoint before Google code exchange"), so a replayed
  * or tampered callback never reaches Google. The raw session nonce travels
- * via a short-lived cookie (never localStorage, never the query string);
- * only its sha256 digest is ever sent to App API or persisted anywhere.
+ * via a short-lived, broker-origin-set `Secure; HttpOnly; SameSite=Lax`
+ * cookie (never localStorage, never the query string); only its sha256
+ * digest is ever sent to App API or persisted anywhere.
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -69,10 +88,41 @@ const CallbackQuerySchema = z.object({
   state: z.string().trim().min(1),
 });
 
+const BeginQuerySchema = z.object({
+  authorizationUrl: z.string().trim().min(1),
+  nonce: z.string().trim().min(16).max(512),
+});
+
 function requestError(statusCode: number, message: string): Error {
   const error = new Error(message) as Error & { statusCode: number };
   error.statusCode = statusCode;
   return error;
+}
+
+function sessionNonceCookie(cookieName: string, value: string, maxAgeSeconds: number): string {
+  return [
+    `${cookieName}=${encodeURIComponent(value)}`,
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+    "Secure",
+    "HttpOnly",
+    "SameSite=Lax",
+  ].join("; ");
+}
+
+/** Extracts the `state` query parameter from a (not-yet-trusted) absolute URL string. */
+function extractStateParam(authorizationUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(authorizationUrl);
+  } catch {
+    throw requestError(400, "invalid authorizationUrl");
+  }
+  const state = parsed.searchParams.get("state");
+  if (!state) {
+    throw requestError(400, "authorizationUrl is missing a state parameter");
+  }
+  return state;
 }
 
 export async function registerOAuthRoutes(
@@ -94,6 +144,29 @@ export async function registerOAuthRoutes(
         throw requestError(400, "redirect origin not allowed");
       }
       return options.providerAdapter.createAuthorizationUrl(request.body);
+    },
+  );
+
+  typedApp.get(
+    "/oauth/google/begin",
+    { schema: { querystring: BeginQuerySchema } },
+    async (request, reply) => {
+      const state = extractStateParam(request.query.authorizationUrl);
+
+      // Stateless validation -- decrypts, checks expiry, confirms the
+      // supplied nonce's digest matches the one embedded in state, and
+      // confirms the embedded redirect origin is allowlisted. Throws
+      // OAuthStateInvalidError (mapped to 400 by errors.ts) on any
+      // mismatch; nothing below runs until this fully succeeds.
+      consumeOAuthState({
+        state,
+        sessionNonce: request.query.nonce,
+        allowedRedirectOrigins: allowedOrigins,
+        vaultKeys: options.vaultKeys,
+      });
+
+      reply.header("set-cookie", sessionNonceCookie(cookieName, request.query.nonce, 600));
+      return reply.redirect(request.query.authorizationUrl, 302);
     },
   );
 
@@ -143,7 +216,7 @@ export async function registerOAuthRoutes(
         expectedConnectionVersion: 0,
       });
 
-      reply.header("set-cookie", `${cookieName}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`);
+      reply.header("set-cookie", sessionNonceCookie(cookieName, "", 0));
       return reply.redirect(`${consumed.redirectOrigin}/mailbox?status=connected`, 302);
     },
   );

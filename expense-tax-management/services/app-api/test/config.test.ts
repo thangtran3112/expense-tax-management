@@ -172,3 +172,90 @@ describe("App API Clerk configuration", () => {
     });
   });
 });
+
+// -------------------------------------------------------------------- //
+// Fix round 1 (Important) -- mailbox feature flag: fails startup closed
+// when explicitly enabled but incompletely configured; never affects any
+// deployment that leaves MAILBOX_FEATURE_ENABLED unset.
+// -------------------------------------------------------------------- //
+
+const MAILBOX_ENV = {
+  ...ENV,
+  MAILBOX_BROKER_BASE_URL: "http://mailbox-broker:8300",
+  MAILBOX_BROKER_PUBLIC_BASE_URL: "https://expense-mailbox.test",
+  CLERK_MAILBOX_SERVICE_AUDIENCE: "mailbox-service-audience",
+  CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY: "ak_test_fake",
+  CLERK_MAILBOX_APP_API_SUBJECT: "app-api-mailbox",
+  MAILBOX_ALLOWED_REDIRECT_ORIGINS: "https://expense-office.test",
+};
+
+describe("App API mailbox feature flag", () => {
+  it("defaults to disabled and requires none of the broker fields", () => {
+    expect(createAppConfig({ env: ENV }).mailboxEnabled).toBe(false);
+  });
+
+  it.each(["true", "True", "TRUE"])(
+    "enables the feature for MAILBOX_FEATURE_ENABLED=%s when fully configured",
+    (value) => {
+      const config = createAppConfig({
+        env: { ...MAILBOX_ENV, MAILBOX_FEATURE_ENABLED: value },
+      });
+      expect(config.mailboxEnabled).toBe(true);
+    },
+  );
+
+  it.each(["false", "1", "yes", ""])(
+    "treats MAILBOX_FEATURE_ENABLED=%s as disabled",
+    (value) => {
+      const config = createAppConfig({
+        env: { ...ENV, MAILBOX_FEATURE_ENABLED: value },
+      });
+      expect(config.mailboxEnabled).toBe(false);
+    },
+  );
+
+  it.each([
+    ["MAILBOX_BROKER_BASE_URL", "MAILBOX_BROKER_BASE_URL"],
+    ["MAILBOX_BROKER_PUBLIC_BASE_URL", "MAILBOX_BROKER_PUBLIC_BASE_URL"],
+    ["CLERK_MAILBOX_SERVICE_AUDIENCE", "CLERK_MAILBOX_SERVICE_AUDIENCE"],
+    ["CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY", "CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY"],
+    ["CLERK_MAILBOX_APP_API_SUBJECT", "CLERK_MAILBOX_APP_API_SUBJECT"],
+    ["MAILBOX_ALLOWED_REDIRECT_ORIGINS", "MAILBOX_ALLOWED_REDIRECT_ORIGINS"],
+  ])("fails startup naming the missing variable when %s is absent while enabled", (_label, key) => {
+    const env = { ...MAILBOX_ENV, MAILBOX_FEATURE_ENABLED: "true" };
+    delete env[key as keyof typeof env];
+
+    expect(() => createAppConfig({ env })).toThrow(
+      /Mailbox feature is enabled .* missing required configuration:.*/,
+    );
+    expect(() => createAppConfig({ env })).toThrow(new RegExp(key));
+  });
+
+  it("never leaks a secret value in the fail-closed error message", () => {
+    const env = { ...MAILBOX_ENV, MAILBOX_FEATURE_ENABLED: "true" };
+    delete (env as Record<string, string | undefined>).CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY;
+
+    try {
+      createAppConfig({ env });
+      throw new Error("expected createAppConfig to throw");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).not.toContain("ak_test_fake");
+    }
+  });
+
+  it("fails startup when enabled under legacy auth (no Clerk config at all)", () => {
+    const env = { ...LEGACY_ENV, ...MAILBOX_ENV, MAILBOX_FEATURE_ENABLED: "true", AUTH_PROVIDER: "legacy" };
+    expect(() => createAppConfig({ env })).toThrow(/AUTH_PROVIDER is not "clerk"/);
+  });
+
+  it("succeeds and is fully usable when enabled and completely configured", () => {
+    const config = createAppConfig({
+      env: { ...MAILBOX_ENV, MAILBOX_FEATURE_ENABLED: "true" },
+    });
+    expect(config.mailboxEnabled).toBe(true);
+    expect(config.clerk?.mailboxBrokerBaseUrl).toBe("http://mailbox-broker:8300");
+    expect(config.clerk?.mailboxBrokerPublicBaseUrl).toBe("https://expense-mailbox.test");
+    expect(config.mailboxAllowedRedirectOrigins).toEqual(["https://expense-office.test"]);
+  });
+});

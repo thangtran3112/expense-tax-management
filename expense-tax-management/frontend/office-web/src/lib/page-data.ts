@@ -1,4 +1,4 @@
-import { fetchDuplicateMatches, fetchLedger, fetchTags, fetchTaxReport } from "./api";
+import { fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
 import type { OfficeSession } from "./session";
 
@@ -50,4 +50,16 @@ export function loadTags(
   organizationId: string | null | undefined,
 ) {
   return fetchTags(session, getToken, organizationId);
+}
+
+/**
+ * Fix round 1 (Important) -- the real connection-status read the Office
+ * mailbox page needs instead of static scaffolding.
+ */
+export function loadMailboxConnection(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchMailboxConnection(session, getToken, organizationId);
 }

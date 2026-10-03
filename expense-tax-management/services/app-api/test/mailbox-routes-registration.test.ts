@@ -1,8 +1,19 @@
 /**
  * Phase 3D-A Task 4 — proves Task 2's mailbox routes are actually reachable
  * through the fully built app (not just the unit-level guard test in
- * mailbox-connections.test.ts), and that wrong subject/audience/tenant-token
- * calls are rejected by the *real* registration wiring in src/app.ts.
+ * mailbox-connections.test.ts), and that wrong issuer/audience/subject/
+ * token-type/tenant-vs-service calls are rejected by the *real*
+ * registration wiring in src/app.ts.
+ *
+ * Fix round 1 (Important, review finding 4): the original version of this
+ * file used a fake tenant verifier that accepted literally any bearer
+ * token as a valid subject (`verify: async (token) => principal(token)`),
+ * which made its one "rejects a service token" test assert 201 instead of
+ * a rejection -- the fake was too lenient to ever reject anything. This
+ * version uses real `createTokenVerifier` instances (same primitive
+ * test/auth.test.ts uses) with distinct signing keys per actor, so every
+ * negative case is a genuinely-signed-but-wrong token exercising the real
+ * `jwtVerify` issuer/audience/signature checks, not a lenient stand-in.
  *
  * No Docker/live DB: `mailboxConnectionsDomain` and `identityDomain` are
  * injected fakes, same override pattern businesses.test.ts/tags.test.ts use
@@ -10,19 +21,26 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { generateKeyPair, SignJWT } from "jose";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import type { AuthPrincipal, TokenVerifier } from "../src/auth/types.js";
+import { createTokenVerifier } from "../src/auth/verifier.js";
 import { createAppConfig } from "../src/config.js";
 import type { MailboxConnectionsDomain } from "../src/domain/mailbox-connections.js";
 
+const TENANT_ISSUER = "https://identity.test";
+const TENANT_AUDIENCE = "expense-app";
+const SERVICE_ISSUER = "https://services.test";
+const SERVICE_AUDIENCE = "expense-app-internal";
+const BROKER_SUBJECT = "mailbox-broker-app";
+
 const TEST_ENV = {
-  APP_TENANT_TOKEN_ISSUER: "https://identity.test",
-  APP_TENANT_TOKEN_AUDIENCE: "expense-app",
+  APP_TENANT_TOKEN_ISSUER: TENANT_ISSUER,
+  APP_TENANT_TOKEN_AUDIENCE: TENANT_AUDIENCE,
   APP_TENANT_JWKS_URL: "https://identity.test/.well-known/jwks.json",
-  APP_SERVICE_TOKEN_ISSUER: "https://services.test",
-  APP_SERVICE_TOKEN_AUDIENCE: "expense-app-internal",
+  APP_SERVICE_TOKEN_ISSUER: SERVICE_ISSUER,
+  APP_SERVICE_TOKEN_AUDIENCE: SERVICE_AUDIENCE,
   APP_SERVICE_JWKS_URL: "https://services.test/.well-known/jwks.json",
   CLERK_ISSUER_URL: "https://clerk.test",
   CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
@@ -43,6 +61,7 @@ const TEST_ENV = {
   INBOUND_WEBHOOK_SIGNING_KEY: "test-key",
   INBOUND_ROUTING_TOKEN_SECRET: "test-key",
   INBOUND_CHALLENGE_DIR: "/tmp/mailbox-routes-registration-challenges",
+  MAILBOX_BROKER_PUBLIC_BASE_URL: "https://expense-mailbox.test",
 };
 
 const TENANT_ID = "22222222-2222-4222-8222-222222222222";
@@ -50,36 +69,33 @@ const USER_ID = "11111111-1111-4111-8111-111111111111";
 const CONNECTION_ID = randomUUID();
 const ATTEMPT_ID = randomUUID();
 
-function tenantPrincipal(subject: string): AuthPrincipal {
-  return {
-    tokenType: "tenant",
-    subject,
-    clientId: null,
-    audience: "expense-app",
-    issuer: "https://identity.test",
-    roles: [],
-    scopes: [],
-    tokenId: `${subject}-token`,
-    email: `${subject}@example.test`,
-    emailVerified: true,
-    displayName: subject,
-  };
+type KeyPair = Awaited<ReturnType<typeof generateKeyPair>>;
+
+interface SignOptions {
+  readonly key: KeyPair["privateKey"];
+  readonly issuer?: string;
+  readonly audience?: string;
+  readonly subject?: string;
+  readonly scopes?: readonly string[];
+  readonly tokenType?: "tenant" | "service";
 }
 
-function servicePrincipal(subject: string, scopes: readonly string[]): AuthPrincipal {
-  return {
-    tokenType: "service",
-    subject,
-    clientId: subject,
-    audience: "expense-app-internal",
-    issuer: "https://services.test",
-    roles: [],
-    scopes,
-    tokenId: `${subject}-token-id`,
-    email: null,
-    emailVerified: null,
-    displayName: null,
-  };
+async function signToken(options: SignOptions): Promise<string> {
+  const now = Math.floor(Date.now() / 1_000);
+  const claims: Record<string, unknown> =
+    options.tokenType === "service"
+      ? { scope: (options.scopes ?? []).join(" ") }
+      : { email: "owner@example.test", email_verified: true, display_name: "Owner" };
+
+  return new SignJWT(claims)
+    .setProtectedHeader({ alg: "RS256" })
+    .setIssuer(options.issuer ?? TENANT_ISSUER)
+    .setAudience(options.audience ?? TENANT_AUDIENCE)
+    .setSubject(options.subject ?? USER_ID)
+    .setJti(randomUUID())
+    .setIssuedAt(now)
+    .setExpirationTime(now + 300)
+    .sign(options.key);
 }
 
 function createFakeDomain(): MailboxConnectionsDomain {
@@ -121,7 +137,9 @@ function createFakeDomain(): MailboxConnectionsDomain {
         completedAt: null,
       },
       authorizationUrl: "https://accounts.google.test/o/oauth2/auth?state=fake",
+      sessionNonce: "c".repeat(64),
     })),
+    getConnection: vi.fn(async () => null),
     consumeOAuthState: vi.fn(async () => ({
       connectionId: CONNECTION_ID,
       attemptId: ATTEMPT_ID,
@@ -135,210 +153,233 @@ function createFakeDomain(): MailboxConnectionsDomain {
   };
 }
 
+const startPayload = () => ({
+  scope: { kind: "personal", profileId: USER_ID },
+  redirectOrigin: "https://expense-office.test",
+  timezone: "America/Los_Angeles",
+  localScanTime: "07:00",
+  requestId: randomUUID(),
+});
+
+const consumePayload = () => ({
+  connectionId: CONNECTION_ID,
+  stateDigest: "a".repeat(64),
+  sessionNonceDigest: "a".repeat(64),
+  requestId: randomUUID(),
+});
+
 describe("mailbox routes — real registration through buildApp", () => {
   const apps = new Set<ReturnType<typeof buildApp>>();
+  let tenantKeys: KeyPair;
+  let serviceKeys: KeyPair;
+  let attackerKeys: KeyPair;
+
+  beforeAll(async () => {
+    [tenantKeys, serviceKeys, attackerKeys] = await Promise.all([
+      generateKeyPair("RS256"),
+      generateKeyPair("RS256"),
+      generateKeyPair("RS256"),
+    ]);
+  });
 
   afterEach(async () => {
     await Promise.all([...apps].map((app) => app.close()));
     apps.clear();
   });
 
-  function createTestApp(options: { readonly serviceVerifier?: TokenVerifier } = {}) {
+  function createTestApp(envOverrides: Record<string, string> = {}) {
     const mailboxConnectionsDomain = createFakeDomain();
-    const tenantVerifier: TokenVerifier = { verify: vi.fn(async (token) => tenantPrincipal(token)) };
-    const serviceVerifier: TokenVerifier =
-      options.serviceVerifier ??
-      {
-        verify: vi.fn(async (token) => {
-          if (token === "broker-token") return servicePrincipal("mailbox-broker-app", ["mailbox:write"]);
-          throw new Error("unexpected service token");
-        }),
-      };
+    const tenantVerifier = createTokenVerifier({
+      tokenType: "tenant",
+      issuer: TENANT_ISSUER,
+      audience: TENANT_AUDIENCE,
+      keyResolver: async () => tenantKeys.publicKey,
+      requireVerifiedEmail: true,
+    });
+    const serviceVerifier = createTokenVerifier({
+      tokenType: "service",
+      issuer: SERVICE_ISSUER,
+      audience: SERVICE_AUDIENCE,
+      keyResolver: async () => serviceKeys.publicKey,
+    });
     const app = buildApp({
-      config: createAppConfig({ env: TEST_ENV, version: "test" }),
+      config: createAppConfig({ env: { ...TEST_ENV, ...envOverrides }, version: "test" }),
       logger: false,
       authVerifiers: { tenant: tenantVerifier, service: serviceVerifier },
-      identityDomain: { provision: vi.fn(), resolve: vi.fn(async () => ({
-        id: USER_ID,
-        primaryEmail: "owner@example.test",
-        displayName: "Owner",
-        status: "active" as const,
-      })) },
+      identityDomain: {
+        provision: vi.fn(),
+        resolve: vi.fn(async () => ({
+          id: USER_ID,
+          primaryEmail: "owner@example.test",
+          displayName: "Owner",
+          status: "active" as const,
+        })),
+      },
       mailboxConnectionsDomain,
     });
     apps.add(app);
     return { app, mailboxConnectionsDomain };
   }
 
+  async function postStart(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/api/v1/tenants/${TENANT_ID}/mailbox-connections/google/start`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: startPayload(),
+    });
+  }
+
+  async function postConsume(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: consumePayload(),
+    });
+  }
+
   describe("customer-facing google/start", () => {
-    it("is reachable with a valid tenant token", async () => {
+    it("is reachable with a validly-signed tenant token and wraps the response in the broker's begin URL", async () => {
       const { app, mailboxConnectionsDomain } = createTestApp();
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/v1/tenants/${TENANT_ID}/mailbox-connections/google/start`,
-        headers: { authorization: `Bearer ${USER_ID}` },
-        payload: {
-          scope: { kind: "personal", profileId: USER_ID },
-          sessionNonce: "a".repeat(32),
-          redirectOrigin: "https://expense-office.test",
-          timezone: "America/Los_Angeles",
-          localScanTime: "07:00",
-          requestId: randomUUID(),
-        },
-      });
+      const token = await signToken({ key: tenantKeys.privateKey });
+
+      const response = await postStart(app, `Bearer ${token}`);
+
       expect(response.statusCode).toBe(201);
       expect(mailboxConnectionsDomain.startConnection).toHaveBeenCalledOnce();
+      const body = response.json() as { authorizationUrl: string };
+      expect(body.authorizationUrl.startsWith("https://expense-mailbox.test/oauth/google/begin?")).toBe(true);
+      expect(body.authorizationUrl).toContain("nonce=");
     });
 
     it("rejects a request with no token", async () => {
       const { app } = createTestApp();
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/v1/tenants/${TENANT_ID}/mailbox-connections/google/start`,
-        payload: {
-          scope: { kind: "personal", profileId: USER_ID },
-          sessionNonce: "a".repeat(32),
-          redirectOrigin: "https://expense-office.test",
-          timezone: "America/Los_Angeles",
-          localScanTime: "07:00",
-          requestId: randomUUID(),
-        },
-      });
-      expect(response.statusCode).toBe(401);
+      expect((await postStart(app)).statusCode).toBe(401);
     });
 
-    it("rejects a service token presented as a tenant token", async () => {
+    it("rejects a tenant token signed by the wrong issuer", async () => {
       const { app } = createTestApp();
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/v1/tenants/${TENANT_ID}/mailbox-connections/google/start`,
-        headers: { authorization: "Bearer broker-token" },
-        payload: {
-          scope: { kind: "personal", profileId: USER_ID },
-          sessionNonce: "a".repeat(32),
-          redirectOrigin: "https://expense-office.test",
-          timezone: "America/Los_Angeles",
-          localScanTime: "07:00",
-          requestId: randomUUID(),
-        },
+      const token = await signToken({ key: tenantKeys.privateKey, issuer: "https://attacker-issuer.test" });
+      expect((await postStart(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a tenant token signed for the wrong audience", async () => {
+      const { app } = createTestApp();
+      const token = await signToken({ key: tenantKeys.privateKey, audience: "some-other-audience" });
+      expect((await postStart(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a token signed by an attacker holding a different key (same issuer/audience/claims)", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await signToken({ key: attackerKeys.privateKey });
+      expect((await postStart(app, `Bearer ${token}`)).statusCode).toBe(401);
+      expect(mailboxConnectionsDomain.startConnection).not.toHaveBeenCalled();
+    });
+
+    it("rejects a validly-signed SERVICE token presented as a tenant token (wrong issuer/audience/token type)", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await signToken({
+        key: serviceKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: BROKER_SUBJECT,
+        scopes: ["mailbox:write"],
+        tokenType: "service",
       });
-      // The tenant verifier (above) accepts any token as a subject, so this
-      // reaches authenticatedUserGuard fine -- the real-world rejection of a
-      // Clerk service JWT here happens upstream, in createConfiguredAuthVerifiers'
-      // own audience/issuer check (auth.test.ts covers that unit). This test
-      // instead proves the opposite direction below: a tenant token must never
-      // satisfy the broker-only internal routes.
-      expect(response.statusCode).toBe(201);
+
+      const response = await postStart(app, `Bearer ${token}`);
+
+      expect(response.statusCode).toBe(401);
+      expect(mailboxConnectionsDomain.startConnection).not.toHaveBeenCalled();
     });
   });
 
   describe("internal oauth/attempts/:attemptId/consume", () => {
-    it("is reachable with the broker's own service principal", async () => {
-      const { app, mailboxConnectionsDomain } = createTestApp();
-      const response = await app.inject({
-        method: "POST",
-        url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
-        headers: { authorization: "Bearer broker-token" },
-        payload: {
-          connectionId: CONNECTION_ID,
-          stateDigest: "a".repeat(64),
-          sessionNonceDigest: "a".repeat(64),
-          requestId: randomUUID(),
-        },
+    async function brokerToken(overrides: Partial<SignOptions> = {}): Promise<string> {
+      return signToken({
+        key: serviceKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: BROKER_SUBJECT,
+        scopes: ["mailbox:write"],
+        tokenType: "service",
+        ...overrides,
       });
+    }
+
+    it("is reachable with the broker's own validly-signed service principal", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const response = await postConsume(app, `Bearer ${await brokerToken()}`);
       expect(response.statusCode).toBe(200);
       expect(mailboxConnectionsDomain.consumeOAuthState).toHaveBeenCalledOnce();
     });
 
-    it("rejects a tenant token (wrong audience/issuer at the real verifier boundary)", async () => {
-      const { app } = createTestApp({
-        serviceVerifier: {
-          verify: vi.fn(async () => {
-            throw new Error("tenant token rejected by the real service verifier");
-          }),
-        },
-      });
-      const response = await app.inject({
-        method: "POST",
-        url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
-        headers: { authorization: "Bearer some-tenant-token" },
-        payload: {
-          connectionId: CONNECTION_ID,
-          stateDigest: "a".repeat(64),
-          sessionNonceDigest: "a".repeat(64),
-          requestId: randomUUID(),
-        },
-      });
-      expect(response.statusCode).toBe(401);
+    it("rejects a request with no token", async () => {
+      const { app } = createTestApp();
+      expect((await postConsume(app)).statusCode).toBe(401);
     });
 
-    it("rejects a wrong service subject", async () => {
-      const { app, mailboxConnectionsDomain } = createTestApp({
-        serviceVerifier: {
-          verify: vi.fn(async () => servicePrincipal("some-other-service", ["mailbox:write"])),
-        },
+    it("rejects a validly-signed tenant token (wrong issuer/audience/token type)", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await signToken({ key: tenantKeys.privateKey });
+      const response = await postConsume(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(401);
+      expect(mailboxConnectionsDomain.consumeOAuthState).not.toHaveBeenCalled();
+    });
+
+    it("rejects a service token signed by the wrong issuer", async () => {
+      const { app } = createTestApp();
+      const token = await brokerToken({ issuer: "https://attacker-issuer.test" });
+      expect((await postConsume(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a service token signed for the wrong audience", async () => {
+      const { app } = createTestApp();
+      const token = await brokerToken({ audience: "some-other-audience" });
+      expect((await postConsume(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a service token signed by an attacker holding a different key", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await signToken({
+        key: attackerKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: BROKER_SUBJECT,
+        scopes: ["mailbox:write"],
+        tokenType: "service",
       });
-      const response = await app.inject({
-        method: "POST",
-        url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
-        headers: { authorization: "Bearer wrong-subject-token" },
-        payload: {
-          connectionId: CONNECTION_ID,
-          stateDigest: "a".repeat(64),
-          sessionNonceDigest: "a".repeat(64),
-          requestId: randomUUID(),
-        },
-      });
+      expect((await postConsume(app, `Bearer ${token}`)).statusCode).toBe(401);
+      expect(mailboxConnectionsDomain.consumeOAuthState).not.toHaveBeenCalled();
+    });
+
+    it("rejects a correctly-issued service token with the wrong subject", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await brokerToken({ subject: "some-other-service" });
+      const response = await postConsume(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(403);
+      expect(mailboxConnectionsDomain.consumeOAuthState).not.toHaveBeenCalled();
+    });
+
+    it("rejects the correct subject missing the required scope", async () => {
+      const { app, mailboxConnectionsDomain } = createTestApp();
+      const token = await brokerToken({ scopes: [] });
+      const response = await postConsume(app, `Bearer ${token}`);
       expect(response.statusCode).toBe(403);
       expect(mailboxConnectionsDomain.consumeOAuthState).not.toHaveBeenCalled();
     });
 
     it("honors a configured mailboxBrokerServiceSubject override", async () => {
-      const mailboxConnectionsDomain = createFakeDomain();
-      const app = buildApp({
-        config: createAppConfig({
-          env: { ...TEST_ENV, CLERK_MAILBOX_BROKER_SUBJECT: "custom-broker-subject" },
-          version: "test",
-        }),
-        logger: false,
-        authVerifiers: {
-          tenant: { verify: vi.fn(async (token) => tenantPrincipal(token)) },
-          service: {
-            verify: vi.fn(async (token) =>
-              token === "custom-broker-token"
-                ? servicePrincipal("custom-broker-subject", ["mailbox:write"])
-                : servicePrincipal("mailbox-broker-app", ["mailbox:write"]),
-            ),
-          },
-        },
-        mailboxConnectionsDomain,
-      });
-      apps.add(app);
+      const { app } = createTestApp({ CLERK_MAILBOX_BROKER_SUBJECT: "custom-broker-subject" });
 
-      const rejected = await app.inject({
-        method: "POST",
-        url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
-        headers: { authorization: "Bearer default-subject-token" },
-        payload: {
-          connectionId: CONNECTION_ID,
-          stateDigest: "a".repeat(64),
-          sessionNonceDigest: "a".repeat(64),
-          requestId: randomUUID(),
-        },
-      });
+      const rejected = await postConsume(app, `Bearer ${await brokerToken()}`);
       expect(rejected.statusCode).toBe(403);
 
-      const accepted = await app.inject({
-        method: "POST",
-        url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
-        headers: { authorization: "Bearer custom-broker-token" },
-        payload: {
-          connectionId: CONNECTION_ID,
-          stateDigest: "a".repeat(64),
-          sessionNonceDigest: "a".repeat(64),
-          requestId: randomUUID(),
-        },
-      });
+      const accepted = await postConsume(
+        app,
+        `Bearer ${await brokerToken({ subject: "custom-broker-subject" })}`,
+      );
       expect(accepted.statusCode).toBe(200);
     });
   });

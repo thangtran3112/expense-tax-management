@@ -559,8 +559,16 @@ export class MailboxConnectionError extends Error {
   }
 }
 
+/**
+ * Fix round 1 (Critical): no `sessionNonce` field. Office JavaScript cannot
+ * securely bind the browser to this OAuth attempt via a cookie it sets
+ * itself (host-only on the Office origin, never reaches the mailbox
+ * broker's callback origin, and can't be `HttpOnly`). App API generates
+ * the session nonce itself and hands the browser a link to the broker's
+ * own `/oauth/google/begin`, where the broker's origin sets that cookie
+ * before redirecting to Google.
+ */
 export interface StartMailboxConnectionInput {
-  readonly sessionNonce: string;
   readonly redirectOrigin: string;
   readonly timezone: string;
   readonly localScanTime: string;
@@ -584,6 +592,32 @@ export async function startMailboxConnection(
     throw new MailboxConnectionError("Mailbox connection unavailable", result.response?.status);
   }
   return result.data;
+}
+
+/**
+ * Fix round 1 (Important) -- the minimal authenticated, scope-authorized
+ * read the Office mailbox page needs to render real connect/connected/
+ * needs-attention/revoked states instead of static scaffolding.
+ */
+export async function fetchMailboxConnection(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const query =
+    session.scope.kind === "personal"
+      ? { profileId: session.scope.profileId }
+      : { businessId: session.scope.businessId };
+  const result = await api.GET("/api/v1/tenants/{tenantId}/mailbox-connections/google", {
+    params: { path: { tenantId: session.tenantId }, query },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Mailbox connection status unavailable", result.response?.status);
+  }
+  return result.data.connection;
 }
 
 // ------------------------------------------------------------------ //

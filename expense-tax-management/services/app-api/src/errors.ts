@@ -2,6 +2,7 @@ import type { FastifyError, FastifyInstance } from "fastify";
 
 export type DomainErrorCode =
   | "CONFLICT"
+  | "FEATURE_DISABLED"
   | "FORBIDDEN"
   | "GONE"
   | "IDEMPOTENCY_CONFLICT"
@@ -61,6 +62,20 @@ export class DomainError extends Error {
       "IDEMPOTENCY_CONFLICT",
       409,
       "Request conflicts with a prior operation using this idempotency key",
+    );
+  }
+
+  /**
+   * Fix round 1 (Important) -- a feature that is deliberately, explicitly
+   * turned off (e.g. `MAILBOX_FEATURE_ENABLED` unset), never a stand-in
+   * for a misconfigured-but-intended-to-be-on feature: `createAppConfig`
+   * fails startup for that case instead.
+   */
+  static featureDisabled(): DomainError {
+    return new DomainError(
+      "FEATURE_DISABLED",
+      404,
+      "This feature is not enabled",
     );
   }
 }

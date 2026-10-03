@@ -21,7 +21,7 @@
  *   releaseTokenOperationLease: the token-generation pointer CAS described
  *   in the plan's "Canonical A Contracts" section.
  */
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   mailboxIdempotencyKey,
@@ -168,7 +168,6 @@ export interface StartConnectionInput {
   readonly actorUserId: string;
   readonly tenantId: string;
   readonly scope: MailboxScope;
-  readonly sessionNonce: string;
   readonly redirectOrigin: string;
   readonly timezone: string;
   readonly localScanTime: string;
@@ -179,6 +178,17 @@ export interface StartConnectionResult {
   readonly connection: MailboxConnectionV1;
   readonly attempt: MailboxOAuthAttemptV1;
   readonly authorizationUrl: string;
+  /**
+   * Fix round 1 (Critical) -- the raw session nonce, generated here
+   * (never caller-supplied: Office JavaScript cannot securely bind an
+   * OAuth attempt to the browser via a cookie it sets itself, since that
+   * cookie would be host-only on the Office origin and never reach the
+   * broker's callback origin). The route layer uses this exactly once, to
+   * build the broker's `/oauth/google/begin` URL; it is never logged,
+   * never persisted as plaintext (only its sha256 digest is), and never
+   * returned again on a replay of a *different* call.
+   */
+  readonly sessionNonce: string;
 }
 
 export interface ConsumeOAuthStateInput {
@@ -205,6 +215,21 @@ export interface CompleteConnectionInput {
   readonly initialHistoryId: string;
   readonly tokenGeneration: number;
   readonly requestId: string;
+}
+
+/**
+ * Fix round 1 (Important) — the minimal authenticated, scope-authorized
+ * read the Office mailbox page needs instead of static scaffolding. Same
+ * `requireScopeRole` authorization as `startConnection`; returns the most
+ * recent connection row for the caller's scope regardless of status (a
+ * revoked connection's last known state must still render the "revoked"
+ * banner, not disappear), or `null` when no connection has ever been
+ * created for that scope.
+ */
+export interface GetConnectionInput {
+  readonly actorUserId: string;
+  readonly tenantId: string;
+  readonly scope: MailboxScope;
 }
 
 export interface AcquireTokenOperationLeaseInput {
@@ -234,6 +259,7 @@ export interface RecordRevocationInput {
 
 export interface MailboxConnectionsDomain {
   startConnection(input: StartConnectionInput): Promise<StartConnectionResult>;
+  getConnection(input: GetConnectionInput): Promise<MailboxConnectionV1 | null>;
   consumeOAuthState(input: ConsumeOAuthStateInput): Promise<ConsumeOAuthStateResult>;
   completeConnection(input: CompleteConnectionInput): Promise<MailboxConnectionRecordV1>;
   acquireTokenOperationLease(
@@ -346,18 +372,18 @@ export function createMailboxConnectionsDomain(
       }
 
       const operationKey = "start-connection";
-      const sessionNonceDigest = sha256Hex(input.sessionNonce);
-      // Every semantic input the operation consumes, so two different
-      // requests can never share a cached response just because they
-      // share a requestId (Fix Round 2): the raw session nonce is never
-      // hashed directly -- its digest (already the persisted form) stands
-      // in for it, same secret-handling posture as everywhere else in
-      // this module.
+      // Fix round 1: the session nonce is generated inside this function
+      // (see StartConnectionResult.sessionNonce), never caller-supplied,
+      // so it is no longer a semantic input that distinguishes one caller
+      // request from another -- it's an implementation detail of *how*
+      // this call satisfies the request, not *what* was requested. It is
+      // deliberately excluded from the hash: a real replay (same
+      // requestId, same caller-meaningful input) must short-circuit on
+      // the ledger hit below before a new nonce is ever generated.
       const payloadHash = hashNormalizedRequest({
         actorUserId: input.actorUserId,
         tenantId: input.tenantId,
         scope: input.scope,
-        sessionNonceDigest,
         redirectOrigin: input.redirectOrigin,
         timezone: input.timezone,
         localScanTime: input.localScanTime,
@@ -384,11 +410,15 @@ export function createMailboxConnectionsDomain(
 
       const connectionId = await findOrCreateConnectionId(database, input);
       const attemptId = randomUUID();
+      // Generated fresh for every genuine (non-replay) call -- real
+      // entropy, never derived from any caller-supplied value.
+      const sessionNonce = randomBytes(32).toString("hex");
+      const sessionNonceDigest = sha256Hex(sessionNonce);
 
       const started = await brokerClient.startOAuth({
         connectionId,
         attemptId,
-        sessionNonce: input.sessionNonce,
+        sessionNonce,
         redirectOrigin: input.redirectOrigin,
       });
 
@@ -421,6 +451,7 @@ export function createMailboxConnectionsDomain(
         connection: toMailboxConnectionV1(connectionRow),
         attempt: toMailboxOAuthAttemptV1(attemptRow),
         authorizationUrl: started.authorizationUrl,
+        sessionNonce,
       };
 
       try {
@@ -457,6 +488,35 @@ export function createMailboxConnectionsDomain(
       }
 
       return result;
+    },
+
+    async getConnection(input) {
+      await requireScopeRole(database, {
+        actorUserId: input.actorUserId,
+        tenantId: input.tenantId,
+        scope: input.scope,
+      });
+
+      const row =
+        input.scope.kind === "personal"
+          ? await database
+              .selectFrom("app.mailbox_connections")
+              .selectAll()
+              .where("tenant_id", "=", input.tenantId)
+              .where("provider", "=", "gmail")
+              .where("personal_profile_id", "=", input.scope.profileId)
+              .orderBy("created_at", "desc")
+              .executeTakeFirst()
+          : await database
+              .selectFrom("app.mailbox_connections")
+              .selectAll()
+              .where("tenant_id", "=", input.tenantId)
+              .where("provider", "=", "gmail")
+              .where("business_id", "=", input.scope.businessId)
+              .orderBy("created_at", "desc")
+              .executeTakeFirst();
+
+      return row ? toMailboxConnectionV1(row) : null;
     },
 
     async consumeOAuthState(input) {

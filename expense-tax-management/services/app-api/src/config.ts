@@ -15,6 +15,17 @@ export interface AppConfig {
    * mailbox Clerk fields, Ruling 1).
    */
   readonly mailboxAllowedRedirectOrigins?: readonly string[] | undefined;
+  /**
+   * Fix round 1 (Important) -- explicit feature flag, `MAILBOX_FEATURE_ENABLED`
+   * (exactly "true", case-insensitive; anything else, including unset, is
+   * disabled). Default false: a deployment that never set the mailbox env
+   * vars at all stays fully, deliberately disabled. When true, every
+   * required outbound-broker field below is validated eagerly in this
+   * function (fail startup with a clear, non-secret error naming only the
+   * missing variable names) -- misconfiguration can never silently serve a
+   * half-working feature.
+   */
+  readonly mailboxEnabled: boolean;
   readonly temporal: TemporalConnectionConfig;
   readonly storage: StorageConnectionConfig;
   readonly inboundEmail: InboundEmailConfig;
@@ -45,6 +56,18 @@ export interface ClerkConfig {
    * and fixtures that predate the mailbox broker keep working unchanged.
    */
   readonly mailboxBrokerBaseUrl?: string | undefined;
+  /**
+   * Fix round 1 (Critical) -- the broker's PUBLIC base URL (e.g.
+   * `https://expense-mailbox.tobytran.dev`), distinct from
+   * `mailboxBrokerBaseUrl` (the Compose-internal URL App API uses for its
+   * own M2M calls). The customer-facing start route wraps the broker's
+   * Google authorization URL in a link to this origin's
+   * `/oauth/google/begin` -- the one place the browser touches the broker
+   * before Google, so the broker can set its own `HttpOnly` session-nonce
+   * cookie (Office JavaScript cannot: a cookie it sets is host-only on the
+   * Office origin and never reaches the broker's callback origin).
+   */
+  readonly mailboxBrokerPublicBaseUrl?: string | undefined;
   readonly mailboxServiceAudience?: string | undefined;
   readonly mailboxAppApiMachineSecretKey?: string | undefined;
   readonly mailboxAppApiSubject?: string | undefined;
@@ -185,6 +208,41 @@ function optionalBaseUrlEnvironmentValue(
   return value;
 }
 
+/**
+ * Fix round 1 (Important) -- fails startup with a clear, non-secret error
+ * (variable names only, never values) when the mailbox feature is
+ * explicitly enabled but any required outbound-broker field is missing.
+ * Never throws when the feature is disabled (default), so every existing
+ * fixture/deployment that predates mailbox -- and never sets
+ * MAILBOX_FEATURE_ENABLED -- is completely unaffected.
+ */
+function validateMailboxConfiguration(
+  mailboxEnabled: boolean,
+  clerk: ClerkConfig | undefined,
+  mailboxAllowedRedirectOrigins: readonly string[] | undefined,
+): void {
+  if (!mailboxEnabled) return;
+  if (!clerk) {
+    throw new Error(
+      "Mailbox feature is enabled (MAILBOX_FEATURE_ENABLED=true) but AUTH_PROVIDER is not \"clerk\"",
+    );
+  }
+  const missing: string[] = [];
+  if (!clerk.mailboxBrokerBaseUrl) missing.push("MAILBOX_BROKER_BASE_URL");
+  if (!clerk.mailboxBrokerPublicBaseUrl) missing.push("MAILBOX_BROKER_PUBLIC_BASE_URL");
+  if (!clerk.mailboxServiceAudience) missing.push("CLERK_MAILBOX_SERVICE_AUDIENCE");
+  if (!clerk.mailboxAppApiMachineSecretKey) missing.push("CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY");
+  if (!clerk.mailboxAppApiSubject) missing.push("CLERK_MAILBOX_APP_API_SUBJECT");
+  if (!mailboxAllowedRedirectOrigins || mailboxAllowedRedirectOrigins.length === 0) {
+    missing.push("MAILBOX_ALLOWED_REDIRECT_ORIGINS");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Mailbox feature is enabled (MAILBOX_FEATURE_ENABLED=true) but missing required configuration: ${missing.join(", ")}`,
+    );
+  }
+}
+
 export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
   const port = options.port ?? 8100;
   const env = options.env ?? process.env;
@@ -272,6 +330,10 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
             env,
             "MAILBOX_BROKER_BASE_URL",
           ),
+          mailboxBrokerPublicBaseUrl: optionalBaseUrlEnvironmentValue(
+            env,
+            "MAILBOX_BROKER_PUBLIC_BASE_URL",
+          ),
           mailboxServiceAudience: optionalEnvironmentValue(
             env,
             "CLERK_MAILBOX_SERVICE_AUDIENCE",
@@ -318,6 +380,7 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
       env,
       "MAILBOX_ALLOWED_REDIRECT_ORIGINS",
     ),
+    mailboxEnabled: env.MAILBOX_FEATURE_ENABLED?.trim().toLowerCase() === "true",
     temporal: {
       address: requiredEnvironmentValue(temporalEnv, "TEMPORAL_HOST"),
       namespace: requiredEnvironmentValue(temporalEnv, "TEMPORAL_NAMESPACE"),
@@ -350,6 +413,12 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
       ),
     },
   } as AppConfig;
+
+  validateMailboxConfiguration(
+    config.mailboxEnabled,
+    config.clerk,
+    config.mailboxAllowedRedirectOrigins,
+  );
 
   if (config.clerk !== undefined) {
     Object.defineProperty(config, "clerk", {

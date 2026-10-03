@@ -1,46 +1,73 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Panel, PageHead, Status } from "@/components/ui";
 import { MailboxConnectionError } from "@/lib/api";
 import { connectMailboxGoogle, mailboxStatusDisplay } from "@/lib/mailbox";
+import { loadMailboxConnection } from "@/lib/page-data";
 import { readOfficeSession } from "@/lib/session";
 
 /**
- * Office mailbox base (Phase 3D-A Task 4). Owns connect/account/status/
- * schedule/reviewer layout per the approved mockup
- * (plans/mockups/office-mailbox). Phase 3D-B extends this same page with
- * scan history + candidate review; Phase 3D-C extends it with ingestion
- * status -- neither exists yet, so "Candidate review queue" below is a
- * reserved placeholder, matching the mockup.
+ * Office mailbox base (Phase 3D-A Task 4, fix round 1). Implements every
+ * approved mockup scenario (plans/mockups/office-mailbox/):
+ * 1. No connection -- explicit Personal/business scope choice, Connect
+ *    disabled until chosen.
+ * 2. OAuth in progress (after clicking Connect) / OAuth return (back from
+ *    the broker with `?status=connected`).
+ * 3. Connected -- real account email/status/scope/schedule from the new
+ *    GET route (lib/api.ts's fetchMailboxConnection).
+ * 4. Reauthorization-needed / revoked / error banners, driven by the real
+ *    connection status.
+ * 5. Disconnect confirmation dialog.
  *
- * Scope selection: the mockup illustrates Personal and a named business as
- * two simultaneously selectable radio options. This Office session only
- * ever carries ONE active scope at a time (no API in this task's scope
- * lists every scope the user could pick from) -- so the radio here offers
- * exactly the session's own current scope. The owner's approved decision
- * (no preselected scope; Connect disabled until explicitly chosen) is
- * still honored: the radio starts unselected and Connect stays disabled
- * until the user clicks it.
- *
- * No live "connected account" read endpoint exists yet (Task 2/4 only
- * built start/consume/complete/revoke -- no GET). The "Connected",
- * "Needs attention", and "Disconnect confirmation" sections below are
- * static, mockup-faithful scaffold (same fidelity as the existing
- * forwarding/exports pages' own placeholder content) until a later task
- * adds a real status read.
+ * Phase 3D-B extends this same page with scan history + candidate review;
+ * Phase 3D-C extends it with ingestion status -- neither exists yet, so
+ * "Candidate review queue" and the schedule controls remain reserved
+ * placeholders (schedule editing has no write route yet either).
  */
 
-type Phase = "idle" | "starting" | "oauth-pending" | "error";
+type Phase = "idle" | "starting" | "oauth-pending" | "oauth-return" | "error";
+
+function connectionSinceLabel(createdAt: string): string {
+  return new Date(createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+}
 
 export default function MailboxPage() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const { organization, isLoaded: organizationLoaded } = useOrganization();
+  const searchParams = useSearchParams();
   const session = isLoaded && isSignedIn ? readOfficeSession() : null;
+
   const [scopeChosen, setScopeChosen] = useState(false);
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhase] = useState<Phase>(
+    searchParams.get("status") === "connected" ? "oauth-return" : "idle",
+  );
   const [error, setError] = useState<string | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [connection, setConnection] = useState<Awaited<ReturnType<typeof loadMailboxConnection>> | undefined>(
+    undefined,
+  );
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+  const [disconnectNote, setDisconnectNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organization) return;
+    let active = true;
+    loadMailboxConnection(session, getToken, organization.id)
+      .then((result) => {
+        if (!active) return;
+        setConnection(result);
+        if (phase === "oauth-return") setPhase("idle");
+      })
+      .catch(() => {
+        if (active) setConnection(null);
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getToken, isLoaded, isSignedIn, organization, organizationLoaded, session]);
 
   if (!isLoaded || !organizationLoaded) {
     return <div className="empty" aria-live="polite">Loading...</div>;
@@ -68,17 +95,64 @@ export default function MailboxPage() {
     }
   }
 
-  return (
-    <>
-      <PageHead eyebrow="Office Web · Mailbox" title="Connect a Gmail mailbox.">
-        <p>
-          Authorize read-only access to one Gmail account, bind it to exactly one Personal or business
-          scope, and keep status, schedule, and reauthorization visible in one place. Candidate review and
-          scan history arrive with Phase 3D-B.
-        </p>
-      </PageHead>
+  // ------------------------------------------------------------------ //
+  // Scenario 2: OAuth in progress / OAuth return
+  // ------------------------------------------------------------------ //
+  if (phase === "oauth-pending" || phase === "oauth-return") {
+    return (
+      <>
+        <PageHead eyebrow="Office Web · Mailbox" title="Connect a Gmail mailbox." />
+        <Panel title={phase === "oauth-pending" ? "Waiting on Google" : "Finishing connection"}>
+          <div role="status" aria-live="polite">
+            {phase === "oauth-pending" ? (
+              <>
+                <p>A Google consent window opened in a new tab. Complete sign-in and grant access to continue.</p>
+                {authorizationUrl && (
+                  <p>
+                    <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
+                      Reopen the Google consent window
+                    </a>
+                  </p>
+                )}
+              </>
+            ) : (
+              <p>You&apos;re back from Google. Confirming granted scopes and activating the connection…</p>
+            )}
+          </div>
+          {phase === "oauth-pending" && (
+            <button type="button" className="secondary" onClick={() => setPhase("idle")}>
+              Cancel connection attempt
+            </button>
+          )}
+        </Panel>
+      </>
+    );
+  }
 
-      {phase !== "oauth-pending" && (
+  // ------------------------------------------------------------------ //
+  // Loading the real connection status
+  // ------------------------------------------------------------------ //
+  if (connection === undefined) {
+    return (
+      <>
+        <PageHead eyebrow="Office Web · Mailbox" title="Connect a Gmail mailbox." />
+        <div className="empty" aria-live="polite">Loading mailbox status...</div>
+      </>
+    );
+  }
+
+  // ------------------------------------------------------------------ //
+  // Scenario 1: no connection
+  // ------------------------------------------------------------------ //
+  if (connection === null || connection.status === "pending") {
+    return (
+      <>
+        <PageHead eyebrow="Office Web · Mailbox" title="Connect a Gmail mailbox.">
+          <p>
+            Authorize read-only access to one Gmail account, bind it to exactly one Personal or business
+            scope, and keep status, schedule, and reauthorization visible in one place.
+          </p>
+        </PageHead>
         <Panel title="No mailbox connected">
           <p>
             Connect a Gmail account to let ExpenseTax surface receipts for review. Pick the scope that will
@@ -121,39 +195,80 @@ export default function MailboxPage() {
             </p>
           )}
         </Panel>
+      </>
+    );
+  }
+
+  const display = mailboxStatusDisplay(connection.status);
+
+  return (
+    <>
+      <PageHead eyebrow="Office Web · Mailbox" title="Connect a Gmail mailbox." />
+
+      {/* Scenario 4: reauthorization-needed / revoked / error banners */}
+      {connection.status === "reauth_required" && (
+        <div className="banner warn" role="alert">
+          <h3>Reconnect needed</h3>
+          <p>
+            Google requires renewed consent for {connection.accountEmail}. Receipt scans are paused until
+            you reconnect.
+          </p>
+        </div>
+      )}
+      {connection.status === "revoked" && (
+        <div className="banner bad" role="alert">
+          <h3>Connection revoked</h3>
+          <p>Access to {connection.accountEmail} was revoked. Historical scan metadata remains for audit.</p>
+        </div>
+      )}
+      {(connection.status === "disconnecting" || connection.status === "revocation_pending") && (
+        <div className="banner warn" role="alert">
+          <h3>Disconnecting</h3>
+          <p>This connection is being revoked. This page updates once the broker confirms revocation.</p>
+        </div>
       )}
 
-      {phase === "oauth-pending" && (
-        <Panel title="Waiting on Google" className="status-panel">
-          <div role="status" aria-live="polite">
+      {/* Scenario 3: connected */}
+      <Panel title="Connected mailbox">
+        <div className="account-row">
+          <span aria-hidden="true">G</span>
+          <div>
+            <p>{connection.accountEmail}</p>
             <p>
-              A Google consent window opened in a new tab. Complete sign-in and grant access to continue.
+              <Status tone={display.tone}>{display.label}</Status>
             </p>
-            {authorizationUrl && (
-              <p>
-                <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
-                  Reopen the Google consent window
-                </a>
-              </p>
-            )}
           </div>
-          <button type="button" className="secondary" onClick={() => setPhase("idle")}>
-            Cancel connection attempt
+        </div>
+        <div className="field-row">
+          <label>Connected since</label>
+          <span>{connectionSinceLabel(connection.createdAt)}</span>
+        </div>
+        <div className="field-row">
+          <label>Granted scope</label>
+          <span>{connection.grantedScopes.join(", ") || "—"}</span>
+        </div>
+        <div className="field-row">
+          <label>Default scope</label>
+          <span>{connection.scope.kind === "business" ? session.label : "Personal"}</span>
+        </div>
+        <div className="field-row">
+          <label>Last scan</label>
+          <span>{connection.lastScanAt ? new Date(connection.lastScanAt).toLocaleString() : "Never"}</span>
+        </div>
+        <div className="field-row">
+          <label>Next scan</label>
+          <span>{connection.nextScheduleAt ? new Date(connection.nextScheduleAt).toLocaleString() : "Not scheduled"}</span>
+        </div>
+        {connection.status !== "revoked" && (
+          <button type="button" className="danger" onClick={() => setConfirmingDisconnect(true)}>
+            Disconnect
           </button>
-        </Panel>
-      )}
+        )}
+      </Panel>
 
       <Panel title="Scan schedule">
-        <div className="field-row">
-          <label htmlFor="mailbox-scan-time">Daily scan time</label>
-          <input id="mailbox-scan-time" type="time" defaultValue="07:00" disabled />
-        </div>
-        <div className="field-row">
-          <label htmlFor="mailbox-scan-enabled">Enabled</label>
-          <input id="mailbox-scan-enabled" type="checkbox" disabled />
-        </div>
-        <p>Overlapping runs are skipped automatically; a manual run never races the scheduled one.</p>
-        <button type="button" className="secondary" disabled aria-disabled="true" title="Reserved until a mailbox is connected">
+        <p>Daily scan time, timezone, and enable/disable arrive with Phase 3D-B&apos;s scheduling write route.</p>
+        <button type="button" className="secondary" disabled aria-disabled="true" title="Reserved for Phase 3D-B">
           Scan now
         </button>
       </Panel>
@@ -172,28 +287,41 @@ export default function MailboxPage() {
         </p>
       </Panel>
 
-      <Panel title="Status reference">
-        <ul>
-          {(
-            [
-              "pending",
-              "active",
-              "paused",
-              "reauth_required",
-              "disconnecting",
-              "revocation_pending",
-              "revoked",
-            ] as const
-          ).map((status) => {
-            const display = mailboxStatusDisplay(status);
-            return (
-              <li key={status}>
-                <Status tone={display.tone}>{display.label}</Status>
-              </li>
-            );
-          })}
-        </ul>
-      </Panel>
+      {/* Scenario 5: disconnect confirmation */}
+      {confirmingDisconnect && (
+        <div className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="disconnect-heading">
+          <h2 id="disconnect-heading">Disconnect Gmail?</h2>
+          <p>
+            This immediately revokes ExpenseTax&apos;s access to <strong>{connection.accountEmail}</strong>.
+            Already-ingested expenses are not deleted. Minimal scan history remains for audit and duplicate
+            prevention.
+          </p>
+          {disconnectNote && <p role="status">{disconnectNote}</p>}
+          <div className="actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setConfirmingDisconnect(false);
+                setDisconnectNote(null);
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={() =>
+                setDisconnectNote(
+                  "Disconnect isn't available yet -- the customer-facing revoke route arrives with a later phase.",
+                )
+              }
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

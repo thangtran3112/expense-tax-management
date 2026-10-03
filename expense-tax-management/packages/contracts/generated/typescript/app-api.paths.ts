@@ -10745,6 +10745,161 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenantId}/mailbox-connections/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    businessId?: string;
+                    profileId?: string;
+                };
+                header?: never;
+                path: {
+                    tenantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            connection: {
+                                /** Format: email */
+                                accountEmail: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                grantedScopes: string[];
+                                /** Format: uuid */
+                                id: string;
+                                lastScanAt: string | null;
+                                localScanTime: string;
+                                nextScheduleAt: string | null;
+                                /** Format: uuid */
+                                ownerUserId: string;
+                                /** @enum {string} */
+                                provider: "gmail" | "outlook";
+                                providerAccountId: string;
+                                revokedAt: string | null;
+                                scanEnabled: boolean;
+                                /** @enum {number} */
+                                schemaVersion: 1;
+                                scope: {
+                                    /** @enum {string} */
+                                    kind: "personal";
+                                    /** Format: uuid */
+                                    profileId: string;
+                                } | {
+                                    /** Format: uuid */
+                                    businessId: string;
+                                    /** @enum {string} */
+                                    kind: "business";
+                                };
+                                /** @enum {string} */
+                                status: "pending" | "active" | "paused" | "reauth_required" | "disconnecting" | "revocation_pending" | "revoked";
+                                /** Format: uuid */
+                                tenantId: string;
+                                timezone: string;
+                                /** Format: date-time */
+                                updatedAt: string;
+                            } | null;
+                        };
+                    };
+                };
+                /** @description Default Response */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                410: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenantId}/mailbox-connections/google/start": {
         parameters: {
             query?: never;
@@ -10780,7 +10935,6 @@ export interface paths {
                             /** @enum {string} */
                             kind: "business";
                         };
-                        sessionNonce: string;
                         timezone: string;
                     };
                 };
