@@ -262,6 +262,41 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — consumeOAuthState
     ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
+  // Fix Round 2: the normalized request hash must cover attemptId and
+  // connectionId, not just the digests -- otherwise reusing a requestId
+  // with a *different* attempt's already-consumed digests would silently
+  // replay that other attempt's cached result instead of being rejected
+  // as a different request.
+  it("rejects the same requestId reused against a different attempt, even with that attempt's own (already-consumed) digests", async () => {
+    const domain = createDomain();
+    const attemptA = await startAttempt(domain);
+    const attemptB = await startAttempt(domain); // same connection, independent attempt
+    const requestId = randomUUID();
+
+    await domain.consumeOAuthState({
+      attemptId: attemptA.attempt.id,
+      connectionId: attemptA.connection.id,
+      stateDigest: attemptA.attempt.stateDigest,
+      sessionNonceDigest: attemptA.attempt.sessionNonceDigest,
+      requestId,
+    });
+
+    // Same requestId, same (now-stale) digests from A, but targeting B.
+    await expect(
+      domain.consumeOAuthState({
+        attemptId: attemptB.attempt.id,
+        connectionId: attemptB.connection.id,
+        stateDigest: attemptA.attempt.stateDigest,
+        sessionNonceDigest: attemptA.attempt.sessionNonceDigest,
+        requestId,
+      }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+    // B must remain untouched -- not silently consumed via A's replay.
+    const statusB = runtimeSql(`SELECT status FROM app.mailbox_oauth_attempts WHERE id = '${attemptB.attempt.id}'`);
+    expect(statusB).toBe("pending");
+  });
+
   it("rejects a state digest mismatch without revealing which part failed", async () => {
     const domain = createDomain();
     const started = await startAttempt(domain);

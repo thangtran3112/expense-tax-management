@@ -49,6 +49,15 @@ const OUTSIDER_USER_ID = "7a000000-0000-4000-8000-000000000003";
 const PROFILE_ID = "7a000000-0000-4000-8000-000000000004";
 const TENANT_ID_2 = "7a000000-0000-4000-8000-000000000006";
 const PROFILE_ID_2 = "7a000000-0000-4000-8000-000000000005";
+/** A second user with its own access to PROFILE_ID, distinct from OWNER_USER_ID -- lets tests vary actorUserId without tripping the scope-authorization check. */
+const MEMBER_USER_ID = "7a000000-0000-4000-8000-000000000007";
+/** A business under TENANT_ID (distinct from PROFILE_ID) -- lets tests vary scope kind without needing a second tenant. */
+const BUSINESS_ID = "7a000000-0000-4000-8000-000000000008";
+/** Dedicated tenants/profiles for concurrency tests -- guarantees no connection exists for the scope before each race. */
+const TENANT_ID_3 = "7a000000-0000-4000-8000-000000000009";
+const PROFILE_ID_3 = "7a000000-0000-4000-8000-00000000000a";
+const TENANT_ID_4 = "7a000000-0000-4000-8000-00000000000b";
+const PROFILE_ID_4 = "7a000000-0000-4000-8000-00000000000c";
 
 const ALLOWED_ORIGIN = "https://expense-office.test";
 
@@ -156,27 +165,46 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
     runtimeSql(`
       INSERT INTO app.users (id, primary_email, display_name) VALUES
         ('${OWNER_USER_ID}', 't2m-owner@example.test', 'T2M Owner'),
-        ('${OUTSIDER_USER_ID}', 't2m-outsider@example.test', 'T2M Outsider')
+        ('${OUTSIDER_USER_ID}', 't2m-outsider@example.test', 'T2M Outsider'),
+        ('${MEMBER_USER_ID}', 't2m-member@example.test', 'T2M Member')
       ON CONFLICT DO NOTHING;
 
       INSERT INTO app.tenants (id, name, slug, status) VALUES
         ('${TENANT_ID}', 'T2M Tenant', 't2m-tenant-${runKey}', 'active'),
-        ('${TENANT_ID_2}', 'T2M Tenant 2', 't2m-tenant2-${runKey}', 'active')
+        ('${TENANT_ID_2}', 'T2M Tenant 2', 't2m-tenant2-${runKey}', 'active'),
+        ('${TENANT_ID_3}', 'T2M Tenant 3', 't2m-tenant3-${runKey}', 'active'),
+        ('${TENANT_ID_4}', 'T2M Tenant 4', 't2m-tenant4-${runKey}', 'active')
       ON CONFLICT DO NOTHING;
 
       INSERT INTO app.tenant_memberships (tenant_id, user_id, role, status) VALUES
         ('${TENANT_ID}', '${OWNER_USER_ID}', 'owner', 'active'),
-        ('${TENANT_ID_2}', '${OWNER_USER_ID}', 'owner', 'active')
+        ('${TENANT_ID}', '${MEMBER_USER_ID}', 'member', 'active'),
+        ('${TENANT_ID_2}', '${OWNER_USER_ID}', 'owner', 'active'),
+        ('${TENANT_ID_3}', '${OWNER_USER_ID}', 'owner', 'active'),
+        ('${TENANT_ID_4}', '${OWNER_USER_ID}', 'owner', 'active')
       ON CONFLICT DO NOTHING;
 
       INSERT INTO app.personal_profiles (id, tenant_id, name) VALUES
         ('${PROFILE_ID}', '${TENANT_ID}', 'T2M Profile'),
-        ('${PROFILE_ID_2}', '${TENANT_ID_2}', 'T2M Profile 2')
+        ('${PROFILE_ID_2}', '${TENANT_ID_2}', 'T2M Profile 2'),
+        ('${PROFILE_ID_3}', '${TENANT_ID_3}', 'T2M Profile 3'),
+        ('${PROFILE_ID_4}', '${TENANT_ID_4}', 'T2M Profile 4')
       ON CONFLICT DO NOTHING;
 
       INSERT INTO app.personal_memberships (personal_profile_id, tenant_id, user_id, role, status) VALUES
         ('${PROFILE_ID}', '${TENANT_ID}', '${OWNER_USER_ID}', 'owner', 'active'),
-        ('${PROFILE_ID_2}', '${TENANT_ID_2}', '${OWNER_USER_ID}', 'owner', 'active')
+        ('${PROFILE_ID}', '${TENANT_ID}', '${MEMBER_USER_ID}', 'editor', 'active'),
+        ('${PROFILE_ID_2}', '${TENANT_ID_2}', '${OWNER_USER_ID}', 'owner', 'active'),
+        ('${PROFILE_ID_3}', '${TENANT_ID_3}', '${OWNER_USER_ID}', 'owner', 'active'),
+        ('${PROFILE_ID_4}', '${TENANT_ID_4}', '${OWNER_USER_ID}', 'owner', 'active')
+      ON CONFLICT DO NOTHING;
+
+      INSERT INTO app.businesses (id, tenant_id, name, industry_code, timezone, base_currency, status)
+      VALUES ('${BUSINESS_ID}', '${TENANT_ID}', 'T2M Business', 'restaurant', 'America/Los_Angeles', 'USD', 'active')
+      ON CONFLICT DO NOTHING;
+
+      INSERT INTO app.business_memberships (business_id, tenant_id, user_id, role, status)
+      VALUES ('${BUSINESS_ID}', '${TENANT_ID}', '${OWNER_USER_ID}', 'owner', 'active')
       ON CONFLICT DO NOTHING;
     `);
   }
@@ -271,6 +299,88 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
     await expect(
       domain.startConnection({ ...input, timezone: "UTC" }),
     ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  // Fix Round 2: the normalized request hash must cover every semantic
+  // input the operation consumes, not just a subset -- otherwise the same
+  // requestId can silently replay a *different* request's cached result.
+  it.each([
+    [
+      "a different actorUserId (same requestId)",
+      (input: ReturnType<typeof startInput>) => ({ ...input, actorUserId: MEMBER_USER_ID }),
+    ],
+    [
+      "a different sessionNonce (same requestId)",
+      (input: ReturnType<typeof startInput>) => ({
+        ...input,
+        sessionNonce: `different-session-nonce-${randomUUID()}`,
+      }),
+    ],
+    [
+      "a different scope (same requestId)",
+      (input: ReturnType<typeof startInput>) => ({
+        ...input,
+        scope: { kind: "business" as const, businessId: BUSINESS_ID },
+      }),
+    ],
+  ])("rejects the same requestId with %s (IDEMPOTENCY_CONFLICT)", async (_label, mutate) => {
+    const domain = createDomain();
+    const requestId = randomUUID();
+    const input = startInput({ requestId });
+
+    await domain.startConnection(input);
+
+    await expect(domain.startConnection(mutate(input))).rejects.toMatchObject({
+      code: "IDEMPOTENCY_CONFLICT",
+    });
+  });
+
+  // Fix Round 2: concurrent first startConnection calls for a scope with
+  // no existing connection must not crash on the scope-specific unique
+  // index inside findOrCreateConnectionId -- it must race-safely converge
+  // on exactly one connection row.
+  it("two concurrent identical starts (same requestId) create exactly one connection and both callers get the same result", async () => {
+    const domain = createDomain();
+    const input = startInput({
+      tenantId: TENANT_ID_3,
+      scope: { kind: "personal", profileId: PROFILE_ID_3 },
+    });
+
+    const [first, second] = await Promise.all([
+      domain.startConnection(input),
+      domain.startConnection(input),
+    ]);
+
+    expect(second).toEqual(first);
+    const connectionCount = runtimeSql(
+      `SELECT count(*) FROM app.mailbox_connections WHERE tenant_id = '${TENANT_ID_3}' AND personal_profile_id = '${PROFILE_ID_3}'`,
+    );
+    expect(connectionCount).toBe("1");
+  });
+
+  it("two concurrent starts with different requestIds for the same scope converge on one connection row without crashing", async () => {
+    const domain = createDomain();
+    const inputA = startInput({
+      tenantId: TENANT_ID_4,
+      scope: { kind: "personal", profileId: PROFILE_ID_4 },
+      requestId: randomUUID(),
+    });
+    const inputB = { ...inputA, requestId: randomUUID() };
+
+    const [resultA, resultB] = await Promise.all([
+      domain.startConnection(inputA),
+      domain.startConnection(inputB),
+    ]);
+
+    // Different requestIds -> each gets its own ledger entry/attempt, but
+    // find-or-create's contract means they must share the same
+    // underlying connection -- never two rows for one scope, never an
+    // unhandled unique-violation crash.
+    expect(resultA.connection.id).toBe(resultB.connection.id);
+    const connectionCount = runtimeSql(
+      `SELECT count(*) FROM app.mailbox_connections WHERE tenant_id = '${TENANT_ID_4}' AND personal_profile_id = '${PROFILE_ID_4}'`,
+    );
+    expect(connectionCount).toBe("1");
   });
 
   describe("completeConnection", () => {

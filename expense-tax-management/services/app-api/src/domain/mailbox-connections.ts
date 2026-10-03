@@ -81,6 +81,23 @@ function isMailboxOperationKeyUniqueViolation(error: unknown): boolean {
   );
 }
 
+/**
+ * True when `error` is a unique-violation on one of migration 018's
+ * scope-specific active-connection indexes (`mailbox_connections_active_
+ * personal_unique` / `..._active_business_unique`, Fix Round 1) -- i.e. a
+ * concurrent request won the race to create this scope's connection row
+ * first.
+ */
+function isMailboxConnectionScopeUniqueViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const databaseError = error as { code?: unknown; constraint?: unknown };
+  return (
+    databaseError.code === "23505" &&
+    (databaseError.constraint === "mailbox_connections_active_personal_unique" ||
+      databaseError.constraint === "mailbox_connections_active_business_unique")
+  );
+}
+
 function toMailboxScope(
   row: Pick<ConnectionRow, "personal_profile_id" | "business_id">,
 ): MailboxScope {
@@ -224,11 +241,11 @@ export interface MailboxConnectionsDomainOptions {
   readonly allowedRedirectOrigins: readonly string[];
 }
 
-async function findOrCreateConnectionId(
+async function selectExistingConnectionId(
   database: Kysely<AppDatabase>,
   input: StartConnectionInput,
-): Promise<string> {
-  const existing =
+): Promise<string | undefined> {
+  const row =
     input.scope.kind === "personal"
       ? await database
           .selectFrom("app.mailbox_connections")
@@ -246,32 +263,51 @@ async function findOrCreateConnectionId(
           .where("business_id", "=", input.scope.businessId)
           .where("status", "!=", "revoked")
           .executeTakeFirst();
+  return row?.id;
+}
 
-  if (existing) return existing.id;
+async function findOrCreateConnectionId(
+  database: Kysely<AppDatabase>,
+  input: StartConnectionInput,
+): Promise<string> {
+  const existing = await selectExistingConnectionId(database, input);
+  if (existing) return existing;
 
   const id = randomUUID();
   const now = new Date();
-  await database
-    .insertInto("app.mailbox_connections")
-    .values({
-      id,
-      tenant_id: input.tenantId,
-      personal_profile_id: input.scope.kind === "personal" ? input.scope.profileId : null,
-      business_id: input.scope.kind === "business" ? input.scope.businessId : null,
-      owner_user_id: input.actorUserId,
-      provider: "gmail",
-      provider_account_id: PENDING_PLACEHOLDER,
-      account_email: PENDING_PLACEHOLDER,
-      status: "pending",
-      granted_scopes: [],
-      timezone: input.timezone,
-      local_scan_time: input.localScanTime,
-      scan_enabled: true,
-      vault_reference: PENDING_PLACEHOLDER,
-      created_at: now,
-      updated_at: now,
-    })
-    .execute();
+  try {
+    await database
+      .insertInto("app.mailbox_connections")
+      .values({
+        id,
+        tenant_id: input.tenantId,
+        personal_profile_id: input.scope.kind === "personal" ? input.scope.profileId : null,
+        business_id: input.scope.kind === "business" ? input.scope.businessId : null,
+        owner_user_id: input.actorUserId,
+        provider: "gmail",
+        provider_account_id: PENDING_PLACEHOLDER,
+        account_email: PENDING_PLACEHOLDER,
+        status: "pending",
+        granted_scopes: [],
+        timezone: input.timezone,
+        local_scan_time: input.localScanTime,
+        scan_enabled: true,
+        vault_reference: PENDING_PLACEHOLDER,
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+  } catch (error) {
+    if (!isMailboxConnectionScopeUniqueViolation(error)) throw error;
+    // A concurrent request (same requestId racing itself, or a different
+    // request for the same scope) won the race to create this scope's
+    // connection row first. find-or-create's own contract is "reuse the
+    // existing non-revoked connection" -- look it up again and use the
+    // winner's row instead of propagating a raw constraint violation.
+    const concurrent = await selectExistingConnectionId(database, input);
+    if (!concurrent) throw error; // defensive: shouldn't be reachable
+    return concurrent;
+  }
 
   return id;
 }
@@ -295,8 +331,18 @@ export function createMailboxConnectionsDomain(
       }
 
       const operationKey = "start-connection";
+      const sessionNonceDigest = sha256Hex(input.sessionNonce);
+      // Every semantic input the operation consumes, so two different
+      // requests can never share a cached response just because they
+      // share a requestId (Fix Round 2): the raw session nonce is never
+      // hashed directly -- its digest (already the persisted form) stands
+      // in for it, same secret-handling posture as everywhere else in
+      // this module.
       const payloadHash = hashNormalizedRequest({
+        actorUserId: input.actorUserId,
+        tenantId: input.tenantId,
         scope: input.scope,
+        sessionNonceDigest,
         redirectOrigin: input.redirectOrigin,
         timezone: input.timezone,
         localScanTime: input.localScanTime,
@@ -321,7 +367,6 @@ export function createMailboxConnectionsDomain(
         return existingKey.response_json as unknown as StartConnectionResult;
       }
 
-      const sessionNonceDigest = sha256Hex(input.sessionNonce);
       const connectionId = await findOrCreateConnectionId(database, input);
       const attemptId = randomUUID();
 
@@ -401,7 +446,14 @@ export function createMailboxConnectionsDomain(
 
     async consumeOAuthState(input) {
       const operationKey = "consume-oauth-state";
+      // Every semantic input, including which attempt/connection this
+      // call targets (Fix Round 2): the ledger lookup below is scoped to
+      // (tenant_id, operation_key, requestId) only, not attemptId/
+      // connectionId, so without these the same requestId reused against
+      // a *different* attempt would replay the first attempt's result.
       const payloadHash = hashNormalizedRequest({
+        attemptId: input.attemptId,
+        connectionId: input.connectionId,
         stateDigest: input.stateDigest,
         sessionNonceDigest: input.sessionNonceDigest,
       });
