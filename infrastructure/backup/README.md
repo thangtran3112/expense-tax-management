@@ -11,6 +11,7 @@ Architecture context: [`ARCHITECTURE.md`](../../expense-tax-management/plans/ARC
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Pinned (by digest) one-shot backup image: PostgreSQL 17 client tools, `age`, `gcloud`/`gsutil`, `jq`, `tar`, `sha256sum`, `flock`. |
+| `docker-compose.yml` | Standalone Compose contract for manual/ad hoc runs (`docker compose -f docker-compose.yml run --rm backup`). Deliberately **not** part of `deploy/production/docker-compose.yml` -- see Ruling below (fix round 1). |
 | `lib.sh` | Shared validation/logging/status-JSON/locking helpers. Sourced only. |
 | `backup.sh` | Entrypoint: preflight → dump → receipt capture → manifest → encrypt → upload. |
 | `manifest.schema.json` | Documented contract for `manifest.json` (hand-checked by `backup.sh`/tests; see Ruling below). |
@@ -89,8 +90,8 @@ The container's root filesystem is mounted `--read-only`. `/staging` (or
 `$BACKUP_STAGING_DIR`) is a size-bounded `tmpfs` — the only place plaintext
 dumps, receipt archives, or manifests are ever written. `RECEIPT_STORAGE_DIR`
 is mounted read-only. `PGPASSWORD_FILE` and `GOOGLE_APPLICATION_CREDENTIALS`
-are mounted mode `0400`. See `deploy/production/docker-compose.yml`'s
-`backup` profile for the exact `docker compose run` shape used in production.
+are mounted mode `0400`. See this directory's own `docker-compose.yml`
+for the exact `docker compose run` shape used in production.
 
 ## Running the tests
 
@@ -114,6 +115,17 @@ docker run --rm -v "$PWD/infrastructure/backup:/mnt:ro" koalaman/shellcheck:stab
 
 ## Rulings
 
+- **Backup gets its own `docker-compose.yml` here, not a profile inside
+  `deploy/production/docker-compose.yml`.** Compose interpolates every
+  `${VAR:?}` in a file before any `--profile` filtering is applied, so a
+  required backup var anywhere in the Expense production file broke
+  *every* ordinary `docker compose up`/`config`/deploy the moment that
+  var wasn't set -- even on a host where backup was never installed
+  (caught in review, fix round 1; `production-deployment-boundaries.test.ts`
+  now asserts the normal production config renders with zero backup
+  vars). Cost if wrong: production deploys fail hard on a host that
+  hasn't run `bootstrap.sh --only backup` yet, which is the default
+  state of every host until an operator explicitly opts in.
 - **Paths are relative to the monorepo root `infrastructure/`, not
   `expense-tax-management/infrastructure/`.** `infrastructure/README.md`
   already states shared Temporal and VPS bootstrap live at the monorepo

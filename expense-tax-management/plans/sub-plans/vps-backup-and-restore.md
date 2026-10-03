@@ -58,7 +58,7 @@
 
 - [x] Write failing tests for missing variables, unsafe bucket URI, invalid age recipient, unavailable PostgreSQL, read-write receipt mount, and plaintext leakage. (fast: test-backup.sh Part B; read-only receipt mount + plaintext-never-on-disk proven via Docker in test-backup-docker.sh/test-backup.sh Part E)
 - [x] Build a pinned image containing PostgreSQL 17 client tools, `age`, GCloud storage CLI, `jq`, `tar`, and checksum tools. (Dockerfile, pinned by digest; smoke-tested: pg_dump 17.11, age 1.2.1, gcloud, jq, flock all present)
-- [x] Make container root filesystem read-only; mount `/staging` as size-bounded `tmpfs` and keep only status plus encrypted partials on persistent state. (documented run contract in README + deploy/production/docker-compose.yml backup profile, Task 6; verified via docker run --read-only --tmpfs in both Docker test scripts)
+- [x] Make container root filesystem read-only; mount `/staging` as size-bounded `tmpfs` and keep only status plus encrypted partials on persistent state. (documented run contract in README + infrastructure/backup/docker-compose.yml, Task 6; verified via docker run --read-only --tmpfs in both Docker test scripts)
 - [x] Mount receipt storage read-only and writer credential file mode `0400`. (run contract; exercised read-only in both Docker test scripts)
 - [x] Reject secrets passed on command lines or printed by tracing. (PGPASSWORD_FILE/GOOGLE_APPLICATION_CREDENTIALS are paths, never CLI values; no `set -x`; die()/emit_status never echo secret values -- asserted in tests)
 - [x] Run shell syntax, ShellCheck, and container configuration tests. (koalaman/shellcheck:stable clean on lib.sh/backup.sh/test-backup.sh/test-backup-docker.sh/restore.sh/test-restore.sh; Dockerfile built and smoke-tested)
@@ -90,7 +90,7 @@ GOOGLE_APPLICATION_CREDENTIALS
 
 - [x] Start disposable PostgreSQL with representative App, Foundry, Temporal, visibility, and mailbox databases. (test-backup-docker.sh: expense_app, expense_foundry, temporal, temporal_visibility, mailbox_broker on a disposable pgvector/pgvector:pg17 container)
 - [x] Write failing tests requiring every database and globals dump in the manifest. (test-backup-docker.sh asserts all 5 in database-inventory.json)
-- [x] Implement `pg_dumpall --globals-only` and discover databases from `pg_database` while excluding templates. (also excludes the admin-only `postgres` catalog db -- see README Ruling)
+- [x] Implement `pg_dumpall --globals-only` and discover databases from `pg_database` while excluding templates. (fix round 1: now includes the admin `postgres` database too -- "every non-template database" per this requirement, not a judgment call about which ones are likely to hold app data; an earlier Ruling excluding it was reverted after review)
 - [x] Dump each database with `pg_dump --format=custom --no-owner --no-acl`.
 - [x] Validate every dump using `pg_restore --list`; abort before upload on any failure. (re-validated post-hoc with a fresh pg_restore --list in test-backup-docker.sh too)
 - [x] Record PostgreSQL version, database names, byte sizes, and SHA-256 checksums.
@@ -142,7 +142,7 @@ GOOGLE_APPLICATION_CREDENTIALS
 - Create: `.github/workflows/family-backup-freshness.yml`
 - Modify: `infrastructure/vps/bootstrap.sh`
 - Modify: `infrastructure/vps/README.md`
-- Modify: production Compose to expose one-shot backup profile and read-only volumes
+- Modify: production Compose to expose one-shot backup profile and read-only volumes (superseded, fix round 1: a backup profile inside the Expense production Compose file broke ordinary deploys because Compose interpolates `${VAR:?}` before `--profile` filtering -- see `infrastructure/backup/README.md` Ruling. Backup instead gets its own `infrastructure/backup/docker-compose.yml`; the Expense production Compose file is untouched by backup.)
 
 **Interfaces:**
 - Produces: at least two attempts per day, startup catch-up after downtime, and local plus off-host failure/staleness signals.
@@ -173,7 +173,7 @@ GOOGLE_APPLICATION_CREDENTIALS
 - [x] Decrypt with an explicitly provided private key file; never read recovery identity from normal production environment. (RESTORE_AGE_IDENTITY_FILE is a required file path; no default location, no env var carrying key content)
 - [x] Validate manifest and every checksum before changing destination state. (decrypt_and_extract() runs validate_manifest_shape() + per-file/per-receipt-archive checksum checks before any psql/pg_restore call)
 - [x] Restore globals with reviewed role-conflict handling, create databases, then use `pg_restore --clean --if-exists --no-owner` under operator control. (restore_globals(): ON_ERROR_STOP=0, tolerates only "already exists" conflicts -- see restore.sh Ruling comment)
-- [x] Restore latest monthly receipt full archive followed by ordered daily deltas through selected database backup date. (restore_receipts_from_set() called once for the full, once per RESTORE_DAILY_OBJECT_URIS entry in order; each delta's parent_full_backup_id is checked against the full's run_id)
+- [x] Restore latest monthly receipt full archive followed by ordered daily deltas through selected database backup date. (restore_receipts_from_set() called once for the full, once per RESTORE_DAILY_OBJECT_URIS entry in order; each delta's parent_full_backup_id is checked against the full's run_id; fix round 1 additionally enforces a strictly increasing, duplicate-free cutoff chain -- reversed and duplicate delta orderings are both rejected, proven in test-restore.sh)
 - [x] Compare row counts, migration versions, receipt checksums, and Temporal namespace data. (restore_verify(): per-database live-row counts via pg_stat_user_tables, proven in test-restore.sh against representative temporal/temporal_visibility databases too; receipt checksums re-verified against the live restored files. Migration versions are carried through into the restored manifest.json [schema_migration_versions] for Task 8 to compare against each image's supported version before running migrations, per that task's own checkbox -- restore.sh itself does not run migration tooling. Real Temporal namespace-level verification [not just the backing database's row counts] needs an actual Temporal server and is Task 8's "verify ... shared Temporal" step)
 - [x] Refuse restore onto nonempty destination unless operator supplies explicit destructive confirmation flag. (check_destination_empty_or_confirmed(); proven in test-restore.sh against a destination with one leftover database)
 

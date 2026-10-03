@@ -174,25 +174,11 @@ describe("buildProductionBundle", () => {
     });
     const keys = new Set(bundle.split("\n").filter(Boolean).map((line) => line.split("=", 1)[0]));
     const compose = readFileSync(join(productionRoot, "docker-compose.yml"), "utf8");
-    // BACKUP_* and AGE_RECIPIENT (vps-backup-and-restore.md Task 6) are
-    // shared host-infrastructure config installed by
-    // infrastructure/vps/steps/40-backup.sh into /etc/family-app/backup.env
-    // on the VPS itself -- the same category as Temporal's
-    // TEMPORAL_DB_PASSWORD (see infrastructure/README.md), deliberately
-    // never part of the per-app Expense secret bundle.
-    const nonBundleComposeKeys = new Set([
-      "IMAGE_TAG",
-      "BACKUP_GCS_URI",
-      "BACKUP_HOST_ID",
-      "BACKUP_IMAGE",
-      "AGE_RECIPIENT",
-    ]);
     const requiredComposeKeys = [...compose.matchAll(/\$\{([A-Z][A-Z0-9_]+):\?/gu)]
       .map(([, key]) => key)
-      .filter((key) => !nonBundleComposeKeys.has(key));
+      .filter((key) => key !== "IMAGE_TAG");
 
     expect(new Set(requiredComposeKeys)).not.toContain("IMAGE_TAG");
-    expect(new Set(requiredComposeKeys)).not.toContain("BACKUP_GCS_URI");
     expect([...new Set(requiredComposeKeys)].filter((key) => !keys.has(key))).toEqual([]);
     expect(bundle).toContain("APP_TENANT_TOKEN_ISSUER=https://identity.not-configured.invalid");
     expect(bundle).toContain("STORAGE_BACKEND=local");
