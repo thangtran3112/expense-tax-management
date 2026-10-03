@@ -52,12 +52,13 @@ const imageNames = [
   "expense-tax-foundry-service",
   "expense-tax-ai-worker",
   "expense-tax-workflow-worker",
+  "expense-tax-mailbox-broker",
   "expense-tax-capture-web",
   "expense-tax-office-web",
   "expense-tax-foundry-web",
 ];
 const matrixImages = workflow.jobs?.build?.strategy?.matrix?.include ?? [];
-assertEqual(matrixImages.length, 7, "build image matrix size");
+assertEqual(matrixImages.length, 8, "build image matrix size");
 assertEqual(
   matrixImages.map(({ image }) => image).sort().join(","),
   imageNames.slice().sort().join(","),
