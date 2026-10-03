@@ -153,12 +153,13 @@ const ConnectionResponseSchema = z.strictObject({
 });
 
 // Mirrors the exact body shape services/mailbox-broker/src/app-client.ts's
-// completeConnection sends -- expectedConnectionVersion is accepted (so the
-// broker's already-built, Task 3-tested request shape needs no change) but
-// not yet enforced as a CAS precondition by domain.completeConnection.
+// completeConnection sends. Final-review Minor fix: `expectedConnectionVersion`
+// was previously accepted here but never read by domain.completeConnection
+// (attemptId's own one-time state machine is the real CAS guard) -- dropped
+// end-to-end (contract, broker client, this schema) rather than wiring up
+// unused enforcement, per the review's "choose the smaller correct change".
 const CompleteBodySchema = z.strictObject({
   connectionId: z.uuid(),
-  expectedConnectionVersion: z.number().int(),
   providerAccountId: z.string().trim().min(1).max(255),
   accountEmail: z.email().max(320),
   grantedScopes: z.array(z.string().trim().min(1).max(255)),

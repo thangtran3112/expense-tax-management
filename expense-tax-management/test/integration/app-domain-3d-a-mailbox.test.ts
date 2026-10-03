@@ -399,9 +399,12 @@ describe.skipIf(!integrationEnabled)("Phase 3D-A Task 6 — mailbox domain verif
     expect(reconsume.statusCode).toBe(409);
 
     // --- complete (broker): public shape only, even to the broker ---
+    // Final-review Minor fix: expectedConnectionVersion dropped end-to-end
+    // (contract/broker client/route schema) -- it was never read by
+    // domain.completeConnection (attemptId's own one-time state machine is
+    // the real CAS guard), so the strict schema now rejects it outright.
     const completePayload = {
       connectionId,
-      expectedConnectionVersion: 1,
       providerAccountId: "google-account-1",
       accountEmail: "connected@example.test",
       grantedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],

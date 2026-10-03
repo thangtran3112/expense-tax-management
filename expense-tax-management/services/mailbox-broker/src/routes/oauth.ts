@@ -262,7 +262,6 @@ export async function registerOAuthRoutes(
         ...connectedAccount,
         connectionId: consumed.connectionId,
         attemptId: consumed.attemptId,
-        expectedConnectionVersion: 0,
       });
 
       reply.header("set-cookie", sessionNonceCookie(cookieName, "", 0));

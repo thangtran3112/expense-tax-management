@@ -301,7 +301,6 @@ export function createMailboxAppClient(
         responseSchema: ConnectionResponseSchema,
         body: {
           connectionId: input.connectionId,
-          expectedConnectionVersion: input.expectedConnectionVersion,
           providerAccountId: connectedAccount.providerAccountId,
           accountEmail: connectedAccount.email,
           grantedScopes: connectedAccount.grantedScopes,

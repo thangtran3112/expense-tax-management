@@ -272,7 +272,6 @@ export interface MailboxBrokerConnectionAppClient {
     input: ConnectedAccount & {
       connectionId: string;
       attemptId: string;
-      expectedConnectionVersion: number;
     },
   ): Promise<MailboxConnectionV1>;
   acquireTokenOperationLease(input: {
