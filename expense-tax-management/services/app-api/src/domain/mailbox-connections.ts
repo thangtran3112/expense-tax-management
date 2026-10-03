@@ -65,6 +65,22 @@ function digestsEqual(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+/**
+ * True when `error` is a unique-violation on the permanent operation-key
+ * ledger's (tenant_id, operation_key, idempotency_key) triple (migration
+ * 018 Fix Round 1) -- i.e. a concurrent identical request won the race to
+ * record this exact replay key first. Same check style as
+ * domain/idempotency.ts's `isIdempotencyUniqueViolation`.
+ */
+function isMailboxOperationKeyUniqueViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const databaseError = error as { code?: unknown; constraint?: unknown };
+  return (
+    databaseError.code === "23505" &&
+    databaseError.constraint === "mailbox_operation_keys_permanent_unique"
+  );
+}
+
 function toMailboxScope(
   row: Pick<ConnectionRow, "personal_profile_id" | "business_id">,
 ): MailboxScope {
@@ -278,6 +294,33 @@ export function createMailboxConnectionsDomain(
         throw DomainError.validation();
       }
 
+      const operationKey = "start-connection";
+      const payloadHash = hashNormalizedRequest({
+        scope: input.scope,
+        redirectOrigin: input.redirectOrigin,
+        timezone: input.timezone,
+        localScanTime: input.localScanTime,
+      });
+
+      // Permanent idempotency ledger check *before* any mutation or broker
+      // call: an identical replay (same tenant/operation/requestId, same
+      // normalized request) must never mint a second OAuth attempt with
+      // the broker. Looked up by requestId alone (connectionId isn't known
+      // yet on a first call -- it's created by this same operation).
+      const existingKey = await database
+        .selectFrom("app.mailbox_operation_keys")
+        .select(["normalized_request_hash", "response_json"])
+        .where("tenant_id", "=", input.tenantId)
+        .where("operation_key", "=", operationKey)
+        .where("idempotency_key", "=", input.requestId)
+        .executeTakeFirst();
+      if (existingKey) {
+        if (existingKey.normalized_request_hash !== payloadHash) {
+          throw DomainError.idempotencyConflict();
+        }
+        return existingKey.response_json as unknown as StartConnectionResult;
+      }
+
       const sessionNonceDigest = sha256Hex(input.sessionNonce);
       const connectionId = await findOrCreateConnectionId(database, input);
       const attemptId = randomUUID();
@@ -314,45 +357,66 @@ export function createMailboxConnectionsDomain(
         .where("tenant_id", "=", input.tenantId)
         .executeTakeFirstOrThrow();
 
-      return {
+      const result: StartConnectionResult = {
         connection: toMailboxConnectionV1(connectionRow),
         attempt: toMailboxOAuthAttemptV1(attemptRow),
         authorizationUrl: started.authorizationUrl,
       };
+
+      try {
+        await database
+          .insertInto("app.mailbox_operation_keys")
+          .values({
+            id: randomUUID(),
+            tenant_id: input.tenantId,
+            connection_id: connectionId,
+            operation_key: operationKey,
+            idempotency_key: input.requestId,
+            normalized_request_hash: payloadHash,
+            response_json: toJsonValue(result),
+            created_at: now,
+          })
+          .execute();
+      } catch (error) {
+        if (!isMailboxOperationKeyUniqueViolation(error)) throw error;
+        // A concurrent identical request recorded this exact replay key
+        // first; the attempt/connection rows created above are harmless
+        // orphans (never referenced by the winning requestId's cached
+        // response) -- return the winner's result instead of erroring.
+        const concurrent = await database
+          .selectFrom("app.mailbox_operation_keys")
+          .select(["normalized_request_hash", "response_json"])
+          .where("tenant_id", "=", input.tenantId)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.requestId)
+          .executeTakeFirstOrThrow();
+        if (concurrent.normalized_request_hash !== payloadHash) {
+          throw DomainError.idempotencyConflict();
+        }
+        return concurrent.response_json as unknown as StartConnectionResult;
+      }
+
+      return result;
     },
 
     async consumeOAuthState(input) {
-      // Expiry must be persisted even though the call ultimately fails, so
-      // it is marked and committed in its own pass before throwing --
-      // transaction().execute() rolls back on any thrown error, which would
-      // otherwise silently undo the 'expired' write together with the
-      // rejection.
-      const expired = await database.transaction().execute(async (transaction) => {
-        const attempt = await transaction
-          .selectFrom("app.mailbox_oauth_attempts")
-          .selectAll()
-          .where("id", "=", input.attemptId)
-          .where("connection_id", "=", input.connectionId)
-          .forUpdate()
-          .executeTakeFirst();
-
-        if (!attempt) throw DomainError.notFound();
-        if (attempt.status !== "pending") throw DomainError.conflict();
-
-        if (attempt.expires_at.getTime() <= Date.now()) {
-          await transaction
-            .updateTable("app.mailbox_oauth_attempts")
-            .set({ status: "expired" })
-            .where("id", "=", attempt.id)
-            .where("status", "=", "pending")
-            .execute();
-          return true;
-        }
-        return false;
+      const operationKey = "consume-oauth-state";
+      const payloadHash = hashNormalizedRequest({
+        stateDigest: input.stateDigest,
+        sessionNonceDigest: input.sessionNonceDigest,
       });
-      if (expired) throw DomainError.gone("OAuth attempt has expired");
 
-      return database.transaction().execute(async (transaction) => {
+      // Single transaction, single guarded UPDATE: expiry is re-evaluated
+      // by Postgres's own `now()` at the instant of the write (the WHERE
+      // predicate below), not from an earlier read -- closing the
+      // check-then-act race where an attempt expires between a read and a
+      // later write. If the CAS loses, a locked re-read inside the *same*
+      // transaction tells apart "lost to expiry" (mark it, a legal forward
+      // transition) from "lost to a real conflict", and either outcome is
+      // returned (not thrown) so it commits -- throwing from inside
+      // transaction().execute() would roll back the 'expired' write
+      // together with the rejection.
+      const outcome = await database.transaction().execute(async (transaction) => {
         const attempt = await transaction
           .selectFrom("app.mailbox_oauth_attempts")
           .selectAll()
@@ -362,9 +426,26 @@ export function createMailboxConnectionsDomain(
           .executeTakeFirst();
 
         if (!attempt) throw DomainError.notFound();
+
+        const existingKey = await transaction
+          .selectFrom("app.mailbox_operation_keys")
+          .select(["normalized_request_hash", "response_json"])
+          .where("tenant_id", "=", attempt.tenant_id)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.requestId)
+          .executeTakeFirst();
+        if (existingKey) {
+          if (existingKey.normalized_request_hash !== payloadHash) {
+            throw DomainError.idempotencyConflict();
+          }
+          return {
+            outcome: "replayed" as const,
+            result: existingKey.response_json as unknown as ConsumeOAuthStateResult,
+          };
+        }
+
         if (attempt.status !== "pending") throw DomainError.conflict();
 
-        const now = new Date();
         if (!digestsEqual(input.stateDigest, attempt.state_digest)) {
           throw DomainError.notFound();
         }
@@ -375,22 +456,54 @@ export function createMailboxConnectionsDomain(
           throw DomainError.validation();
         }
 
+        const now = new Date();
         const updated = await transaction
           .updateTable("app.mailbox_oauth_attempts")
           .set({ status: "consumed", consumed_at: now })
           .where("id", "=", attempt.id)
           .where("status", "=", "pending")
+          .where("expires_at", ">", sql<Date>`now()`)
           .returningAll()
           .executeTakeFirst();
 
-        if (!updated) throw DomainError.conflict();
+        if (updated) {
+          const result: ConsumeOAuthStateResult = {
+            connectionId: updated.connection_id,
+            attemptId: updated.id,
+            redirectOrigin: updated.redirect_origin,
+          };
+          await transaction
+            .insertInto("app.mailbox_operation_keys")
+            .values({
+              id: randomUUID(),
+              tenant_id: attempt.tenant_id,
+              connection_id: input.connectionId,
+              operation_key: operationKey,
+              idempotency_key: input.requestId,
+              normalized_request_hash: payloadHash,
+              response_json: toJsonValue(result),
+              created_at: now,
+            })
+            .execute();
+          return { outcome: "consumed" as const, result };
+        }
 
-        return {
-          connectionId: updated.connection_id,
-          attemptId: updated.id,
-          redirectOrigin: updated.redirect_origin,
-        };
+        // CAS lost. Our locked read above still shows 'pending', so the
+        // only reason the guarded UPDATE could affect zero rows is the
+        // `expires_at > now()` predicate -- expiry passed between the lock
+        // and this write. Mark it (pending -> expired is a legal forward
+        // transition) so the persisted state reflects reality.
+        await transaction
+          .updateTable("app.mailbox_oauth_attempts")
+          .set({ status: "expired" })
+          .where("id", "=", attempt.id)
+          .where("status", "=", "pending")
+          .execute();
+        return { outcome: "expired" as const };
       });
+
+      if (outcome.outcome === "expired") throw DomainError.gone("OAuth attempt has expired");
+      return outcome.result;
     },
 
     async completeConnection(input) {
@@ -420,11 +533,12 @@ export function createMailboxConnectionsDomain(
             .select(["normalized_request_hash", "response_json"])
             .where("tenant_id", "=", attempt.tenant_id)
             .where("operation_key", "=", operationKey)
+            .where("idempotency_key", "=", input.requestId)
             .executeTakeFirst();
           if (!existingKey || existingKey.normalized_request_hash !== payloadHash) {
             // OAUTH_REPLAY: a completed attempt cannot be completed again
-            // with different activation data.
-            throw DomainError.conflict();
+            // with a different requestId or different activation data.
+            throw DomainError.idempotencyConflict();
           }
           return existingKey.response_json as unknown as MailboxConnectionRecordV1;
         }
@@ -473,7 +587,7 @@ export function createMailboxConnectionsDomain(
             tenant_id: attempt.tenant_id,
             connection_id: input.connectionId,
             operation_key: operationKey,
-            idempotency_key: input.attemptId,
+            idempotency_key: input.requestId,
             normalized_request_hash: payloadHash,
             response_json: toJsonValue(record),
             created_at: now,

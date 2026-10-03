@@ -208,7 +208,7 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — consumeOAuthState
     expect(status).toBe("consumed");
   });
 
-  it("rejects a second consume of an already-consumed attempt", async () => {
+  it("rejects a second consume of an already-consumed attempt (different requestId)", async () => {
     const domain = createDomain();
     const started = await startAttempt(domain);
     const consumeInput = {
@@ -221,9 +221,45 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — consumeOAuthState
 
     await domain.consumeOAuthState(consumeInput);
 
-    await expect(domain.consumeOAuthState(consumeInput)).rejects.toMatchObject({
-      code: "CONFLICT",
-    });
+    // A *different* requestId is a genuine second consume, not a replay.
+    await expect(
+      domain.consumeOAuthState({ ...consumeInput, requestId: randomUUID() }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("replays an identical consume (same requestId) and returns the original result", async () => {
+    const domain = createDomain();
+    const started = await startAttempt(domain);
+    const consumeInput = {
+      attemptId: started.attempt.id,
+      connectionId: started.connection.id,
+      stateDigest: started.attempt.stateDigest,
+      sessionNonceDigest: started.attempt.sessionNonceDigest,
+      requestId: randomUUID(),
+    };
+
+    const first = await domain.consumeOAuthState(consumeInput);
+    const replay = await domain.consumeOAuthState(consumeInput);
+
+    expect(replay).toEqual(first);
+  });
+
+  it("rejects the same requestId with a different payload (IDEMPOTENCY_CONFLICT)", async () => {
+    const domain = createDomain();
+    const started = await startAttempt(domain);
+    const consumeInput = {
+      attemptId: started.attempt.id,
+      connectionId: started.connection.id,
+      stateDigest: started.attempt.stateDigest,
+      sessionNonceDigest: started.attempt.sessionNonceDigest,
+      requestId: randomUUID(),
+    };
+
+    await domain.consumeOAuthState(consumeInput);
+
+    await expect(
+      domain.consumeOAuthState({ ...consumeInput, stateDigest: "f".repeat(64) }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
   it("rejects a state digest mismatch without revealing which part failed", async () => {
@@ -260,6 +296,36 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — consumeOAuthState
     const pastExpiry = () => new Date(Date.now() - 60_000).toISOString();
     const domain = createDomain(fakeBrokerClient(pastExpiry));
     const started = await startAttempt(domain);
+
+    await expect(
+      domain.consumeOAuthState({
+        attemptId: started.attempt.id,
+        connectionId: started.connection.id,
+        stateDigest: started.attempt.stateDigest,
+        sessionNonceDigest: started.attempt.sessionNonceDigest,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "GONE" });
+
+    const status = runtimeSql(`SELECT status FROM app.mailbox_oauth_attempts WHERE id = '${started.attempt.id}'`);
+    expect(status).toBe("expired");
+  });
+
+  it("closes the check-then-act expiry race: a still-'pending' row that expires right before the write is rejected, not consumed", async () => {
+    // Deterministic race simulation: the attempt starts with plenty of
+    // time left (an earlier, separate check would have said "not
+    // expired"), then its expiry is forced into the past directly on the
+    // row -- simulating real time passing between any such earlier check
+    // and this consume call -- immediately before consumeOAuthState runs.
+    // If expiry were only checked from an earlier read (the Fix Round 1
+    // bug this guards against), this would incorrectly succeed; the fix
+    // re-evaluates `expires_at > now()` inside the same guarded UPDATE
+    // that flips the status, so it must reject here instead.
+    const domain = createDomain();
+    const started = await startAttempt(domain);
+    runtimeSql(
+      `UPDATE app.mailbox_oauth_attempts SET expires_at = now() - interval '1 day' WHERE id = '${started.attempt.id}'`,
+    );
 
     await expect(
       domain.consumeOAuthState({

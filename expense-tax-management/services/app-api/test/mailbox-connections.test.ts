@@ -250,6 +250,29 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
     expect(result.authorizationUrl).toContain(result.attempt.id);
   });
 
+  it("replays an identical start request (same requestId) without calling the broker again", async () => {
+    const broker = fakeBrokerClient();
+    const domain = createDomain(broker);
+    const input = startInput();
+
+    const first = await domain.startConnection(input);
+    const replay = await domain.startConnection(input);
+
+    expect(replay).toEqual(first);
+    expect(broker.startOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects the same requestId with a different payload (IDEMPOTENCY_CONFLICT)", async () => {
+    const domain = createDomain();
+    const input = startInput();
+
+    await domain.startConnection(input);
+
+    await expect(
+      domain.startConnection({ ...input, timezone: "UTC" }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
+
   describe("completeConnection", () => {
     async function consumedAttempt(domain: MailboxConnectionsDomain) {
       const started = await domain.startConnection(
@@ -307,7 +330,7 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
       ).rejects.toMatchObject({ code: "CONFLICT" });
     });
 
-    it("replays an identical completion and rejects a changed one (OAUTH_REPLAY)", async () => {
+    it("replays an identical completion (same requestId) and rejects a changed one (IDEMPOTENCY_CONFLICT)", async () => {
       const domain = createDomain();
       const { consumed } = await consumedAttempt(domain);
       const input = completionInput(consumed.connectionId, consumed.attemptId);
@@ -318,7 +341,7 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
 
       await expect(
         domain.completeConnection({ ...input, vaultReference: "vault-ref-DIFFERENT" }),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     });
 
     it("rejects a mismatched connectionId/attemptId pair (wrong connection/tenant)", async () => {
