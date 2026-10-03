@@ -152,9 +152,26 @@ verify_running_images() {
 # still targets generation 1 (Python, ai-worker) until an operator runs
 # `advance`, so a rollback that omits workflow-worker entirely is safe --
 # every other service stays mandatory exactly as before.
+#
+# Treated as available if EITHER the image already exists locally (the
+# previous release's image normally remains on the VPS after a deploy) OR
+# the registry manifest probe succeeds, retried a few times with a short
+# backoff. A transient GHCR probe failure must not be treated the same as
+# a genuinely missing image: after an operator runs `advance`,
+# workflow-worker is the ACTIVE worker, so wrongly dropping it during a
+# later rollback would stall processing, not just leave it idle. Only
+# drop it when both the local check and every registry retry fail.
 workflow_worker_image_exists() {
   local tag=$1
-  docker manifest inspect "ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${tag}" >/dev/null 2>&1
+  local image="ghcr.io/thangtran3112/family-app/expense-tax-workflow-worker:${tag}"
+  docker image inspect "$image" >/dev/null 2>&1 && return 0
+
+  local attempts="${WORKFLOW_WORKER_PROBE_ATTEMPTS:-3}" delay="${WORKFLOW_WORKER_PROBE_DELAY_SECONDS:-2}" attempt
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    docker manifest inspect "$image" >/dev/null 2>&1 && return 0
+    ((attempt < attempts)) && sleep "$delay"
+  done
+  return 1
 }
 
 validate_env_file "$INCOMING_ENV_FILE"

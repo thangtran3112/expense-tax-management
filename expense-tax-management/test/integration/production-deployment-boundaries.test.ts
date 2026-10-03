@@ -532,6 +532,8 @@ describe("Task 7 Stage B fix round 1: rollback treats workflow-worker as the onl
    */
   function runRollback(options: {
     readonly workflowWorkerImageExists: boolean;
+    readonly workflowWorkerLocalImageExists?: boolean;
+    readonly workflowWorkerManifestSucceedOnAttempt?: number;
     readonly pullShouldFailFor?: string;
   }): { readonly status: number; readonly stderr: string; readonly stateDir: string } {
     const composeFn = extractFunction(deployScript, "compose");
@@ -553,10 +555,30 @@ describe("Task 7 Stage B fix round 1: rollback treats workflow-worker as the onl
 set -euo pipefail
 STATE_DIR="\${FAKE_DOCKER_STATE_DIR:?}"
 case "\$1" in
+  image)
+    if [[ "\$2" == "inspect" ]]; then
+      case "\$3" in
+        *expense-tax-workflow-worker:*)
+          [[ "\${WORKFLOW_WORKER_LOCAL_IMAGE_EXISTS:-0}" == "1" ]] && exit 0 || exit 1 ;;
+        *) exit 0 ;;
+      esac
+    fi
+    exit 0
+    ;;
   manifest)
     case "\$3" in
       *expense-tax-workflow-worker:*)
-        [[ "\${WORKFLOW_WORKER_IMAGE_EXISTS:-1}" == "1" ]] && exit 0 || exit 1 ;;
+        counter_file="\$STATE_DIR/manifest-attempts"
+        count=0
+        [[ -f "\$counter_file" ]] && count=\$(cat "\$counter_file")
+        count=\$((count + 1))
+        printf '%s' "\$count" > "\$counter_file"
+        succeed_on="\${WORKFLOW_WORKER_MANIFEST_SUCCEED_ON_ATTEMPT:-1}"
+        if [[ "\${WORKFLOW_WORKER_IMAGE_EXISTS:-1}" == "1" ]] && ((count >= succeed_on)); then
+          exit 0
+        fi
+        exit 1
+        ;;
       *) exit 0 ;;
     esac
     ;;
@@ -636,9 +658,17 @@ rollback 1
       PATH: `${fakeBin}:${process.env.PATH}`,
       FAKE_DOCKER_STATE_DIR: stateDir,
       WORKFLOW_WORKER_IMAGE_EXISTS: options.workflowWorkerImageExists ? "1" : "0",
+      WORKFLOW_WORKER_LOCAL_IMAGE_EXISTS: options.workflowWorkerLocalImageExists ? "1" : "0",
+      WORKFLOW_WORKER_PROBE_ATTEMPTS: "3",
+      WORKFLOW_WORKER_PROBE_DELAY_SECONDS: "0",
       HEALTH_CHECK_ATTEMPTS: "1",
       HEALTH_CHECK_DELAY_SECONDS: "0",
     };
+    if (options.workflowWorkerManifestSucceedOnAttempt !== undefined) {
+      env.WORKFLOW_WORKER_MANIFEST_SUCCEED_ON_ATTEMPT = String(
+        options.workflowWorkerManifestSucceedOnAttempt,
+      );
+    }
     if (options.pullShouldFailFor) env.PULL_SHOULD_FAIL_FOR = options.pullShouldFailFor;
 
     const result = spawnSync("bash", ["-c", script], {
@@ -682,6 +712,30 @@ rollback 1
         .sort(),
     );
     expect(recorded(stateDir, "rm-args")).toContain("workflow-worker");
+    expect(stderr).toContain("rollback verified at prior image tag");
+    expect(stderr).not.toContain("rollback failed");
+  });
+
+  it("keeps workflow-worker when its image exists locally even if the registry probe fails", () => {
+    const { stderr, stateDir } = runRollback({
+      workflowWorkerImageExists: false,
+      workflowWorkerLocalImageExists: true,
+    });
+    expect(recorded(stateDir, "pull-args")).toContain("workflow-worker");
+    expect(recorded(stateDir, "rm-args")).not.toContain("workflow-worker");
+    expect(stderr).toContain("rollback verified at prior image tag");
+    expect(stderr).not.toContain("rollback failed");
+  });
+
+  it("keeps workflow-worker after a transient registry probe failure that later succeeds", () => {
+    const { stderr, stateDir } = runRollback({
+      workflowWorkerImageExists: true,
+      workflowWorkerLocalImageExists: false,
+      workflowWorkerManifestSucceedOnAttempt: 2,
+    });
+    expect(recorded(stateDir, "pull-args")).toContain("workflow-worker");
+    expect(recorded(stateDir, "rm-args")).not.toContain("workflow-worker");
+    expect(readFileSync(path.join(stateDir, "manifest-attempts"), "utf8")).toBe("2");
     expect(stderr).toContain("rollback verified at prior image tag");
     expect(stderr).not.toContain("rollback failed");
   });
