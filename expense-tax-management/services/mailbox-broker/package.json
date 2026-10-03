@@ -1,0 +1,17 @@
+{
+  "name": "@expense-tax/mailbox-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/contracts.js",
+  "types": "./dist/contracts.d.ts",
+  "scripts": {
+    "test": "vitest run --dir test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test"
+  },
+  "dependencies": {
+    "@expense-tax/contracts": "workspace:*"
+  }
+}

@@ -704,6 +704,78 @@ export interface EnrichmentOperationKeyTable {
   readonly created_at: GeneratedTimestamp;
 }
 
+export interface MailboxConnectionTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly personal_profile_id: string | null;
+  readonly business_id: string | null;
+  readonly owner_user_id: string;
+  provider: "gmail" | "outlook";
+  provider_account_id: string;
+  account_email: string;
+  status:
+    | "pending"
+    | "active"
+    | "paused"
+    | "reauth_required"
+    | "disconnecting"
+    | "revocation_pending"
+    | "revoked";
+  granted_scopes: ColumnType<string[], string[], string[]>;
+  timezone: string;
+  local_scan_time: string;
+  scan_enabled: boolean;
+  last_scan_at: NullableTimestamp;
+  next_schedule_at: NullableTimestamp;
+  vault_reference: string;
+  token_generation: Generated<number>;
+  connection_version: Generated<number>;
+  token_operation_lease_id: string | null;
+  token_operation_lease_expires_at: NullableTimestamp;
+  active_scan_run_id: string | null;
+  active_scan_lease_expires_at: NullableTimestamp;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+  revoked_at: NullableTimestamp;
+}
+
+export interface MailboxOAuthAttemptTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly actor_user_id: string;
+  readonly state_digest: string;
+  readonly session_nonce_digest: string;
+  readonly redirect_origin: string;
+  readonly expires_at: Timestamp;
+  status: "pending" | "consumed" | "completed" | "expired" | "cancelled";
+  readonly created_at: GeneratedTimestamp;
+  consumed_at: NullableTimestamp;
+  completed_at: NullableTimestamp;
+}
+
+export interface MailboxReviewerGrantTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly user_id: string;
+  role: "reviewer" | "manager";
+  version: Generated<number>;
+  readonly created_at: GeneratedTimestamp;
+  revoked_at: NullableTimestamp;
+}
+
+export interface MailboxOperationKeyTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly connection_id: string | null;
+  readonly operation_key: string;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
+  readonly created_at: GeneratedTimestamp;
+}
+
 export interface AppDatabase {
   readonly "app.service_metadata": ServiceMetadataTable;
   readonly "app.users": UserTable;
@@ -756,4 +828,8 @@ export interface AppDatabase {
   readonly "app.expense_spending_category_decisions": ExpenseSpendingCategoryDecisionTable;
   readonly "app.expense_enrichment_suggestions": ExpenseEnrichmentSuggestionTable;
   readonly "app.enrichment_operation_keys": EnrichmentOperationKeyTable;
+  readonly "app.mailbox_connections": MailboxConnectionTable;
+  readonly "app.mailbox_oauth_attempts": MailboxOAuthAttemptTable;
+  readonly "app.mailbox_reviewer_grants": MailboxReviewerGrantTable;
+  readonly "app.mailbox_operation_keys": MailboxOperationKeyTable;
 }
