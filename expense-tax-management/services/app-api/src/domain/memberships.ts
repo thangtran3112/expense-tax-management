@@ -89,6 +89,16 @@ export interface UpdateBusinessMembershipCommand extends BusinessScopeCommand {
   readonly requestId: string;
 }
 
+export interface GetOwnPersonalProfileCommand {
+  readonly actorUserId: string;
+  readonly tenantId: string;
+}
+
+export interface OwnPersonalProfile {
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface MembershipDomain {
   createInvitation(input: CreateInvitationCommand): Promise<{
     readonly invitation: TenantInvitation;
@@ -108,6 +118,20 @@ export interface MembershipDomain {
   listPersonalMemberships(
     input: PersonalScopeCommand & { readonly requestId?: string },
   ): Promise<readonly PersonalMembership[]>;
+  /**
+   * Phase 3D-A Task 4, fix round 3 (Important) — the minimal, scope-
+   * authorized read the Office mailbox scope-picker needs to offer the
+   * caller's own Personal profile. Returns the tenant's one personal
+   * profile (migration 002's `personal_profiles_tenant_unique`) only when
+   * the caller has an *active personal_membership on it* -- tenant role
+   * alone (tenant_membership) never qualifies, and there is no parameter
+   * through which a caller could ever request a *different* member's
+   * profile. Returns null when the caller has no personal-profile access
+   * in this tenant at all.
+   */
+  getOwnPersonalProfile(
+    input: GetOwnPersonalProfileCommand,
+  ): Promise<OwnPersonalProfile | null>;
   createPersonalMembership(
     input: CreatePersonalMembershipCommand,
   ): Promise<PersonalMembership>;
@@ -1055,6 +1079,36 @@ export function createMembershipDomain(
             return toBusinessMembership(updated);
           }),
       );
+    },
+
+    async getOwnPersonalProfile(input) {
+      const row = await database
+        .selectFrom("app.personal_profiles as profile")
+        .innerJoin("app.tenants as tenant", (join) =>
+          join.onRef("tenant.id", "=", "profile.tenant_id").on("tenant.status", "=", "active"),
+        )
+        .innerJoin("app.tenant_memberships as tenant_membership", (join) =>
+          join
+            .onRef("tenant_membership.tenant_id", "=", "profile.tenant_id")
+            .on("tenant_membership.user_id", "=", input.actorUserId)
+            .on("tenant_membership.status", "=", "active"),
+        )
+        // Active personal_membership is the actual grant -- tenant role
+        // (tenant_membership above) alone never qualifies. This inner join
+        // is also *why* this can never return a different member's
+        // profile: it's scoped to input.actorUserId's own row, not a
+        // caller-supplied target user.
+        .innerJoin("app.personal_memberships as membership", (join) =>
+          join
+            .onRef("membership.personal_profile_id", "=", "profile.id")
+            .onRef("membership.tenant_id", "=", "profile.tenant_id")
+            .on("membership.user_id", "=", input.actorUserId)
+            .on("membership.status", "=", "active"),
+        )
+        .select(["profile.id", "profile.name"])
+        .where("profile.tenant_id", "=", input.tenantId)
+        .executeTakeFirst();
+      return row ? { id: row.id, name: row.name } : null;
     },
   };
 }

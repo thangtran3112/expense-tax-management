@@ -653,6 +653,32 @@ export async function fetchAuthorizedBusinesses(
   return result.data.items.filter((business) => business.status === "active");
 }
 
+/**
+ * Fix round 3 (Important) -- the caller's own Personal profile, so the
+ * mailbox scope-picker can always offer it (not just when the current
+ * Office session already happens to be Personal-scoped). `null` is a
+ * normal response (no Personal-profile access in this tenant), not an
+ * error. Scope-authorized server-side (`getOwnPersonalProfile`): tenant
+ * role alone never grants it, and there is no way to request a different
+ * member's profile.
+ */
+export async function fetchOwnPersonalProfile(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/personal-profiles/mine", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Personal profile lookup unavailable", result.response?.status);
+  }
+  return result.data.profile;
+}
+
 // ------------------------------------------------------------------ //
 // Identity / Membership API
 // ------------------------------------------------------------------ //

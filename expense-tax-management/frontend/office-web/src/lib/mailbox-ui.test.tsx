@@ -19,6 +19,7 @@ const harness = vi.hoisted(() => ({
   readOfficeSession: vi.fn(),
   loadMailboxConnection: vi.fn(),
   loadAuthorizedBusinesses: vi.fn(),
+  loadOwnPersonalProfile: vi.fn(),
   connectMailboxGoogle: vi.fn(),
   clerk: {
     getToken: vi.fn().mockResolvedValue("office-token"),
@@ -38,6 +39,7 @@ vi.mock("@/lib/session", () => ({ readOfficeSession: () => harness.readOfficeSes
 vi.mock("@/lib/page-data", () => ({
   loadMailboxConnection: (...args: unknown[]) => harness.loadMailboxConnection(...args),
   loadAuthorizedBusinesses: (...args: unknown[]) => harness.loadAuthorizedBusinesses(...args),
+  loadOwnPersonalProfile: (...args: unknown[]) => harness.loadOwnPersonalProfile(...args),
 }));
 vi.mock("@/lib/mailbox", async () => {
   const actual = await vi.importActual<typeof import("./mailbox")>("./mailbox");
@@ -70,6 +72,7 @@ describe("rendered Office mailbox page", () => {
     harness.readOfficeSession.mockImplementation(() => ({ ...PERSONAL_SESSION }));
     harness.loadMailboxConnection.mockResolvedValue(null);
     harness.loadAuthorizedBusinesses.mockResolvedValue([]);
+    harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
   });
 
   // ------------------------------------------------------------------ //
@@ -125,7 +128,12 @@ describe("rendered Office mailbox page", () => {
     expect(connectButton.disabled).toBe(false);
   });
 
-  it("omits Personal when the current session is business-scoped (no API exposes that lookup -- Ruling)", async () => {
+  // ------------------------------------------------------------------ //
+  // Finding 1 (fix round 3) -- Personal always offered, via the real
+  // scope-authorized lookup, not derived from session.scope.kind
+  // ------------------------------------------------------------------ //
+
+  it("still shows Personal under a business-scoped session, when the lookup resolves a profile", async () => {
     harness.readOfficeSession.mockImplementation(() => ({
       apiBaseUrl: "http://app.test",
       tenantId: "tenant-1",
@@ -133,10 +141,37 @@ describe("rendered Office mailbox page", () => {
       label: "Tran Studio",
     }));
     harness.loadAuthorizedBusinesses.mockResolvedValue([{ id: "biz-1", name: "Tran Studio" }]);
+    harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-mine", name: "Personal" });
+    renderPage();
+
+    await screen.findByRole("radio", { name: /Tran Studio/ });
+    expect(screen.getByRole("radio", { name: /^Personal$/ })).toBeTruthy();
+  });
+
+  it("shows no Personal option when the member has no Personal profile in this tenant", async () => {
+    harness.readOfficeSession.mockImplementation(() => ({
+      apiBaseUrl: "http://app.test",
+      tenantId: "tenant-1",
+      scope: { kind: "business" as const, businessId: "biz-1" },
+      label: "Tran Studio",
+    }));
+    harness.loadAuthorizedBusinesses.mockResolvedValue([{ id: "biz-1", name: "Tran Studio" }]);
+    harness.loadOwnPersonalProfile.mockResolvedValue(null);
     renderPage();
 
     await screen.findByRole("radio", { name: /Tran Studio/ });
     expect(screen.queryByRole("radio", { name: /^Personal$/ })).toBeNull();
+  });
+
+  it("looks up only the caller's own profile -- no member/profile id parameter that could request another member's", async () => {
+    renderPage();
+
+    await waitFor(() => expect(harness.loadOwnPersonalProfile).toHaveBeenCalledTimes(1));
+    const call = harness.loadOwnPersonalProfile.mock.calls[0] as unknown[];
+    // session, getToken, organizationId -- never a profileId/memberId/userId argument.
+    expect(call).toHaveLength(3);
+    expect(typeof call[1]).toBe("function");
+    expect(call[2]).toBe("org_123");
   });
 
   it("connects using the explicitly selected scope, not necessarily session.scope", async () => {

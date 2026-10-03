@@ -1,6 +1,6 @@
 import type { Scope } from "@expense-tax/contracts";
 
-import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchTags, fetchTaxReport } from "./api";
+import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
 import type { OfficeSession } from "./session";
 
@@ -78,4 +78,18 @@ export function loadAuthorizedBusinesses(
   organizationId: string | null | undefined,
 ) {
   return fetchAuthorizedBusinesses(session, getToken, organizationId);
+}
+
+/**
+ * Fix round 3 (Important) -- always offer the caller's own Personal
+ * profile in the mailbox scope-picker, even under a business-scoped
+ * Office session (previously omitted -- see fix round 2's Ruling, now
+ * closed by App API's new scope-authorized lookup).
+ */
+export function loadOwnPersonalProfile(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchOwnPersonalProfile(session, getToken, organizationId);
 }

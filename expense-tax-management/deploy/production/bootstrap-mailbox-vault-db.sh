@@ -41,9 +41,9 @@ docker exec -i -e PGPASSWORD "$POSTGRES_CONTAINER" psql \
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mailbox_vault_migrator') THEN
-    CREATE ROLE mailbox_vault_migrator LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$migrator_password_sql';
+    CREATE ROLE mailbox_vault_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$migrator_password_sql';
   ELSE
-    ALTER ROLE mailbox_vault_migrator LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$migrator_password_sql';
+    ALTER ROLE mailbox_vault_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$migrator_password_sql';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mailbox_vault_runtime') THEN
     CREATE ROLE mailbox_vault_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$runtime_password_sql';
@@ -82,7 +82,6 @@ BEGIN
       AND rolcreaterole = false
       AND rolreplication = false
       AND rolbypassrls = false
-      AND rolcreatedb = false
   ) THEN
     RAISE EXCEPTION 'mailbox_vault_runtime role has unsafe attributes';
   END IF;
@@ -90,6 +89,7 @@ BEGIN
     SELECT 1 FROM pg_roles
     WHERE rolname = 'mailbox_vault_migrator'
       AND rolsuper = false
+      AND rolcreatedb = false
       AND rolcreaterole = false
       AND rolreplication = false
       AND rolbypassrls = false

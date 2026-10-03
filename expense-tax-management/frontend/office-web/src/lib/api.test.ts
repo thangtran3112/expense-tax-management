@@ -13,6 +13,7 @@ import {
   fetchCurrentUser,
   fetchTenantMembership,
   fetchAuthorizedBusinesses,
+  fetchOwnPersonalProfile,
   fetchMailboxConnection,
   startMailboxConnection,
 } from "./api";
@@ -462,6 +463,34 @@ describe("fetchAuthorizedBusinesses", () => {
       expect.objectContaining({ params: { path: { tenantId: "tenant-1" } } }),
     );
     expect(result).toEqual([{ id: "biz-1", name: "Tran Studio", status: "active" }]);
+  });
+});
+
+// -------------------------------------------------------------------- //
+// Fix round 3 (Important) -- caller's own Personal profile lookup
+// -------------------------------------------------------------------- //
+
+describe("fetchOwnPersonalProfile", () => {
+  it("returns the caller's own profile when App API resolves one", async () => {
+    const client = { GET: vi.fn().mockResolvedValue({ data: { profile: { id: "profile-mine", name: "Personal" } } }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+
+    const result = await fetchOwnPersonalProfile(businessSession, getToken, "org_123", client as never);
+
+    expect(client.GET).toHaveBeenCalledWith(
+      "/api/v1/tenants/{tenantId}/personal-profiles/mine",
+      expect.objectContaining({ params: { path: { tenantId: "tenant-1" } } }),
+    );
+    expect(result).toEqual({ id: "profile-mine", name: "Personal" });
+  });
+
+  it("returns null (a normal response) when the caller has no Personal profile in this tenant", async () => {
+    const client = { GET: vi.fn().mockResolvedValue({ data: { profile: null } }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+
+    const result = await fetchOwnPersonalProfile(businessSession, getToken, "org_123", client as never);
+
+    expect(result).toBeNull();
   });
 });
 

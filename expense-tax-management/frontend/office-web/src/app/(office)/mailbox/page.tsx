@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Panel, PageHead, Status } from "@/components/ui";
 import { MailboxConnectionError } from "@/lib/api";
 import { connectMailboxGoogle, mailboxStatusDisplay } from "@/lib/mailbox";
-import { loadAuthorizedBusinesses, loadMailboxConnection } from "@/lib/page-data";
+import { loadAuthorizedBusinesses, loadMailboxConnection, loadOwnPersonalProfile } from "@/lib/page-data";
 import { readOfficeSession, type OfficeSession } from "@/lib/session";
 
 /**
@@ -64,6 +64,9 @@ export default function MailboxPage() {
   const [businesses, setBusinesses] = useState<
     readonly { readonly id: string; readonly name: string }[] | undefined
   >(undefined);
+  const [ownPersonalProfile, setOwnPersonalProfile] = useState<
+    { readonly id: string; readonly name: string } | null | undefined
+  >(undefined);
   const [phase, setPhase] = useState<Phase>(
     searchParams.get("status") === "connected" ? "oauth-return" : "idle",
   );
@@ -112,6 +115,28 @@ export default function MailboxPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, organizationId, organizationLoaded, isLoaded, isSignedIn]);
 
+  // Fix round 3 (Important) -- the caller's own Personal profile, fetched
+  // independently of `session.scope`'s kind so the picker offers Personal
+  // under a business-scoped session too. `null` (no Personal profile in
+  // this tenant) is a normal resolved state, not an error; a thrown fetch
+  // falls back to `null` (option omitted) rather than leaving the
+  // picker stuck loading.
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organizationId) return;
+    let active = true;
+    loadOwnPersonalProfile(session, getToken, organizationId)
+      .then((profile) => {
+        if (active) setOwnPersonalProfile(profile);
+      })
+      .catch(() => {
+        if (active) setOwnPersonalProfile(null);
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, organizationId, organizationLoaded, isLoaded, isSignedIn]);
+
   if (!isLoaded || !organizationLoaded) {
     return <div className="empty" aria-live="polite">Loading...</div>;
   }
@@ -119,16 +144,20 @@ export default function MailboxPage() {
     return <div className="empty" role="alert">Office session unavailable. Sign in again.</div>;
   }
 
-  // Fix round 2 (Important) -- every scope the user is authorized for:
-  // Personal when the current session already knows its profile ID (App
-  // API exposes no standalone "look up this tenant's personal profile"
-  // route yet -- see the report's Ruling), plus every active business
-  // from the real GET .../businesses list. None preselected.
+  // Fix round 3 (Important) -- every scope the user is authorized for:
+  // Personal whenever App API's scope-authorized lookup resolves one for
+  // this tenant (regardless of whether the *current* session happens to
+  // be business-scoped -- fix round 2's Ruling that gated this on
+  // `session.scope.kind === "personal"` is superseded now that the
+  // lookup route exists), plus every active business from the real
+  // GET .../businesses list. None preselected.
   const scopeOptions: readonly { readonly scope: Scope; readonly label: string }[] =
-    businesses === undefined
+    businesses === undefined || ownPersonalProfile === undefined
       ? []
       : [
-          ...(session.scope.kind === "personal" ? [{ scope: session.scope, label: "Personal" }] : []),
+          ...(ownPersonalProfile
+            ? [{ scope: { kind: "personal" as const, profileId: ownPersonalProfile.id }, label: "Personal" }]
+            : []),
           ...businesses.map((business) => ({
             scope: { kind: "business" as const, businessId: business.id },
             label: business.name,
@@ -219,7 +248,7 @@ export default function MailboxPage() {
             <legend>
               Default Personal/business scope<span aria-hidden="true"> *</span>
             </legend>
-            {businesses === undefined ? (
+            {businesses === undefined || ownPersonalProfile === undefined ? (
               <p aria-live="polite">Loading authorized scopes...</p>
             ) : (
               <div role="radiogroup" aria-required="true" aria-describedby="mailbox-scope-help">
