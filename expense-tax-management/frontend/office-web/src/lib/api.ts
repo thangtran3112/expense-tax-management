@@ -549,6 +549,44 @@ export async function mergeTags(
 }
 
 // ------------------------------------------------------------------ //
+// Mailbox connection API (Personal and Business scope)
+// ------------------------------------------------------------------ //
+
+export class MailboxConnectionError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(status === 401 || status === 403 ? "Office authorization required" : message);
+    this.name = "MailboxConnectionError";
+  }
+}
+
+export interface StartMailboxConnectionInput {
+  readonly sessionNonce: string;
+  readonly redirectOrigin: string;
+  readonly timezone: string;
+  readonly localScanTime: string;
+  readonly requestId: string;
+}
+
+export async function startMailboxConnection(
+  session: OfficeSession,
+  input: StartMailboxConnectionInput,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.POST("/api/v1/tenants/{tenantId}/mailbox-connections/google/start", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+    body: { scope: session.scope, ...input },
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Mailbox connection unavailable", result.response?.status);
+  }
+  return result.data;
+}
+
+// ------------------------------------------------------------------ //
 // Identity / Membership API
 // ------------------------------------------------------------------ //
 

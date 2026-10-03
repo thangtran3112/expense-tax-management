@@ -218,6 +218,20 @@ export interface ReleaseTokenOperationLeaseInput {
   readonly leaseId: string;
 }
 
+/**
+ * Phase 3D-A Task 4 — closes the gap flagged by Task 2 Ruling 3/Task 3
+ * Ruling 4: the broker's `MailboxBrokerConnectionAppClient.recordRevocation`
+ * (contracts, Task 1) had no App-side domain function or route. Same
+ * permanent operation-key ledger pattern as every other mutation here,
+ * keyed by `operationId` (the broker's own revoke-operation id, mirroring
+ * `advanceTokenGeneration`'s `idempotencyKey` usage).
+ */
+export interface RecordRevocationInput {
+  readonly connectionId: string;
+  readonly operationId: string;
+  readonly status: "revoked" | "revocation_pending";
+}
+
 export interface MailboxConnectionsDomain {
   startConnection(input: StartConnectionInput): Promise<StartConnectionResult>;
   consumeOAuthState(input: ConsumeOAuthStateInput): Promise<ConsumeOAuthStateResult>;
@@ -229,6 +243,7 @@ export interface MailboxConnectionsDomain {
     input: AdvanceTokenGenerationInput,
   ): Promise<AdvanceTokenGenerationResult>;
   releaseTokenOperationLease(input: ReleaseTokenOperationLeaseInput): Promise<void>;
+  recordRevocation(input: RecordRevocationInput): Promise<MailboxConnectionV1>;
 }
 
 export interface MailboxConnectionsDomainOptions {
@@ -788,6 +803,66 @@ export function createMailboxConnectionsDomain(
         .where("id", "=", input.connectionId)
         .where("token_operation_lease_id", "=", input.leaseId)
         .execute();
+    },
+
+    async recordRevocation(input) {
+      const operationKey = "record-revocation";
+      const payloadHash = hashNormalizedRequest({ status: input.status });
+
+      return database.transaction().execute(async (transaction) => {
+        const connection = await transaction
+          .selectFrom("app.mailbox_connections")
+          .selectAll()
+          .where("id", "=", input.connectionId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!connection) throw DomainError.notFound();
+
+        const existingKey = await transaction
+          .selectFrom("app.mailbox_operation_keys")
+          .select(["normalized_request_hash", "response_json"])
+          .where("tenant_id", "=", connection.tenant_id)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.operationId)
+          .executeTakeFirst();
+        if (existingKey) {
+          if (existingKey.normalized_request_hash !== payloadHash) {
+            throw DomainError.idempotencyConflict();
+          }
+          return existingKey.response_json as unknown as MailboxConnectionV1;
+        }
+
+        const now = new Date();
+        const updated = await transaction
+          .updateTable("app.mailbox_connections")
+          .set({
+            status: input.status,
+            revoked_at: input.status === "revoked" ? now : connection.revoked_at,
+            connection_version: sql<number>`connection_version + 1`,
+            updated_at: now,
+          })
+          .where("id", "=", input.connectionId)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        const result = toMailboxConnectionV1(updated);
+
+        await transaction
+          .insertInto("app.mailbox_operation_keys")
+          .values({
+            id: randomUUID(),
+            tenant_id: connection.tenant_id,
+            connection_id: input.connectionId,
+            operation_key: operationKey,
+            idempotency_key: input.operationId,
+            normalized_request_hash: payloadHash,
+            response_json: toJsonValue(result),
+            created_at: now,
+          })
+          .execute();
+
+        return result;
+      });
     },
   };
 }

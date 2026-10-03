@@ -1,6 +1,6 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import { Archive, Building2, ChartNoAxesCombined, Copy, FileDown, Forward, LayoutDashboard, List, Settings, Tags } from "lucide-react";
+import { Archive, Building2, ChartNoAxesCombined, Copy, FileDown, Forward, LayoutDashboard, List, Mail, Settings, Tags } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -11,7 +11,8 @@ const nav = [
   ["/dashboard", "Dashboard", LayoutDashboard], ["/expenses", "Expenses", List],
   ["/businesses", "Businesses", Building2], ["/projects", "Projects", ChartNoAxesCombined],
   ["/tax", "Tax", Tags], ["/exports", "Exports", FileDown],
-  ["/forwarding", "Forwarding", Forward], ["/settings", "Settings", Settings],
+  ["/forwarding", "Forwarding", Forward], ["/mailbox", "Mailbox", Mail],
+  ["/settings", "Settings", Settings],
 ] as const;
 
 const BUSINESS_ONLY_HREFS = new Set(["/businesses", "/projects", "/tax", "/exports"]);

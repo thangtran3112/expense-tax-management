@@ -6,6 +6,15 @@ export interface AppConfig {
   readonly databaseUrl: string;
   readonly auth: AppAuthConfig;
   readonly clerk?: ClerkConfig;
+  /**
+   * Phase 3D-A Task 4 -- exact-match allowlist of trusted Office origins
+   * for the mailbox OAuth redirect flow. Comma-separated
+   * `MAILBOX_ALLOWED_REDIRECT_ORIGINS`; undefined (not an empty array)
+   * when unset, so existing `config.test.ts` exact-shape fixtures that
+   * predate mailbox stay untouched (same reasoning as Task 2's optional
+   * mailbox Clerk fields, Ruling 1).
+   */
+  readonly mailboxAllowedRedirectOrigins?: readonly string[] | undefined;
   readonly temporal: TemporalConnectionConfig;
   readonly storage: StorageConnectionConfig;
   readonly inboundEmail: InboundEmailConfig;
@@ -142,6 +151,16 @@ function optionalEnvironmentValue(
 ): string | undefined {
   const value = env[key]?.trim();
   return value || undefined;
+}
+
+function optionalCommaListEnvironmentValue(
+  env: Readonly<Record<string, string | undefined>>,
+  key: string,
+): readonly string[] | undefined {
+  const raw = optionalEnvironmentValue(env, key);
+  if (raw === undefined) return undefined;
+  const items = raw.split(",").map((item) => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
 }
 
 /**
@@ -295,6 +314,10 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
       },
     },
     clerk,
+    mailboxAllowedRedirectOrigins: optionalCommaListEnvironmentValue(
+      env,
+      "MAILBOX_ALLOWED_REDIRECT_ORIGINS",
+    ),
     temporal: {
       address: requiredEnvironmentValue(temporalEnv, "TEMPORAL_HOST"),
       namespace: requiredEnvironmentValue(temporalEnv, "TEMPORAL_NAMESPACE"),

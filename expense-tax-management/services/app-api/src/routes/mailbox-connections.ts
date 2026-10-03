@@ -11,18 +11,53 @@
  * app-api/src/app.ts (alongside the Office/public routes that depend on
  * the same domain) is Task 4's job.
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { ErrorResponseSchema } from "@expense-tax/contracts";
+import {
+  ErrorResponseSchema,
+  MailboxConnectionV1Schema,
+  MailboxOAuthAttemptV1Schema,
+  MailboxScopeSchema,
+  TenantIdParamsSchema,
+  type MailboxConnectionRecordV1,
+  type MailboxConnectionV1,
+} from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
-import { serviceGuard } from "../plugins/auth.js";
+import type { IdentityResolver } from "../domain/authenticated-user.js";
+import { authenticatedUserGuard, serviceGuard, tenantGuard } from "../plugins/auth.js";
+import { DomainError } from "../errors.js";
 import type { MailboxConnectionsDomain } from "../domain/mailbox-connections.js";
 
 export interface MailboxConnectionsRouteOptions {
   readonly mailboxConnectionsDomain: MailboxConnectionsDomain;
+  /**
+   * Required for the customer-facing google/start route; the four
+   * existing broker-only internal routes (Task 2) don't need it. Optional
+   * here only so Task 2's own broker-guard unit test (no tenant routes
+   * exercised) keeps working unchanged.
+   */
+  readonly identityResolver?: IdentityResolver;
   /** Default mirrors the plan's exact machine subject: "mailbox-broker-app". */
   readonly brokerServiceSubject?: string;
+}
+
+function actorUserId(request: FastifyRequest): string {
+  if (!request.authenticatedUser) throw DomainError.unauthenticated();
+  return request.authenticatedUser.id;
+}
+
+/** Public connection projection -- strips vault/lease/scan internals. */
+function toPublicConnection(record: MailboxConnectionRecordV1): MailboxConnectionV1 {
+  const copy: Partial<Record<string, unknown>> = { ...record };
+  delete copy.vaultReference;
+  delete copy.tokenGeneration;
+  delete copy.connectionVersion;
+  delete copy.tokenOperationLeaseId;
+  delete copy.tokenOperationLeaseExpiresAt;
+  delete copy.activeScanRunId;
+  delete copy.activeScanLeaseExpiresAt;
+  return copy as unknown as MailboxConnectionV1;
 }
 
 const errors = { 401: ErrorResponseSchema, 403: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 410: ErrorResponseSchema };
@@ -69,6 +104,41 @@ const AdvanceResponseSchema = z.strictObject({
 });
 
 const ReleaseBodySchema = z.strictObject({ leaseId: z.uuid() });
+
+const StartBodySchema = z.strictObject({
+  scope: MailboxScopeSchema,
+  sessionNonce: z.string().trim().min(16).max(512),
+  redirectOrigin: z.string().trim().min(1).max(2048),
+  timezone: z.string().trim().min(1).max(100),
+  localScanTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  requestId: z.string().trim().min(1),
+});
+const StartResponseSchema = z.strictObject({
+  connection: MailboxConnectionV1Schema,
+  attempt: MailboxOAuthAttemptV1Schema,
+  authorizationUrl: z.string().trim().min(1),
+});
+
+// Mirrors the exact body shape services/mailbox-broker/src/app-client.ts's
+// completeConnection sends -- expectedConnectionVersion is accepted (so the
+// broker's already-built, Task 3-tested request shape needs no change) but
+// not yet enforced as a CAS precondition by domain.completeConnection.
+const CompleteBodySchema = z.strictObject({
+  connectionId: z.uuid(),
+  expectedConnectionVersion: z.number().int(),
+  providerAccountId: z.string().trim().min(1).max(255),
+  accountEmail: z.email().max(320),
+  grantedScopes: z.array(z.string().trim().min(1).max(255)),
+  initialHistoryId: z.string().trim().min(1),
+  vaultReference: z.string().trim().min(1).max(500),
+  tokenGeneration: z.number().int().positive(),
+  requestId: z.string().trim().min(1),
+});
+
+const RevokeBodySchema = z.strictObject({
+  operationId: z.string().trim().min(1),
+  status: z.enum(["revoked", "revocation_pending"]),
+});
 
 export async function registerMailboxConnectionRoutes(
   app: FastifyInstance,
@@ -169,6 +239,94 @@ export async function registerMailboxConnectionRoutes(
         leaseId: request.body.leaseId,
       });
       return reply.code(204).send();
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // Customer-facing: start a Gmail connection attempt.
+  // ----------------------------------------------------------------
+  if (options.identityResolver) {
+    const customerGuard = [tenantGuard, authenticatedUserGuard(options.identityResolver)];
+
+    typedApp.post(
+      "/api/v1/tenants/:tenantId/mailbox-connections/google/start",
+      {
+        preHandler: customerGuard,
+        schema: {
+          params: TenantIdParamsSchema,
+          body: StartBodySchema,
+          security: [{ tenantBearer: [] }],
+          response: { 201: StartResponseSchema, ...errors },
+        },
+      },
+      async (request, reply) => {
+        const result = await options.mailboxConnectionsDomain.startConnection({
+          actorUserId: actorUserId(request),
+          tenantId: request.params.tenantId,
+          scope: request.body.scope,
+          sessionNonce: request.body.sessionNonce,
+          redirectOrigin: request.body.redirectOrigin,
+          timezone: request.body.timezone,
+          localScanTime: request.body.localScanTime,
+          requestId: request.body.requestId,
+        });
+        return reply.code(201).send(result);
+      },
+    );
+  }
+
+  // ----------------------------------------------------------------
+  // Internal: broker-only completion callback and revocation recorder.
+  // Closes the gap flagged by Task 2 Ruling 3 / Task 3 Ruling 4 --
+  // services/mailbox-broker/src/app-client.ts already calls exactly these
+  // two paths/bodies; no broker-side change needed.
+  // ----------------------------------------------------------------
+  typedApp.post(
+    "/internal/v1/mailbox/oauth/attempts/:attemptId/complete",
+    {
+      preHandler: brokerGuard,
+      schema: {
+        hide: true,
+        params: AttemptIdParamsSchema,
+        body: CompleteBodySchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: MailboxConnectionV1Schema, ...errors },
+      },
+    },
+    async (request) => {
+      const record = await options.mailboxConnectionsDomain.completeConnection({
+        attemptId: request.params.attemptId,
+        connectionId: request.body.connectionId,
+        providerAccountId: request.body.providerAccountId,
+        accountEmail: request.body.accountEmail,
+        grantedScopes: request.body.grantedScopes,
+        initialHistoryId: request.body.initialHistoryId,
+        vaultReference: request.body.vaultReference,
+        tokenGeneration: request.body.tokenGeneration,
+        requestId: request.body.requestId,
+      });
+      return toPublicConnection(record);
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/connections/:connectionId/revoke",
+    {
+      preHandler: brokerGuard,
+      schema: {
+        hide: true,
+        params: ConnectionIdParamsSchema,
+        body: RevokeBodySchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: MailboxConnectionV1Schema, ...errors },
+      },
+    },
+    async (request) => {
+      return options.mailboxConnectionsDomain.recordRevocation({
+        connectionId: request.params.connectionId,
+        operationId: request.body.operationId,
+        status: request.body.status,
+      });
     },
   );
 }

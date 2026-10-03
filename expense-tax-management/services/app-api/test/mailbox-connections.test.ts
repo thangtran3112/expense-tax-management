@@ -473,6 +473,86 @@ describe.skipIf(!requested)("domain/mailbox-connections.ts — startConnection /
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
+
+  // Phase 3D-A Task 4 -- closes the gap flagged by Task 2 Ruling 3 / Task 3
+  // Ruling 4: services/mailbox-broker/src/app-client.ts's recordRevocation
+  // had no App-side domain function until now.
+  describe("recordRevocation", () => {
+    async function activeConnection(domain: MailboxConnectionsDomain, tenantId: string, profileId: string) {
+      const started = await domain.startConnection(
+        startInput({ tenantId, scope: { kind: "personal", profileId } }),
+      );
+      const consumed = await domain.consumeOAuthState({
+        attemptId: started.attempt.id,
+        connectionId: started.connection.id,
+        stateDigest: started.attempt.stateDigest,
+        sessionNonceDigest: started.attempt.sessionNonceDigest,
+        requestId: randomUUID(),
+      });
+      await domain.completeConnection({
+        attemptId: consumed.attemptId,
+        connectionId: consumed.connectionId,
+        vaultReference: "vault-ref-revoke",
+        providerAccountId: "provider-account-revoke",
+        accountEmail: "mailbox-revoke@example.test",
+        grantedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+        initialHistoryId: "history-revoke",
+        tokenGeneration: 1,
+        requestId: randomUUID(),
+      });
+      return started.connection.id;
+    }
+
+    it("marks a connection revoked and sets revokedAt", async () => {
+      const domain = createDomain();
+      const connectionId = await activeConnection(domain, TENANT_ID_2, PROFILE_ID_2);
+
+      const result = await domain.recordRevocation({
+        connectionId,
+        operationId: randomUUID(),
+        status: "revoked",
+      });
+
+      expect(result.id).toBe(connectionId);
+      expect(result.status).toBe("revoked");
+      expect(result.revokedAt).not.toBeNull();
+    });
+
+    it("marks revocation_pending without setting revokedAt", async () => {
+      const domain = createDomain();
+      const connectionId = await activeConnection(domain, TENANT_ID_3, PROFILE_ID_3);
+
+      const result = await domain.recordRevocation({
+        connectionId,
+        operationId: randomUUID(),
+        status: "revocation_pending",
+      });
+
+      expect(result.status).toBe("revocation_pending");
+      expect(result.revokedAt).toBeNull();
+    });
+
+    it("replays an identical revocation (same operationId) and rejects a changed one (IDEMPOTENCY_CONFLICT)", async () => {
+      const domain = createDomain();
+      const connectionId = await activeConnection(domain, TENANT_ID_4, PROFILE_ID_4);
+      const operationId = randomUUID();
+
+      const first = await domain.recordRevocation({ connectionId, operationId, status: "revoked" });
+      const replay = await domain.recordRevocation({ connectionId, operationId, status: "revoked" });
+      expect(replay).toEqual(first);
+
+      await expect(
+        domain.recordRevocation({ connectionId, operationId, status: "revocation_pending" }),
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    });
+
+    it("rejects an unknown connectionId", async () => {
+      const domain = createDomain();
+      await expect(
+        domain.recordRevocation({ connectionId: randomUUID(), operationId: randomUUID(), status: "revoked" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
 });
 
 // -------------------------------------------------------------------- //
@@ -534,6 +614,7 @@ describe("routes/mailbox-connections.ts — broker-only auth guard (no live DB)"
         vaultReference: "vault-ref",
       })),
       releaseTokenOperationLease: vi.fn(async () => undefined),
+      recordRevocation: vi.fn(),
     };
 
     const serviceVerifier: TokenVerifier = {

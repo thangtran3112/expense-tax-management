@@ -82,6 +82,12 @@ import { registerInboundEmailRoutes } from "./routes/inbound-email.js";
 import { registerClerkWebhookRoutes, type ClerkWebhookRouteOptions } from "./routes/clerk-webhooks.js";
 import { registerAuthCheckRoutes } from "./routes/auth-check.js";
 import { registerDuplicateMatchRoutes } from "./routes/duplicate-matches.js";
+import { registerMailboxConnectionRoutes } from "./routes/mailbox-connections.js";
+import {
+  createMailboxConnectionsDomain,
+  type MailboxConnectionsDomain,
+} from "./domain/mailbox-connections.js";
+import { createMailboxBrokerClient } from "./integrations/mailbox-broker-client.js";
 import type { ClerkIdentityMappingDomain } from "./domain/clerk-identity.js";
 import {
   createClerkWebhookHandler,
@@ -197,6 +203,33 @@ export interface BuildAppOptions {
   readonly clerkWebhookVerifySignature?: ClerkWebhookRouteOptions["verifySignature"];
   readonly clerkIdentityDomain?: ClerkIdentityMappingDomain;
   readonly tagDomain?: TagDomain;
+  readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
+}
+
+/**
+ * Phase 3D-A Task 4 -- used when the outbound broker credential/allowlist
+ * config isn't provisioned yet (Task 2 Ruling 1: optional until an
+ * operator sets it). Every method fails closed instead of the route group
+ * silently not existing, so the customer-facing route is always present
+ * in the generated OpenAPI spec/TS client.
+ */
+function createUnconfiguredMailboxConnectionsDomain(): MailboxConnectionsDomain {
+  const unavailable = async (): Promise<never> => {
+    const error = new Error("Mailbox broker is not configured") as Error & {
+      statusCode: number;
+    };
+    error.statusCode = 503;
+    throw error;
+  };
+  return {
+    startConnection: unavailable,
+    consumeOAuthState: unavailable,
+    completeConnection: unavailable,
+    acquireTokenOperationLease: unavailable,
+    advanceTokenGeneration: unavailable,
+    releaseTokenOperationLease: unavailable,
+    recordRevocation: unavailable,
+  };
 }
 
 function loggerWithRedaction(logger: BuildAppOptions["logger"]): LoggerOption {
@@ -375,6 +408,45 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     deduplicationDomain: (deduplicationDomain.resolveMatch
       ? deduplicationDomain
       : createDeduplicationDomain(database)) as Parameters<typeof registerDuplicateMatchRoutes>[1]["deduplicationDomain"],
+  });
+  // Phase 3D-A Task 4: real construction only when every outbound broker
+  // credential and the redirect-origin allowlist are configured (Task 2
+  // Ruling 1 -- these fields stay optional until an operator provisions
+  // them); `options.mailboxConnectionsDomain` always wins, for tests.
+  const mailboxBrokerClient =
+    options.config.clerk?.mailboxBrokerBaseUrl !== undefined &&
+    options.config.clerk.mailboxServiceAudience !== undefined &&
+    options.config.clerk.mailboxAppApiMachineSecretKey !== undefined &&
+    options.config.clerk.mailboxAppApiSubject !== undefined
+      ? createMailboxBrokerClient({
+          baseUrl: options.config.clerk.mailboxBrokerBaseUrl,
+          issuerUrl: options.config.clerk.issuerUrl,
+          jwksUrl: options.config.clerk.jwksUrl,
+          credentials: {
+            audience: options.config.clerk.mailboxServiceAudience,
+            machineSecretKey: options.config.clerk.mailboxAppApiMachineSecretKey,
+            subject: options.config.clerk.mailboxAppApiSubject,
+          },
+        })
+      : undefined;
+  const mailboxConnectionsDomain =
+    options.mailboxConnectionsDomain ??
+    (mailboxBrokerClient && options.config.mailboxAllowedRedirectOrigins
+      ? createMailboxConnectionsDomain(database, mailboxBrokerClient, {
+          allowedRedirectOrigins: options.config.mailboxAllowedRedirectOrigins,
+        })
+      : createUnconfiguredMailboxConnectionsDomain());
+  // Always registered (same pattern as every other route group in this
+  // file) so the customer-facing route is always present in the generated
+  // OpenAPI spec/TS client; when the broker isn't provisioned yet, every
+  // call fails closed via createUnconfiguredMailboxConnectionsDomain above
+  // rather than 404ing as if the feature didn't exist.
+  app.register(registerMailboxConnectionRoutes, {
+    mailboxConnectionsDomain,
+    identityResolver: identityDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
   });
   const exportsDomain =
     options.exportsDomain ??
