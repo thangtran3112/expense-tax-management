@@ -44,6 +44,31 @@ validate_age_recipient() {
 
 sha256_file() { sha256sum "$1" | awk '{print $1}'; }
 
+# Hand-checks a manifest.json's required keys/types/enums against
+# manifest.schema.json (Ruling: no ajv dependency -- see README). Shared by
+# backup.sh (validating what it is about to encrypt) and restore.sh
+# (validating what it just decrypted) so the one contract is enforced
+# identically on both sides of the backup.
+validate_manifest_shape() {
+  local manifest="$1"
+  [[ -s "$manifest" ]] || die "manifest.json missing or empty"
+  jq -e '
+    (.backup_host_id | type == "string" and length > 0) and
+    (.run_id | type == "string" and length > 0) and
+    (.cutoff | type == "string") and
+    (.mode == "full" or .mode == "daily") and
+    (.parent_full_backup_id | type == "string" and length > 0) and
+    (.postgresql_version | type == "string" and length > 0) and
+    (.databases | type == "array") and
+    (.files | type == "array" and all(.[]; (.name|type=="string") and (.bytes|type=="number") and (.sha256|test("^[0-9a-f]{64}$")))) and
+    (.receipts.archive_name | type == "string") and
+    (.receipts.file_count | type == "number") and
+    (.receipts.files | type == "array" and all(.[]; (.path|type=="string") and (.sha256|test("^[0-9a-f]{64}$")))) and
+    (.deployed_image_tags | type == "object") and
+    (.schema_migration_versions | type == "object")
+  ' "$manifest" >/dev/null || die "manifest.json failed schema validation: $manifest"
+}
+
 # Writes the machine-readable status line to stdout. Never pass a value
 # derived from a secret (password, private key, credential file content).
 emit_status() {

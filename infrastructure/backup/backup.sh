@@ -259,23 +259,7 @@ build_manifest() {
 validate_manifest() {
   local staging="$1"
   local manifest="$staging/manifest.json"
-  [[ -s "$manifest" ]] || die "manifest.json missing or empty"
-
-  jq -e '
-    (.backup_host_id | type == "string" and length > 0) and
-    (.run_id | type == "string" and length > 0) and
-    (.cutoff | type == "string") and
-    (.mode == "full" or .mode == "daily") and
-    (.parent_full_backup_id | type == "string" and length > 0) and
-    (.postgresql_version | type == "string" and length > 0) and
-    (.databases | type == "array") and
-    (.files | type == "array" and all(.[]; (.name|type=="string") and (.bytes|type=="number") and (.sha256|test("^[0-9a-f]{64}$")))) and
-    (.receipts.archive_name | type == "string") and
-    (.receipts.file_count | type == "number") and
-    (.receipts.files | type == "array" and all(.[]; (.path|type=="string") and (.sha256|test("^[0-9a-f]{64}$")))) and
-    (.deployed_image_tags | type == "object") and
-    (.schema_migration_versions | type == "object")
-  ' "$manifest" >/dev/null || die "manifest.json failed schema validation"
+  validate_manifest_shape "$manifest"
 
   local name sha f
   while IFS=$'\t' read -r name sha; do
