@@ -225,10 +225,16 @@ if should_run backup; then
   scp_to "$BACKUP_DIR_REPO/family-app-backup-retry.service" /tmp/family-app-backup-retry.service
   scp_to "$BACKUP_DIR_REPO/check-backup-freshness.sh" /tmp/check-backup-freshness.sh
   scp_to "$SCRIPT_DIR/steps/40-backup.sh" /tmp/40-backup.sh
-  writer_key_json="$(cat "$BACKUP_WRITER_KEY_FILE")"
+  # The writer key NEVER appears in a command line (local or remote,
+  # scp's argv or ssh's argv) -- it is streamed over the SSH stdin
+  # channel straight into its final root-only mode-0400 file in one
+  # `install` call. A shell command's arguments are visible to any other
+  # local user via `ps`; a pipe's bytes are not.
+  ssh_run "sudo mkdir -p /etc/family-app && sudo install -m 0400 /dev/stdin /etc/family-app/backup-writer-key.json" \
+    < "$BACKUP_WRITER_KEY_FILE"
   ssh_run "sudo SHARED_PG_DIR=${SHARED_PG_DIR} BACKUP_DIR=${BACKUP_DIR} BACKUP_GCS_URI=${BACKUP_GCS_URI} \
     BACKUP_HOST_ID=${BACKUP_HOST_ID} AGE_RECIPIENT=${AGE_RECIPIENT} RECEIPT_VOLUME=${RECEIPT_VOLUME} \
-    BACKUP_IMAGE=${BACKUP_IMAGE} UNIT_FILES_DIR=/tmp BACKUP_WRITER_KEY_JSON='${writer_key_json}' \
+    BACKUP_IMAGE=${BACKUP_IMAGE} UNIT_FILES_DIR=/tmp \
     bash /tmp/40-backup.sh"
 fi
 

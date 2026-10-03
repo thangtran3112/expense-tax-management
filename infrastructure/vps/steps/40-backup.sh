@@ -26,10 +26,16 @@
 #                              -- a named volume, not a host path: Docker can
 #                              mount it into the backup container by name
 #                              regardless of which Compose project created it
-#   BACKUP_WRITER_KEY_JSON - full JSON content of the Task 1 writer service account key
 #   BACKUP_IMAGE           - pinned backup image ref (digest, not a mutable tag)
 #   UNIT_FILES_DIR         - dir (already scp'd by bootstrap.sh) holding the
 #                              three *.service/*.timer template files
+#
+# The writer key itself is NOT an env var here: bootstrap.sh streams it
+# over SSH stdin straight into /etc/family-app/backup-writer-key.json
+# (mode 0400) via `sudo install -m 0400 /dev/stdin ...` BEFORE invoking
+# this script, so the secret never appears in any process's command-line
+# arguments, local or remote. This script only verifies that file landed
+# correctly.
 set -euo pipefail
 
 : "${SHARED_PG_DIR:?SHARED_PG_DIR is required}"
@@ -38,9 +44,13 @@ set -euo pipefail
 : "${BACKUP_HOST_ID:?BACKUP_HOST_ID is required}"
 : "${AGE_RECIPIENT:?AGE_RECIPIENT is required}"
 : "${RECEIPT_VOLUME:?RECEIPT_VOLUME is required}"
-: "${BACKUP_WRITER_KEY_JSON:?BACKUP_WRITER_KEY_JSON is required}"
 : "${BACKUP_IMAGE:?BACKUP_IMAGE is required}"
 : "${UNIT_FILES_DIR:?UNIT_FILES_DIR is required}"
+
+[[ -s /etc/family-app/backup-writer-key.json ]] || {
+  echo "[backup] ERROR: /etc/family-app/backup-writer-key.json missing -- bootstrap.sh must install it (via SSH stdin) before running this step" >&2
+  exit 1
+}
 
 [[ -f "${SHARED_PG_DIR}/.env" ]] || {
   echo "[backup] ERROR: ${SHARED_PG_DIR}/.env not found -- run the postgres step first" >&2
@@ -64,7 +74,9 @@ echo "[backup] writing root-only credential files"
 umask 077
 printf '%s' "$pg_superuser_password" > /etc/family-app/backup-pgpassword
 chmod 0400 /etc/family-app/backup-pgpassword
-printf '%s' "$BACKUP_WRITER_KEY_JSON" > /etc/family-app/backup-writer-key.json
+# backup-writer-key.json was already installed by bootstrap.sh over SSH
+# stdin (see header comment); re-assert ownership/permissions idempotently.
+chown root:root /etc/family-app/backup-writer-key.json
 chmod 0400 /etc/family-app/backup-writer-key.json
 
 cat > /etc/family-app/backup.env <<ENV
