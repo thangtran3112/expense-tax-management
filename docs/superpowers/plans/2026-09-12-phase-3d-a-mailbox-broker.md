@@ -4,23 +4,23 @@
 
 **Status:** Not started; blocked by Phase 3C. Execute first within Phase 3D from a fresh `feature/*` worktree based on current `origin/dev`.
 
-**Goal:** Build protected Gmail connection lifecycle, dedicated Cloud Run broker, App-owned connection metadata, OAuth state consumption, Secret Manager token CAS, and Office mailbox administration base.
+**Goal:** Build protected Gmail connection lifecycle, a VPS-container mailbox broker in the Expense production Compose, App-owned connection metadata, OAuth state consumption, PostgreSQL token-vault CAS, and Office mailbox administration base.
 
-**Architecture:** App API owns tenant/scope authorization, connection records, OAuth attempt state, reviewer grants, and all persisted customer metadata. Broker owns Google OAuth, provider calls, short-lived credentials, and per-connection Secret Manager versions. Temporal and the Python worker are not involved in OAuth or mailbox credential handling.
+**Architecture:** App API owns tenant/scope authorization, connection records, OAuth attempt state, reviewer grants, and all persisted customer metadata. Broker owns Google OAuth, provider calls, short-lived credentials, and its own PostgreSQL token-vault database. Temporal and the TypeScript workflow worker are not involved in OAuth or mailbox credential handling.
 
-**Tech Stack:** Node 24 TypeScript Fastify, `googleapis`, `@google-cloud/secret-manager`, `jose`, Zod, Kysely/PostgreSQL, Clerk M2M JWTs, Cloud Run, Secret Manager, Terraform/gcloud, Next.js 16 React 19 Office Web, Vitest.
+**Tech Stack:** Node 24 TypeScript Fastify, `googleapis`, Kysely/PostgreSQL (token vault), Node `crypto` (AES-256-GCM), `jose`, Zod, Clerk M2M JWTs, Docker Compose on the existing VPS, Next.js 16 React 19 Office Web, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md`
 
 ## Global Constraints
 
-- Phase 3C must be complete before Phase 3D migrations. Phase 3C owns migration `016`; 3D-A owns `017`, 3D-B owns `018`, and 3D-C owns `019`.
+- Phase 3C must be complete before Phase 3D migrations. Phase 3C owns App migration `016`; runtime migration Task 7 Stage A owns `017`; 3D-A owns `018`, 3D-B owns `019`, and 3D-C owns `020`.
 - Public provider enum is `"gmail" | "outlook"`; only Gmail adapter exists. App and broker reject `outlook` with typed `PROVIDER_UNSUPPORTED`.
 - Gmail scope is exactly `https://www.googleapis.com/auth/gmail.readonly`; no mailbox modification, Pub/Sub, Outlook implementation, live LLM, or static GCP key.
-- Cloud Run min instances `0`, max instances `2`, CPU during requests only, dedicated project, managed runtime identity, and runtime role limited to mailbox Secret Manager operations.
-- Tokens, authorization codes, PKCE verifiers, client secrets, raw state, mailbox body, MIME, provider error bodies, and sensitive query strings never enter App PostgreSQL, Temporal, browser storage, logs, or VPS files.
-- Exact machine subjects: `app-api-mailbox`, `ai-worker-mailbox`, `mailbox-broker-app`. Worker uses existing App audience with subject `ai-worker-mailbox` and route scopes `mailbox:discover`, `mailbox:materialize`.
-- Remote GCP/Clerk writes require explicit execution-time confirmation immediately before `terraform apply`, `gcloud`, Clerk, or deployment commands. No opaque IDs are invented.
+- Mailbox broker is a container in the Expense production Compose on the existing VPS, loopback port, no public ingress except the OAuth callback through the existing Cloudflare Tunnel. It has no GCP identity. Its own PostgreSQL token-vault database/roles are created only by an explicit operator-only bootstrap step, never by normal deploy (same pattern as Temporal DB bootstrap).
+- Tokens, authorization codes, PKCE verifiers, client secrets, raw state, mailbox body, MIME, provider error bodies, and sensitive query strings never enter App PostgreSQL, Temporal, browser storage, logs, or VPS files in plaintext. Refresh tokens exist as AES-256-GCM ciphertext (nonce, key ID, generation) only in the broker's token-vault database.
+- Exact machine subjects: `app-api-mailbox`, `workflow-worker-mailbox`, `mailbox-broker-app`. The TypeScript workflow worker uses existing App audience with subject `workflow-worker-mailbox` and route scopes `mailbox:discover`, `mailbox:materialize`.
+- Remote writes require explicit execution-time confirmation immediately before Clerk provisioning, VPS deploy, or token-vault database/role bootstrap commands. No opaque IDs are invented.
 - File ownership: 3D-A creates broker base, worker client/auth base, App mailbox base, Office mailbox page/API base. 3D-B modifies those files only where scan/review integration requires it. 3D-C modifies them only for ingestion status; each later plan creates only its own new modules.
 - Every write has permanent uniqueness `(tenant_id, operation_key, idempotency_key, normalized_request_hash)` and replay returns original result; same key with different payload returns typed conflict.
 
@@ -106,13 +106,15 @@ export interface MailboxProviderAdapter {
 }
 ```
 
-### Task 1: Contracts, Ownership Ledger, and Migration 017 Prerequisite
+### Task 1: Contracts, Ownership Ledger, and Migration 018 Prerequisite
+
+**Local testability:** Fully local with fakes (Vitest, in-memory/test PostgreSQL). No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/packages/contracts/src/mailbox.ts`
 - Modify: `expense-tax-management/packages/contracts/src/index.ts`
 - Create: `expense-tax-management/packages/contracts/test/mailbox.test.ts`
-- Create: `expense-tax-management/services/app-api/src/database/migrations/017_mailbox_connections.ts`
+- Create: `expense-tax-management/services/app-api/src/database/migrations/018_mailbox_connections.ts`
 - Modify: `expense-tax-management/services/app-api/src/database/types.ts`
 - Create: `expense-tax-management/services/app-api/test/mailbox-connections-database.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/package.json`
@@ -122,19 +124,21 @@ export interface MailboxProviderAdapter {
 - Modify: `expense-tax-management/package.json`
 - Modify: `expense-tax-management/pnpm-workspace.yaml`
 
-**Interfaces:** Produces all A contracts above, strict Zod schemas, and migration 017. Migration requires Phase 3C migration 016 in the test migration fixture; it creates connection/reviewer/attempt rows but no scan/candidate tables.
+**Interfaces:** Produces all A contracts above, strict Zod schemas, and migration 018. Migration requires Phase 3C migration 016 and runtime migration Task 7 Stage A migration 017 in the test migration fixture; it creates connection/reviewer/attempt rows but no scan/candidate tables.
 
-- [ ] **Step 1: Write failing tests** for public/internal record separation, provider `gmail|outlook`, unsupported Outlook, exact readonly scope, no secret fields in public schema, permanent replay conflict, and migration order `016 -> 017`.
+- [ ] **Step 1: Write failing tests** for public/internal record separation, provider `gmail|outlook`, unsupported Outlook, exact readonly scope, no secret fields in public schema, permanent replay conflict, and migration order `016,017 -> 018`.
 - [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/contracts exec vitest run test/mailbox.test.ts && pnpm --filter @expense-tax/app-api test -- test/mailbox-connections-database.test.ts`; expected FAIL because contracts/migration are absent.
-- [ ] **Step 3: Implement strict schemas and migration 017.** Add composite tenant/scope FKs, active uniqueness, status checks, OAuth attempt one-time status, connection version, token-generation/lease internals, and no token/code/verifier columns.
+- [ ] **Step 3: Implement strict schemas and migration 018.** Add composite tenant/scope FKs, active uniqueness, status checks, OAuth attempt one-time status, connection version, token-generation/lease internals, and no token/code/verifier columns. Connection row stores `vault_reference` (opaque), never a secret value.
 - [ ] **Step 4: Run:** `pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/app-api typecheck`; expected PASS with generated drift absent.
 - [ ] **Step 5: Commit:**
   ```bash
-  git add packages/contracts/src/mailbox.ts packages/contracts/src/index.ts packages/contracts/test/mailbox.test.ts services/app-api/src/database/migrations/017_mailbox_connections.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-connections-database.test.ts services/mailbox-broker/package.json services/mailbox-broker/tsconfig.json services/mailbox-broker/src/contracts.ts services/mailbox-broker/test/contracts.test.ts package.json pnpm-workspace.yaml
+  git add packages/contracts/src/mailbox.ts packages/contracts/src/index.ts packages/contracts/test/mailbox.test.ts services/app-api/src/database/migrations/018_mailbox_connections.ts services/app-api/src/database/types.ts services/app-api/test/mailbox-connections-database.test.ts services/mailbox-broker/package.json services/mailbox-broker/tsconfig.json services/mailbox-broker/src/contracts.ts services/mailbox-broker/test/contracts.test.ts package.json pnpm-workspace.yaml
   git commit -m "feat(mailbox): define connection contracts"
   ```
 
 ### Task 2: App Connection/OAuth Domain and Exact State Consume CAS
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/app-api/src/domain/mailbox-connections.ts`
@@ -154,35 +158,41 @@ export interface MailboxProviderAdapter {
 - [ ] **Step 5: Run:** `pnpm --filter @expense-tax/app-api test -- test/mailbox-connections.test.ts test/mailbox-oauth-state.test.ts && pnpm --filter @expense-tax/app-api typecheck`; expected PASS.
 - [ ] **Step 6: Commit:** `git add services/app-api/src/domain/mailbox-connections.ts services/app-api/src/routes/mailbox-connections.ts services/app-api/test/mailbox-connections.test.ts services/app-api/test/mailbox-oauth-state.test.ts && git commit -m "feat(mailbox): add OAuth consume CAS"`
 
-### Task 3: Broker OAuth, Secret CAS, Clerk Identity, and Base Worker Client
+### Task 3: Broker Token Vault, OAuth CAS, Clerk Identity, and Base Worker Client
+
+**Local testability:** Mostly local with fakes (test PostgreSQL for the vault, fake Clerk JWKS). The Gmail adapter's token-refresh event handling needs a human-provisioned Google OAuth client/test account to exercise end-to-end against real Google; stub it with a fake `googleapis` client for this task's tests and mark true Google-credential verification as **operator-gated** (Task 6).
 
 **Files:**
 - Create: `expense-tax-management/services/mailbox-broker/src/config.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/logging.ts`
-- Create: `expense-tax-management/services/mailbox-broker/src/secret-manager.ts`
+- Create: `expense-tax-management/services/mailbox-broker/src/database/client.ts`
+- Create: `expense-tax-management/services/mailbox-broker/src/database/migrations/001_token_vault.ts`
+- Create: `expense-tax-management/services/mailbox-broker/src/token-vault.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/oauth-state.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/google-mailbox.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/app-client.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/auth/clerk.ts`
 - Create: `expense-tax-management/services/mailbox-broker/src/test-doubles.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/oauth-state.test.ts`
-- Create: `expense-tax-management/services/mailbox-broker/test/secret-manager.test.ts`
+- Create: `expense-tax-management/services/mailbox-broker/test/token-vault.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/auth.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/app-client.test.ts`
-- Create: `expense-tax-management/services/ai-worker/src/ai_worker/mailbox_client.py`
-- Create: `expense-tax-management/services/ai-worker/tests/test_mailbox_client.py`
+- Create: `expense-tax-management/services/workflow-worker/src/clients/mailbox-client.ts`
+- Create: `expense-tax-management/services/workflow-worker/test/mailbox-client.test.ts`
 
-**Interfaces:** `createOAuthState`, `consumeOAuthState`, `createPerConnectionSecret`, `addTokenVersionCAS`, `destroyTokenVersion`, `revokeTokenVersions`, `createGmailMailboxProvider`, and `MailboxBrokerConnectionAppClient` are created here. `MailboxBrokerConnectionAppClient` signs broker-to-App connection/OAuth callbacks with existing App service audience, subject `mailbox-broker-app`, and scope `mailbox:write`. 3D-B extends broker App access with discovery staging; 3D-C extends it with upload/materialization. Separate Python `MailboxAppApiClient` uses existing App audience, subject `ai-worker-mailbox`, and scopes `mailbox:discover`, `mailbox:materialize` only for opaque orchestration.
+**Interfaces:** `createOAuthState`, `consumeOAuthState`, `createConnectionVaultRow`, `addTokenGenerationCAS`, `destroyTokenGeneration`, `revokeTokenGenerations`, `createGmailMailboxProvider`, and `MailboxBrokerConnectionAppClient` are created here. The token vault uses its own dedicated PostgreSQL database with a runtime role (read/write vault rows only) separate from its migration role (DDL only); both are provisioned by the operator-only bootstrap in Task 5, never by normal deploy. `MailboxBrokerConnectionAppClient` signs broker-to-App connection/OAuth callbacks with existing App service audience, subject `mailbox-broker-app`, and scope `mailbox:write`. 3D-B extends broker App access with discovery staging; 3D-C extends it with upload/materialization. Separate TypeScript `MailboxAppApiClient` in `services/workflow-worker` uses existing App audience, subject `workflow-worker-mailbox`, and scopes `mailbox:discover`, `mailbox:materialize` only for opaque orchestration.
 
-- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper/expiry, PKCE S256, state one-time behavior, nonce transport, Secret Manager losing-writer cleanup, revoke race, logger redaction, exact Clerk issuer/audience/subject/scope, and App worker token config.
-- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/oauth-state.test.ts test/secret-manager.test.ts test/auth.test.ts && uv --directory services/ai-worker run pytest tests/test_mailbox_client.py`; expected FAIL.
+- [ ] **Step 1: Write failing tests** for AES-256-GCM tamper/expiry, PKCE S256, state one-time behavior, nonce transport, token-vault losing-writer cleanup (compare-and-set on generation), revoke race, logger redaction, exact Clerk issuer/audience/subject/scope, and worker token config.
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/oauth-state.test.ts test/token-vault.test.ts test/auth.test.ts && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts`; expected FAIL.
 - [ ] **Step 3: Implement state.** Payload carries `keyId`, `connectionId`, `attemptId`, `sessionNonce`, `pkceVerifier`, issue/expiry, and redirect origin. Callback decrypts, validates allowlist/session/expiry, computes `sha256(state)` and `sha256(sessionNonce)`, then calls App consume CAS before exchanging code. Invalid/replayed state redirects to fixed failure page with no details; no provider exchange occurs.
-- [ ] **Step 4: Implement Gmail adapter.** Use `googleapis`, offline access, exact readonly scope, in-memory access token, token event Secret Manager CAS, and provider enum rejection for Outlook.
+- [ ] **Step 4: Implement Gmail adapter.** Use `googleapis`, offline access, exact readonly scope, in-memory access token, token-event token-vault CAS (AES-256-GCM encrypt, new generation, verify, then disable prior generation), and provider enum rejection for Outlook.
 - [ ] **Step 5: Implement `MailboxBrokerConnectionAppClient`.** Implement only OAuth-attempt consume, connection completion, and revocation-state callbacks. Never create scan, candidate, upload, or structured-result routes in A. Add tests for App audience, `mailbox-broker-app` subject, and `mailbox:write` scope.
-- [ ] **Step 6: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/mailbox-broker typecheck && uv --directory services/ai-worker run pytest tests/test_mailbox_client.py`; expected PASS.
-- [ ] **Step 7: Commit:** `git add services/mailbox-broker/src services/mailbox-broker/test services/ai-worker/src/ai_worker/mailbox_client.py services/ai-worker/tests/test_mailbox_client.py && git commit -m "feat(mailbox): secure OAuth and broker clients"`
+- [ ] **Step 6: Run:** `pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/mailbox-broker typecheck && pnpm --filter @expense-tax/workflow-worker exec vitest run test/mailbox-client.test.ts`; expected PASS.
+- [ ] **Step 7: Commit:** `git add services/mailbox-broker/src services/mailbox-broker/test services/workflow-worker/src/clients/mailbox-client.ts services/workflow-worker/test/mailbox-client.test.ts && git commit -m "feat(mailbox): secure OAuth and broker clients"`
 
 ### Task 4: Fastify Broker/App Routes and Office Mailbox Base
+
+**Local testability:** Fully local with fakes. No Google credentials or production access needed.
 
 **Files:**
 - Create: `expense-tax-management/services/mailbox-broker/src/app.ts`
@@ -210,31 +220,46 @@ export interface MailboxProviderAdapter {
   git commit -m "feat(mailbox): add broker routes and Office base"
   ```
 
-### Task 5: Dedicated GCP Runtime and Exact Three-Principal Provisioning
+### Task 5: VPS Compose Integration, Operator Vault Bootstrap, and Exact Three-Principal Provisioning
+
+**Local testability:** Container build and Compose config are locally testable (Docker, no production access). The vault database/role bootstrap script and Clerk machine identity provisioning are **operator-only, human-action-gated**: they mutate shared production infrastructure and require explicit execution-time confirmation before running against the real VPS/Postgres cluster or Clerk.
 
 **Files:**
-- Create: `expense-tax-management/infrastructure/gcp/mailbox-broker/main.tf`
-- Create: `expense-tax-management/infrastructure/gcp/mailbox-broker/variables.tf`
-- Create: `expense-tax-management/infrastructure/gcp/mailbox-broker/outputs.tf`
-- Create: `expense-tax-management/infrastructure/gcp/mailbox-broker/README.md`
-- Create: `expense-tax-management/infrastructure/gcp/mailbox-broker/test-policy.sh`
 - Create: `expense-tax-management/services/mailbox-broker/Dockerfile`
 - Create: `expense-tax-management/services/mailbox-broker/.dockerignore`
-- Create: `expense-tax-management/.github/workflows/mailbox-broker-deploy.yml`
+- Modify: `deploy/production/docker-compose.yml`
+- Create: `infrastructure/postgres/bootstrap-mailbox-vault-db.sh`
+- Create: `expense-tax-management/services/mailbox-broker/README.md`
+- Create: `expense-tax-management/services/mailbox-broker/test/compose-config.test.ts`
+- Modify: `expense-tax-management/.github/workflows/expense-tax-deploy.yml`
 
-- [ ] **Step 1: Write static tests** for no key file, dedicated project variable, runtime/deploy identity separation, exact Secret Manager permissions, min/max scaling, and three exact Clerk subjects/scopes including `ai-worker-mailbox` App audience.
-- [ ] **Step 2: Run red:** `bash infrastructure/gcp/mailbox-broker/test-policy.sh`; expected FAIL.
-- [ ] **Step 3: Implement local Terraform/Docker/workflow files.** No real project IDs, Clerk secrets, client secrets, or opaque IDs.
-- [ ] **Step 4: Request explicit confirmation before remote commands.** Show `terraform plan`, `gcloud`, and Clerk provisioning commands; execute only after confirmation.
-- [ ] **Step 5: Verify:** `terraform -chdir=infrastructure/gcp/mailbox-broker init -backend=false && terraform -chdir=infrastructure/gcp/mailbox-broker validate && terraform -chdir=infrastructure/gcp/mailbox-broker plan`; expected PASS and no unapproved paid product.
-- [ ] **Step 6: Commit:** `git add infrastructure/gcp/mailbox-broker services/mailbox-broker/Dockerfile services/mailbox-broker/.dockerignore .github/workflows/mailbox-broker-deploy.yml && git commit -m "infra(mailbox): isolate broker runtime"`
+- [ ] **Step 1: Write static tests** for no GCP identity/key in the broker container config, loopback-only port binding, no public route except `/oauth/google/callback` through the Tunnel, container resource ceiling present, and three exact Clerk subjects/scopes including `workflow-worker-mailbox` App audience.
+- [ ] **Step 2: Run red:** `pnpm --filter @expense-tax/mailbox-broker exec vitest run test/compose-config.test.ts`; expected FAIL.
+- [ ] **Step 3: Implement Dockerfile and Compose service.** Add `mailbox-broker` to `deploy/production/docker-compose.yml` as a plan step: loopback port, environment from the existing Expense bundle, container CPU/memory ceiling (0.5 vCPU / 512 MB default), no GCP service-account mount. This image joins the existing immutable main-only deploy matrix (`.github/workflows/expense-tax-deploy.yml`); it is not deployed by `dev` merges.
+- [ ] **Step 4: Implement operator-only vault bootstrap script.** `infrastructure/postgres/bootstrap-mailbox-vault-db.sh` creates the dedicated token-vault database plus separate runtime (DML-only) and migration (DDL-only) roles, mirroring `bootstrap-temporal-db.sh`. The normal deploy path never runs this script.
+- [ ] **Step 5: Request explicit confirmation before remote commands.** Show the vault bootstrap script, Clerk machine-identity provisioning commands, and the Compose/deploy diff; execute only after confirmation. These touch shared production Postgres and Clerk and are not reversible by a revert commit alone.
+- [ ] **Step 6: Verify:** `pnpm --filter @expense-tax/mailbox-broker test && docker build -f services/mailbox-broker/Dockerfile services/mailbox-broker`; expected PASS and no unapproved paid product.
+- [ ] **Step 7: Commit:** `git add services/mailbox-broker/Dockerfile services/mailbox-broker/.dockerignore services/mailbox-broker/README.md services/mailbox-broker/test/compose-config.test.ts deploy/production/docker-compose.yml infrastructure/postgres/bootstrap-mailbox-vault-db.sh .github/workflows/expense-tax-deploy.yml && git commit -m "infra(mailbox): add broker container to VPS Compose"`
 
 ### Task 6: A Verification and B Handoff
+
+**Local testability:** Fully local with fakes, except the integration test which needs a real test PostgreSQL instance (no production access, no Google credentials).
 
 **Files:**
 - Create: `expense-tax-management/test/integration/app-domain-3d-a-mailbox.test.ts`
 - Create: `expense-tax-management/services/mailbox-broker/test/security-regression.test.ts`
 
-- [ ] **Step 1: Test** migration prerequisite 016 then 017, public/internal schema separation, OAuth consume CAS/replay, trusted redirect/session binding, refresh/revoke CAS, exact identities, and no token/state leakage.
-- [ ] **Step 2: Run:** `pnpm test && pnpm lint && pnpm typecheck && pnpm build && pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/office-web test && pnpm test:integration -- test/integration/app-domain-3d-a-mailbox.test.ts && uv --directory services/ai-worker run pytest && git diff --check`; expected PASS with generated drift absent.
-- [ ] **Step 3: Handoff exact interfaces.** B consumes `MailboxConnectionV1` for public UI, `MailboxConnectionRecordV1` only inside App domain, canonical base `MailboxProviderAdapter`, `MailboxBrokerConnectionAppClient`, and Python `MailboxAppApiClient` for opaque orchestration. B owns every discovery/scan/candidate contract and extends the base as `MailboxDiscoveryProviderAdapter`. C owns every upload/materialization contract and extends B. A implements neither. B/C must not put cursor/history or content values in Temporal.
+- [ ] **Step 1: Test** migration prerequisite 016,017 then 018, public/internal schema separation, OAuth consume CAS/replay, trusted redirect/session binding, refresh/revoke CAS, exact identities, and no token/state leakage.
+- [ ] **Step 2: Run:** `pnpm test && pnpm lint && pnpm typecheck && pnpm build && pnpm contracts:generate && pnpm contracts:check && pnpm --filter @expense-tax/mailbox-broker test && pnpm --filter @expense-tax/office-web test && pnpm --filter @expense-tax/workflow-worker test && pnpm test:integration -- test/integration/app-domain-3d-a-mailbox.test.ts && git diff --check`; expected PASS with generated drift absent.
+- [ ] **Step 3: Handoff exact interfaces.** B consumes `MailboxConnectionV1` for public UI, `MailboxConnectionRecordV1` only inside App domain, canonical base `MailboxProviderAdapter`, `MailboxBrokerConnectionAppClient`, and TypeScript `MailboxAppApiClient` (in `services/workflow-worker`) for opaque orchestration. B owns every discovery/scan/candidate contract and extends the base as `MailboxDiscoveryProviderAdapter`. C owns every upload/materialization contract and extends B. A implements neither. B/C must not put cursor/history or content values in Temporal. B/C production activation is blocked on runtime migration Task 7 cutover because 3D workflows run only on the TypeScript worker; 3D-A source may still merge to `dev` once Phase 3C is in.
+
+### Task List and Local-Testability Classification Summary
+
+| Task | Local with fakes? | Needs real Google OAuth / production / human action |
+|---|---|---|
+| 1. Contracts, migration 018 | Yes, fully | No |
+| 2. App connection/OAuth domain | Yes, fully | No |
+| 3. Broker token vault, OAuth CAS, Clerk identity, worker client | Mostly (fake Google client, test Postgres) | Operator-gated: real Google OAuth client/test account for end-to-end token-refresh verification |
+| 4. Fastify routes, Office base | Yes, fully | No |
+| 5. VPS Compose integration, vault bootstrap, Clerk provisioning | Container build/config: yes | Operator-gated: vault DB/role bootstrap and Clerk machine-identity provisioning against real infrastructure |
+| 6. A verification and B handoff | Yes (integration test needs local test Postgres) | No |

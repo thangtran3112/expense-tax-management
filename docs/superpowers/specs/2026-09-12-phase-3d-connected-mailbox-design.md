@@ -25,7 +25,9 @@ later Outlook support without rewriting App data ownership or workflows.
 - First release processes PDF/image attachments and deterministic structured HTML.
 - Ambiguous free text is review-only; no live LLM classification or extraction.
 - Phase 3B duplicate candidates remain pending review and never auto-merge.
-- Cloud Run broker uses min instances `0` and managed GCP identity.
+- Mailbox broker runs as a TypeScript Fastify container in the Expense
+  production Compose on the VPS, loopback port, public only through the
+  existing Cloudflare Tunnel where the OAuth callback requires it.
 - `main`/production deployment remains subject to a later release decision.
 
 ## Service Architecture
@@ -33,18 +35,18 @@ later Outlook support without rewriting App data ownership or workflows.
 ```text
 Office Web
   -> App API (tenant/scope auth, entitlement, metadata, review)
-  -> mailbox-broker on Cloud Run (OAuth, Secret Manager, Gmail calls)
+  -> mailbox-broker on VPS (OAuth, token vault, Gmail calls)
 
 App API
   -> Temporal Schedule / MailboxScanWorkflow
 
-Python worker
+TypeScript workflow worker
   -> App API job-bound input
   -> mailbox-broker authenticated internal API
   -> App API versioned scan/candidate callbacks
 
 mailbox-broker
-  -> GCP Secret Manager (refresh token per connection)
+  -> dedicated PostgreSQL token-vault database (AES-256-GCM refresh token per connection)
   -> Gmail API (gmail.readonly)
   -> App API internal staging/upload callbacks
 
@@ -54,16 +56,17 @@ Accepted candidate
   -> Phase 3B provenance/deduplication
 ```
 
-### Why Cloud Run broker
+### Why a separate broker service
 
-The VPS has no safe workload identity for GCP Secret Manager. A long-lived GCP
-service-account key on the VPS creates rotation and exfiltration risk. The broker
-runs with a managed service account, scales to zero, and keeps Google credentials
-off the VPS.
+Mailbox Broker runs as its own TypeScript Fastify container in the Expense
+production Compose on the VPS, loopback-only like every other Expense origin.
+It is a separate service, not a separate host: isolating Google OAuth
+credentials and Gmail calls behind one process keeps App API and the
+workflow worker free of Google client libraries and refresh-token handling.
 
-Cloud Run ingress must allow the public OAuth callback and calls from VPS services,
-which cannot present Google IAM ID tokens without another Google credential.
-Application routes therefore enforce:
+The public OAuth callback is the only broker route the Cloudflare Tunnel
+exposes; every other broker route is internal-only and reachable solely over
+the VPS Docker network. Application routes enforce:
 
 - Public: `GET /oauth/google/callback`, protected by encrypted one-time OAuth
   state and bounded rate limits.
@@ -72,17 +75,18 @@ Application routes therefore enforce:
 - Health: GET/HEAD only, no customer data.
 - Unknown host/path/method: reject.
 
-Google IAM protects Secret Manager access through the broker's attached service
-account. Clerk M2M protects application calls. Neither replaces tenant/scope
-authorization in App API.
+Clerk M2M protects application calls; it does not replace tenant/scope
+authorization in App API. Database-level least-privilege roles protect the
+token vault; the broker's runtime role may read/write only its own vault
+tables.
 
 Provision three dedicated Clerk machine identities; do not reuse existing OCR or
 Foundry credentials:
 
 - App API -> broker: subject `app-api-mailbox`, broker audience, scopes
   `oauth:start`, `connections:read`, `connections:revoke`.
-- AI worker -> broker: subject `ai-worker-mailbox`, broker audience, scopes
-  `mailbox:discover`, `mailbox:materialize`.
+- Workflow worker -> broker: subject `workflow-worker-mailbox`, broker
+  audience, scopes `mailbox:discover`, `mailbox:materialize`.
 - Broker -> App API: subject `mailbox-broker-app`, App service audience, scopes
   `mailbox:write`, `files:write`.
 
@@ -95,11 +99,15 @@ confusion pair.
 
 ## Mailbox Broker
 
-Add a Node 24 TypeScript Fastify service under `services/mailbox-broker`. It owns
-no database. It uses:
+Add a Node 24 TypeScript Fastify service under `services/mailbox-broker`
+running as a VPS container in the Expense production Compose. It owns a
+dedicated PostgreSQL token-vault database and no other state. It uses:
 
 - `googleapis` Gmail/OAuth2 client.
-- `@google-cloud/secret-manager` with ambient Cloud Run credentials.
+- Kysely/PostgreSQL client against its own token-vault database, with a
+  separate least-privilege runtime role from its migration role.
+- Node `crypto` AES-256-GCM encrypt/decrypt for refresh tokens, keyed by the
+  active key ID from the Expense Secret Manager bundle (deployment-time env).
 - Existing Clerk JWT/M2M verification patterns.
 - Existing gateway hardening patterns for body limits, timeouts, rate limits,
   method policy, and security headers.
@@ -138,72 +146,68 @@ IDs remain opaque strings behind App-owned connection/candidate records.
 7. Broker selects state key by key ID, verifies AEAD tag, expiry, redirect origin,
    initiating session binding, and one-time pending attempt, then compares a
    constant-time state digest with App API before exchanging the code.
-8. Broker validates returned scopes and Gmail profile, creates one opaque
-   per-connection Secret Manager secret, and stores refresh token as version 1.
-   Short-lived access tokens exist only in broker memory.
+8. Broker validates returned scopes and Gmail profile, inserts one token-vault
+   row for the connection, and stores the refresh token as AES-256-GCM
+   ciphertext with nonce, key ID, and generation 1. Short-lived access tokens
+   exist only in broker memory.
 9. Broker calls authenticated App API completion endpoint with connection ID,
-   attempt ID, secret resource name, provider account ID, email, granted scopes,
-   and initial Gmail history ID. No token value crosses this boundary.
+   attempt ID, opaque vault reference, provider account ID, email, granted
+   scopes, and initial Gmail history ID. No token value crosses this boundary.
 10. App API atomically activates connection and closes attempt. Broker redirects
     browser to Office connection result page.
 
 Google may emit a new refresh token through the OAuth client's `tokens` event.
-Broker writes a new secret version, verifies it, then disables/destroys the prior
-version. Token revocation marks connection `reauth_required`; it does not silently
-fall back to broader scopes.
+Broker writes a new vault-row generation, verifies it, then disables/destroys
+the prior generation within the same token-vault transaction. Token revocation
+marks connection `reauth_required`; it does not silently fall back to broader
+scopes.
 
-State AEAD keys live in broker project Secret Manager and rotate by overlapping
-key IDs. New starts use current key; callbacks may use prior key only until their
-10-minute attempt expiry. App API stores only state digest/session nonce digest,
-never plaintext state or verifier.
+State AEAD keys come from the Expense Secret Manager bundle (deployment-time
+env) and rotate by overlapping key IDs. New starts use current key; callbacks
+may use prior key only until their 10-minute attempt expiry. App API stores
+only state digest/session nonce digest, never plaintext state or verifier.
 
 Refresh, reauthorization, and revoke operations acquire an App API connection
-lease bound to expected connection version. Secret payload includes monotonic
-token generation. Broker adds and verifies a new version, then App API
-compare-and-swaps active generation/version before old version is disabled. A
-losing operation destroys only its own newly created version. Revocation increments
-connection version, invalidates refresh leases, revokes provider credentials, then
-destroys every token version. Repeated cleanup/revoke is idempotent.
+lease bound to expected connection version. The vault row includes monotonic
+token generation. Broker adds and verifies a new generation, then App API
+compare-and-swaps active generation/version before the old generation is
+disabled. A losing operation destroys only its own newly created generation.
+Revocation increments connection version, invalidates refresh leases, revokes
+provider credentials, then destroys every token-vault generation. Repeated
+cleanup/revoke is idempotent.
 
-Secret names use opaque connection UUIDs, never tenant names or email addresses.
-The existing production environment-bundle secret remains separate. Its
-single-active-version policy does not apply to per-connection token secrets.
+Vault rows key by opaque connection UUID, never tenant names or email
+addresses. The existing production environment-bundle secret remains separate;
+its single-version policy does not apply to per-connection vault rows.
 
-The Google Secret Manager Node client may log full request payloads at info level,
-including `addSecretVersion.payload.data`. Broker must disable Google client info
-logging, redact authorization/token/secret fields at logger construction, and test
-that no token appears in logs or errors.
+Broker must redact authorization/token/ciphertext/nonce fields at logger
+construction and test that no plaintext token or ciphertext appears in logs or
+errors.
 
-## GCP IAM and Cost Boundary
+## Token Vault and Database Boundary
 
-Use a dedicated GCP project for mailbox broker and mailbox-token secrets. This is
-mandatory because secret creation needs project-level permission and a name prefix
-or label is not a reliable IAM boundary. Existing production-bundle secrets remain
-in their current project.
+Mailbox Broker owns a dedicated PostgreSQL token-vault database on the shared
+cluster, separate from App and Foundry databases. Creating this database and
+its roles is an explicit operator-only step, identical in kind to Temporal
+database bootstrap; normal deploy never creates databases.
 
-Use a dedicated Cloud Run runtime service account. A custom project role grants
-only secret create/get, version add/access/get/disable/destroy, and required project
-metadata read. It excludes secret delete, list unrelated projects, IAM policy
-mutation, owner/editor, deploy, storage, database, and production-bundle access.
-Deployment identity is separate from runtime identity.
+Use separate least-privilege roles:
 
-Secret resources carry labels identifying broker ownership and connection ID.
-Labels aid audit but are not authorization. IAM tests prove runtime identity can
-access mailbox project secrets and cannot access existing production project
-secrets.
+- Runtime role: read/write on vault rows only; no DDL.
+- Migration role: DDL on vault tables only; not used by the running service.
 
-Cloud Run configuration:
+The broker container has no GCP identity and no ambient cloud credentials. Its
+only GCP touchpoint is reading the active AES-256-GCM key ID from the Expense
+Secret Manager bundle at deployment time, the same mechanism every other
+Expense service uses for its environment file.
 
-- Min instances `0`.
-- Small bounded max instance count initially (`2`).
-- CPU allocated only during requests.
-- Request/body/time limits matched to Phase 0P attachment caps.
-- No Cloud Armor baseline and no paid always-on compute.
-- Budget alert and usage dashboard before production enablement.
+Broker resource limits join the existing VPS container ceilings in
+`ARCHITECTURE.md`'s Runtime Sizing table. Pending measurement, start at the
+same 0.5 vCPU / 512 MB ceiling as the Expense workflow worker; it is mostly
+I/O-bound Gmail and vault calls.
 
-This phase targets Cloud Run/Secret Manager free or low usage, not guaranteed zero
-cost. Expected monthly and per-scan cost must be recorded before production
-deployment. Any live LLM cost remains separately prohibited.
+This phase runs on infrastructure already paid for; there is no per-scan GCP
+compute cost to track. Any live LLM cost remains separately prohibited.
 
 ## App API Data Model
 
@@ -216,7 +220,7 @@ Add `app.mailbox_connections`:
 - `id`, `tenant_id`, `owner_user_id`.
 - `provider`: `gmail` (schema permits later `outlook`).
 - `provider_account_id`, normalized account email.
-- `secret_resource_name` opaque reference, never secret value.
+- `vault_reference` opaque token-vault row reference, never secret value.
 - Exactly one default `personal_profile_id` or `business_id`.
 - `status`: `pending`, `active`, `paused`, `reauth_required`, `disconnecting`,
   `revocation_pending`, or `revoked`.
@@ -506,7 +510,8 @@ version remains accepted until no persisted job/run references it.
 
 ### Phase 3D-A: Broker and connection lifecycle
 
-- Mailbox broker service, Cloud Run/IAM/Secret Manager infrastructure.
+- Mailbox broker service, VPS Compose integration, and PostgreSQL token-vault
+  infrastructure.
 - Gmail OAuth start/callback/revoke.
 - App connection/OAuth/reviewer schema and APIs.
 - Office connect/status/reauth/disconnect UI.
@@ -533,14 +538,18 @@ Each plan ships working, testable behavior and cannot assume later subphase code
 
 - OAuth uses offline access, PKCE, exact readonly scope, short-lived encrypted
   state, and one-time attempts.
-- App PostgreSQL, Temporal history, Office/browser storage or response bodies, VPS
-  files, and logs contain no access token, refresh token, authorization code,
-  PKCE verifier, or client secret. Google necessarily sends the one-time
-  authorization code in the broker callback URL; broker disables query logging,
-  consumes it immediately, and never persists or returns it.
-- Google client info logging cannot print Secret Manager payload data.
-- Broker runs in dedicated mailbox GCP project; runtime identity cannot access
-  production environment bundle or resources in existing production project.
+- App PostgreSQL (customer domain database), Temporal history, Office/browser
+  storage or response bodies, VPS files, and logs contain no plaintext access
+  token, refresh token, authorization code, PKCE verifier, or client secret.
+  The broker's token-vault database holds only AES-256-GCM ciphertext, nonce,
+  key ID, and generation. Google necessarily sends the one-time authorization
+  code in the broker callback URL; broker disables query logging, consumes it
+  immediately, and never persists or returns it.
+- Logger redacts ciphertext/nonce/token fields; no plaintext secret or
+  ciphertext appears in logs or errors.
+- Broker container has no GCP identity; it reads only its deployment-time
+  environment bundle like other Expense services and cannot reach GCP APIs at
+  runtime.
 - App, worker, and broker machine identities reject wrong audience, subject, and
   scope combinations.
 - Cross-tenant/profile/business connection/candidate access fails closed.
@@ -560,7 +569,8 @@ Each plan ships working, testable behavior and cannot assume later subphase code
 - Disconnect disables access immediately and destroys/disables token versions.
 - Refresh/revoke races cannot disable newest committed generation or retain usable
   token after revocation.
-- Cloud Run scales to zero and no unapproved paid edge/AI product is enabled.
+- Broker container joins the existing immutable deploy matrix with no
+  additional paid GCP compute enabled.
 - Broker, App API, worker, Office, PostgreSQL integration, and end-to-end tests
   pass with generated artifacts clean.
 
@@ -571,8 +581,10 @@ Each plan ships working, testable behavior and cannot assume later subphase code
 - No Gmail Pub/Sub push notifications.
 - No LLM classification or extraction.
 - No raw mailbox body retention.
-- No OAuth tokens in PostgreSQL or production environment bundle.
-- No static GCP service-account key on VPS.
+- No plaintext OAuth tokens anywhere; only AES-256-GCM ciphertext in the
+  dedicated token-vault database.
+- No GCP compute (Cloud Run, Cloud Functions, or any always-on service) for
+  Mailbox Broker; no GCP identity of any kind on the broker container.
 - No automatic duplicate merge.
 - No automatic cross-scope routing without authorized review.
 - No changes to transitional `expense-service` or `frontend/web`.
@@ -583,5 +595,5 @@ Each plan ships working, testable behavior and cannot assume later subphase code
   credential revocation.
 - Gmail synchronization guide (updated 2026-09-10): full sync,
   `users.history.list`, and HTTP 404 recovery for expired history IDs.
-- Google Cloud Node.js Secret Manager client: per-secret version lifecycle and
-  ambient managed identity.
+- PostgreSQL pgcrypto / Node `crypto`: AES-256-GCM authenticated encryption
+  patterns for the token vault.

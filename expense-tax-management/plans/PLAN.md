@@ -1,12 +1,12 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D remains on the product roadmap.
-> **Last updated:** 2026-09-24
+> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D plans revised to match `ARCHITECTURE.md` and ready for 3D-A.
+> **Last updated:** 2026-10-02
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 
 ## Handoff
 
-- Runtime migration Task 5 merged through PR #11; Task 6 shared Temporal source is in PR review. Production activation remains operator-only. Phase 3C status reconciled against merged code; 3D plans must be revised to match `ARCHITECTURE.md` before implementation.
+- Runtime migration Task 5 merged through PR #11; Task 6 shared Temporal source is in PR review. Production activation remains operator-only. Phase 3C status reconciled against merged code; 3D-A/B/C plans revised (2026-10-02) to target the VPS container broker, PostgreSQL token vault, and TypeScript workflow worker. 3D workflows run only on the TypeScript worker, so production activation of 3D-B/C requires runtime migration Task 7 cutover; 3D-A source can merge to `dev` earlier.
 - Execute Phase 3D-A, Phase 3D-B, then Phase 3D-C only after Phase 3C completes.
 - Work on `feature/toby` from current `origin/dev`; create a separate worktree only when explicitly requested.
 - Merge only through a pull request to protected `dev`; required quality CI must pass. Integration CI is advisory and must be reported when red.
@@ -67,7 +67,7 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 | Parallel | **TypeScript Temporal worker migration** | Tasks 1-5 merged; Task 6 shared Temporal source locally verified, awaiting PR; no production cutover | [migration plan](sub-plans/runtime-typescript-temporal-migration.md) / [historical handoff](HANDOFF.md) |
 | Parallel | **Local Clerk development bootstrap** | Development credentials and M2M checks complete; local sign-in, webhook, and scoped data flow pending | [sub-plan](sub-plans/local-clerk-development-bootstrap.md) |
 | 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
-| 2 | **3D-A - Mailbox broker and connection lifecycle** | Blocked by 3C | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
+| 2 | **3D-A - Mailbox broker and connection lifecycle** | Plan revised; ready | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
 | 3 | **3D-B - Mailbox discovery and review** | Blocked by 3D-A | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
 | 4 | **3D-C - Mailbox ingestion and provenance** | Blocked by 3D-B | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
 | Later | **6A/6B/6C - SQL, semantic, and AI search** | Deferred; replan before execution | `plans/sub-plans/phase-6*.md` |
@@ -77,10 +77,12 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 ## Required Sequence
 
 1. Phase 3C creates App migration `016` and `ExpenseEnrichmentWorkflow`.
-2. Phase 3D-A creates mailbox migration `017` and dedicated scale-to-zero Cloud Run broker.
-3. Phase 3D-B creates discovery migration `018` and opaque Temporal discovery orchestration.
-4. Phase 3D-C creates ingestion migration `019` and direct broker-to-App materialization.
-5. Production rollout for Phase 3C/3D requires separate release planning and explicit deployment approval.
+2. Runtime migration Task 7 Stage A takes App migration `017`.
+3. Phase 3D-A creates mailbox migration `018` and a VPS-container mailbox broker in the Expense production Compose, with a dedicated PostgreSQL token-vault database/roles.
+4. Phase 3D-B creates discovery migration `019` and opaque Temporal discovery orchestration on the TypeScript workflow worker.
+5. Phase 3D-C creates ingestion migration `020` and direct broker-to-App materialization.
+6. 3D-A source may merge to `dev` once Phase 3C is in; production activation of 3D-B/C requires runtime migration Task 7 cutover (`sub-plans/runtime-typescript-temporal-migration.md`), since 3D workflows run only on the TypeScript worker.
+7. Production rollout for Phase 3C/3D requires separate release planning and explicit deployment approval.
 
 ## Remaining-Phase Constraints
 
@@ -89,10 +91,10 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 - Tax automation suggests category only, never deductible percentage, filing treatment, or reviewed status.
 - Phase 3D supports Gmail first through a provider adapter; Outlook remains unsupported until separately implemented.
 - Gmail scope is exactly `https://www.googleapis.com/auth/gmail.readonly`.
-- OAuth tokens live only in broker-managed Secret Manager versions. They never enter PostgreSQL, Temporal history, browsers, logs, or VPS files.
+- OAuth refresh tokens are stored as AES-256-GCM ciphertext in a dedicated PostgreSQL token-vault database. Plaintext tokens never enter Temporal history, browsers, logs, or VPS files, and exist only in broker memory.
 - Mailbox attachment bytes and provider metadata bypass Temporal; workflows carry opaque IDs and counts only.
 - Phase 3B duplicate candidates remain pending review and never auto-merge.
-- Cloud Run broker uses managed identity and `min-instances=0`; no static GCP key.
+- Mailbox broker runs as a VPS container in the Expense production Compose; no new GCP compute, no static GCP key.
 
 ## Production Snapshot
 
