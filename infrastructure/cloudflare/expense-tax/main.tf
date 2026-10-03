@@ -61,6 +61,16 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "expense_tax" {
         service  = "http://127.0.0.1:7303"
       },
       {
+        hostname = var.mailbox_hostname
+        path     = "/oauth/google/callback"
+        service  = "http://127.0.0.1:8300"
+      },
+      {
+        hostname = var.mailbox_hostname
+        path     = "/oauth/google/begin"
+        service  = "http://127.0.0.1:8300"
+      },
+      {
         service = "http_status:404"
       },
     ]
@@ -74,6 +84,7 @@ locals {
     capture = var.capture_hostname
     office  = var.office_hostname
     foundry = var.foundry_hostname
+    mailbox = var.mailbox_hostname
   }
 }
 
