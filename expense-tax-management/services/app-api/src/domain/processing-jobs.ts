@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
   MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   JobReferenceV1Schema,
@@ -12,7 +13,7 @@ import {
   type ProcessingJobStatus,
   type WorkflowType,
 } from "@expense-tax/contracts";
-import { type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 
 import type { AppDatabase } from "../database/types.js";
 import type { TemporalWorkflowStarter } from "../temporal/client.js";
@@ -202,6 +203,86 @@ async function requireJobForUpdate(
   return row;
 }
 
+/** Phase 3D-C Task 5 gap closure 2 -- the two mailbox job types whose
+ * terminal failure can surface onto the candidate they target. */
+const MAILBOX_CANDIDATE_JOB_WORKFLOW_TYPES = new Set<string>([
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+]);
+
+/**
+ * Phase 3D-C Task 5 gap closure 2 (controller ruling) -- called from BOTH
+ * submitResult's and recordStatusUpdate's own FAILED branches (the two
+ * routes a mailbox job can reach terminal FAILED through: submitResult
+ * via the legacy "status:FAILED result" shape, recordStatusUpdate via the
+ * new combined activities' plain status-only ocr_mark_failed callback).
+ *
+ * Ruling (multi-attachment rule, spec-consistent): a candidate fails only
+ * once EVERY mailbox job targeting it (the one MailboxMaterializeWorkflow
+ * job, plus zero or more per-attachment MailboxOcrReceiptWorkflow jobs)
+ * has reached a terminal state with none of them having succeeded.
+ * - If the candidate's own status is no longer 'queued', a sibling
+ *   already materialized it (recordConnectedMailboxEvidenceInTransaction's
+ *   success path flips status away from 'queued' as its own first step)
+ *   -- a later sibling's failure must never overwrite that "processed"
+ *   result. This is "partial success records processed [...]": the
+ *   candidate's own processing_jobs rows (queryable by
+ *   input_params->>'mailboxCandidateId') are the per-attempt record of
+ *   which attachment succeeded/failed; no separate counts column is
+ *   added (smallest correct diff -- the jobs table already is that
+ *   record).
+ * - If the candidate is still 'queued' and every OTHER mailbox job for it
+ *   (materialize or per-attachment OCR) has ALSO already reached
+ *   SUCCEEDED/FAILED, the candidate fails now -- this is both "the
+ *   materialize job itself failed" (no sibling OCR jobs were ever
+ *   created) and "every attachment OCR job failed" (materialize
+ *   succeeded, created N sibling jobs, this is the last one to fail).
+ * - Otherwise (queued, but a sibling is still in flight) -- wait; the
+ *   next sibling to reach a terminal state re-runs this same check.
+ *
+ * Forward-only/idempotent: only ever moves 'queued' -> 'failed' (a legal
+ * forward move in the application-level status ordering every other
+ * review-action transition already respects -- no database trigger
+ * restricts app.mailbox_candidates.status transitions directly), gated
+ * on the exact current status in the UPDATE's own WHERE clause so a
+ * concurrent resolver can never race it into double-applying.
+ */
+async function maybeFailMailboxCandidateInTransaction(
+  transaction: Transaction<AppDatabase>,
+  job: Pick<ProcessingJobRow, "id" | "workflow_type" | "input_params">,
+): Promise<void> {
+  if (!MAILBOX_CANDIDATE_JOB_WORKFLOW_TYPES.has(job.workflow_type)) return;
+  const candidateId = (job.input_params as Record<string, unknown> | null)?.mailboxCandidateId;
+  if (typeof candidateId !== "string") return;
+
+  const candidate = await transaction
+    .selectFrom("app.mailbox_candidates")
+    .select(["status"])
+    .where("id", "=", candidateId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!candidate || candidate.status !== "queued") return;
+
+  const outstanding = await transaction
+    .selectFrom("app.processing_jobs")
+    .select((eb) => eb.fn.countAll<string>().as("count"))
+    .where("id", "!=", job.id)
+    .where("status", "not in", ["SUCCEEDED", "FAILED"])
+    .where(sql<string>`input_params ->> 'mailboxCandidateId'`, "=", candidateId)
+    .executeTakeFirstOrThrow();
+  if (Number(outstanding.count) > 0) return;
+
+  const errorCode = job.workflow_type === MAILBOX_MATERIALIZE_WORKFLOW_TYPE
+    ? "MAILBOX_MATERIALIZE_FAILED"
+    : "OCR_EXTRACTION_FAILED";
+  await transaction
+    .updateTable("app.mailbox_candidates")
+    .set({ status: "failed", error_code: errorCode, updated_at: new Date() })
+    .where("id", "=", candidateId)
+    .where("status", "=", "queued")
+    .execute();
+}
+
 export function createProcessingJobsDomain(
   database: Kysely<AppDatabase>,
   temporalStarter: TemporalWorkflowStarter,
@@ -320,6 +401,9 @@ export function createProcessingJobsDomain(
               .where("id", "=", input.jobId)
               .returningAll()
               .executeTakeFirstOrThrow();
+            if (input.request.status === "FAILED") {
+              await maybeFailMailboxCandidateInTransaction(transaction, job);
+            }
             await recordAuditEvent(transaction, {
               tenantId: job.tenant_id,
               actorServicePrincipal: input.actorServicePrincipal,
@@ -390,30 +474,15 @@ export function createProcessingJobsDomain(
                       requestId: input.requestId,
                     });
             }
-            // Mailbox OCR extraction failure: the candidate never advances
-            // past 'queued' on its own otherwise. No expense/provenance is
-            // created (same as the legacy path); this just surfaces the
-            // failure back onto the candidate so a reviewer isn't left
-            // waiting on a 'queued' candidate forever.
-            if (
-              input.request.status === "FAILED" &&
-              job.workflow_type === MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE
-            ) {
-              const candidateId = (
-                job.input_params as Record<string, unknown> | null
-              )?.mailboxCandidateId;
-              if (typeof candidateId === "string") {
-                await transaction
-                  .updateTable("app.mailbox_candidates")
-                  .set({
-                    status: "failed",
-                    error_code: "OCR_EXTRACTION_FAILED",
-                    updated_at: new Date(),
-                  })
-                  .where("id", "=", candidateId)
-                  .where("status", "=", "queued")
-                  .execute();
-              }
+            // Mailbox job failure (materialize or per-attachment OCR): the
+            // candidate never advances past 'queued' on its own otherwise.
+            // No expense/provenance is created (same as the legacy path);
+            // maybeFailMailboxCandidateInTransaction only surfaces the
+            // failure onto the candidate once every sibling mailbox job
+            // has also reached a terminal state with none succeeding (see
+            // its own doc comment for the full multi-attachment rule).
+            if (input.request.status === "FAILED") {
+              await maybeFailMailboxCandidateInTransaction(transaction, job);
             }
             const now = new Date();
             const updated = await transaction

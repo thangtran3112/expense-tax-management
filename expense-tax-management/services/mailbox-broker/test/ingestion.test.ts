@@ -11,10 +11,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AttachmentBoundError,
+  buildMaterializeDependencies,
   materializeCandidate,
   pumpBoundedAttachment,
   streamAttachment,
   type MaterializeCandidateDependencies,
+  type MaterializeGmailClientProvider,
 } from "../src/ingestion.js";
 
 const PDF_MAGIC = Buffer.from("%PDF-1.4\nrest of a tiny pdf body", "latin1");
@@ -456,5 +458,20 @@ describe("materializeCandidate", () => {
 
     expect(JSON.stringify(captured)).not.toContain("<html>");
     expect(JSON.stringify(captured)).not.toContain("<script");
+  });
+});
+
+describe("buildMaterializeDependencies", () => {
+  it("wires the real appClient and delegates getGmailClient to the provider's getGmailDiscoveryClient, unchanged", async () => {
+    const appClient = { tag: "the-real-app-client" } as unknown as MaterializeCandidateDependencies["appClient"];
+    const gmailClient = { tag: "the-real-gmail-client" };
+    const getGmailDiscoveryClient = vi.fn(async () => gmailClient as never);
+    const gmailClientProvider: MaterializeGmailClientProvider = { getGmailDiscoveryClient };
+
+    const deps = buildMaterializeDependencies(appClient, gmailClientProvider);
+
+    expect(deps.appClient).toBe(appClient);
+    await expect(deps.getGmailClient("connection-1")).resolves.toBe(gmailClient);
+    expect(getGmailDiscoveryClient).toHaveBeenCalledWith("connection-1");
   });
 });

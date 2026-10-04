@@ -245,6 +245,45 @@ describe.skipIf(!requested)(
       `);
     }
 
+    /**
+     * Phase 3D-C Task 5 gap closure 2 -- directly seeds a mailbox job row
+     * (materialize or per-attachment OCR) so tests can exercise
+     * maybeFailMailboxCandidateInTransaction (processing-jobs.ts) through
+     * the domain's own recordStatusUpdate/submitResult without needing a
+     * real Temporal worker.
+     */
+    function insertMailboxJob(
+      candidateId: string,
+      workflowType: "MailboxMaterializeWorkflow" | "MailboxOcrReceiptWorkflow",
+      status: "DISPATCHED" | "RUNNING" = "DISPATCHED",
+    ): string {
+      const jobId = randomUUID();
+      const resultSchemaVersion =
+        workflowType === "MailboxMaterializeWorkflow" ? "mailbox-materialize-v1" : "ocr-extraction-v1";
+      const targetAggregateType = workflowType === "MailboxMaterializeWorkflow" ? "mailbox_candidate" : "NULL";
+      runtimeSql(`
+        INSERT INTO app.processing_jobs (
+          id, tenant_id, personal_profile_id, workflow_type, workflow_id, task_queue,
+          dispatch_generation, dispatch_namespace, run_id, status,
+          ${workflowType === "MailboxMaterializeWorkflow" ? "target_aggregate_type, target_aggregate_id," : ""}
+          input_params, allowed_result_schema_version, version, created_at, updated_at, dispatched_at
+        ) VALUES (
+          '${jobId}', '${TENANT_ID}', '${PROFILE_ID}', '${workflowType}', 'job-${jobId}',
+          'expense-tax-processing', 1, 'expense-tax', 'fake-run-${jobId}', '${status}',
+          ${workflowType === "MailboxMaterializeWorkflow" ? `'${targetAggregateType}', '${candidateId}',` : ""}
+          '{"mailboxCandidateId": "${candidateId}"}', '${resultSchemaVersion}', 2, now(), now(), now()
+        );
+      `);
+      return jobId;
+    }
+
+    function noopStarter(): TemporalWorkflowStarter {
+      return {
+        start: async () => ({ runId: "unused" }),
+        close: async () => undefined,
+      };
+    }
+
     // ---------------------------------------------------------------- //
     // Authorization: owner / exact reviewer grants / outsider
     // ---------------------------------------------------------------- //
@@ -734,6 +773,180 @@ describe.skipIf(!requested)(
         `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}'`,
       );
       expect(jobCount).toBe("2");
+    });
+
+    // ---------------------------------------------------------------- //
+    // Phase 3D-C Task 5 gap closure 2 (controller ruling) -- candidate
+    // terminal failure on a MailboxMaterializeWorkflow/
+    // MailboxOcrReceiptWorkflow job reaching FAILED, through
+    // processing-jobs.ts's recordStatusUpdate/submitResult.
+    // ---------------------------------------------------------------- //
+
+    it("a materialize job's own terminal failure, with no sibling jobs, fails the candidate immediately (MAILBOX_MATERIALIZE_FAILED)", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const jobId = insertMailboxJob(candidateId, "MailboxMaterializeWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${jobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|MAILBOX_MATERIALIZE_FAILED");
+    });
+
+    it("one of several attachment-OCR jobs failing does NOT fail the candidate while a sibling is still in flight", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const failingJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow"); // sibling still DISPATCHED
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: failingJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${failingJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("queued|");
+    });
+
+    it("fails the candidate (OCR_EXTRACTION_FAILED) only once EVERY attachment-OCR job has failed", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const firstJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      const secondJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: firstJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${firstJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+      let row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("queued|"); // one sibling (secondJobId) still in flight
+
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: secondJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${secondJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+      row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|OCR_EXTRACTION_FAILED");
+    });
+
+    it("a sibling's success (candidate already processed) is never overwritten by a later sibling's failure", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const failingJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow"); // the "succeeded" sibling
+      // Simulate the succeeded sibling having already materialized the
+      // candidate (recordConnectedMailboxEvidenceInTransaction's own
+      // success path, exercised by mailbox-ingestion.test.ts) -- directly
+      // flip status here, since that full pipeline is out of this file's
+      // own scope.
+      runtimeSql(`UPDATE app.mailbox_candidates SET status = 'processed' WHERE id = '${candidateId}'`);
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: failingJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${failingJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("processed|");
+    });
+
+    it("submitResult's own FAILED path (the legacy result-submission shape) applies the same rule", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const jobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.submitResult({
+        jobId,
+        request: {
+          schemaVersion: 1,
+          status: "FAILED",
+          idempotencyKey: `t5g2-submit-${jobId}`,
+          expectedJobVersion: 2,
+          resultSchemaVersion: "ocr-extraction-v1",
+          result: { error: "OCR_FAILED" },
+        },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|OCR_EXTRACTION_FAILED");
+    });
+
+    it("retry on a processing-caused failure (OCR_EXTRACTION_FAILED) clears to review, same as a Gmail-transient one -- migration 019 allows no other transition out of 'failed'", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "OCR_EXTRACTION_FAILED", scopePersonal: PROFILE_ID,
+      });
+
+      const result = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+
+      expect(result.status).toBe("review");
+      expect(result.errorCode).toBeNull();
+    });
+
+    it("retry on a MAILBOX_MATERIALIZE_FAILED candidate, then ingest again, re-enqueues a fresh materialize job (full two-step recovery)", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "MAILBOX_MATERIALIZE_FAILED", scopePersonal: PROFILE_ID,
+      });
+
+      const retried = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+      expect(retried.status).toBe("review");
+
+      const reingested = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+        expectedCandidateVersion: retried.version, requestId: randomUUID(),
+      });
+      expect(reingested.status).toBe("queued");
+      expect(reingested.processingJobId).not.toBeNull();
+
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}'`,
+      );
+      expect(jobCount).toBe("1"); // no prior job existed for this candidate (seeded status directly)
+    });
+
+    it("rejects retry for a candidate failed with a non-retryable error code (neither Gmail-transient nor processing-caused)", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "ENTITLEMENT_DISABLED",
+      });
+
+      await expect(
+        domain.resolveCandidate({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+          action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
     });
   },
 );

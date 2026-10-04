@@ -80,6 +80,13 @@ export const MailboxErrorCodeV1Schema = z.enum([
   // distinct from ATTACHMENT_HASH_MISMATCH (which is the pre-persist
   // manifest check) so operators can tell the two failure modes apart.
   "ATTACHMENT_CONFIRMATION_FAILED",
+  // Phase 3D-C Task 5 gap closure 2 -- a MailboxMaterializeWorkflow job
+  // (the broker refetch/upload-grant/upload-attachment/structured-submit
+  // sequence) reached terminal FAILED with no sibling attachment-OCR job
+  // ever created (e.g. the Gmail refetch itself failed) -- distinct from
+  // OCR_EXTRACTION_FAILED (an attachment-OCR job's own failure) so
+  // operators can tell which stage failed.
+  "MAILBOX_MATERIALIZE_FAILED",
 ]);
 export type MailboxErrorCodeV1 = z.infer<typeof MailboxErrorCodeV1Schema>;
 

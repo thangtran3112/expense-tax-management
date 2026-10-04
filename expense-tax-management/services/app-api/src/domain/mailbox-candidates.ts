@@ -202,6 +202,20 @@ const TRANSIENT_MAILBOX_ERROR_CODES = new Set<MailboxErrorCodeV1>([
   "GOOGLE_UNAVAILABLE",
 ]);
 
+/**
+ * Phase 3D-C Task 5 gap closure 2 -- the two codes
+ * maybeFailMailboxCandidateInTransaction (processing-jobs.ts) ever
+ * stamps on a candidate it fails. Unlike the Gmail-transient codes above
+ * (which need re-discovery, hence retry -> 'review'), the staged
+ * candidate data behind these was never bad -- only the processing
+ * attempt failed -- so retry re-enqueues a fresh materialize job and
+ * goes straight back to 'queued', same scope, no reviewer input needed.
+ */
+const PROCESSING_TRANSIENT_MAILBOX_ERROR_CODES = new Set<MailboxErrorCodeV1>([
+  "OCR_EXTRACTION_FAILED",
+  "MAILBOX_MATERIALIZE_FAILED",
+]);
+
 function toMailboxScopeOrNull(
   row: Pick<CandidateRow, "candidate_personal_profile_id" | "candidate_business_id">,
 ): MailboxScope | null {
@@ -496,9 +510,24 @@ export function createMailboxCandidatesDomain(
           // retry
           if (candidate.status !== "failed") throw DomainError.conflict();
           const currentErrorCode = candidate.error_code as MailboxErrorCodeV1 | null;
-          if (!currentErrorCode || !TRANSIENT_MAILBOX_ERROR_CODES.has(currentErrorCode)) {
-            throw DomainError.conflict();
-          }
+          // Gap closure 2: migration 019's own terminal-immutability
+          // trigger allows exactly one transition out of 'failed' --
+          // 'failed' -> 'review', nothing else (not directly to
+          // 'queued', however tempting that shortcut looks) -- so a
+          // processing-caused failure (OCR_EXTRACTION_FAILED/
+          // MAILBOX_MATERIALIZE_FAILED) retries the exact same way a
+          // Gmail-transient one already does: clear to 'review', no job
+          // created here. The candidate data itself was never bad for
+          // either category, so the reviewer's very next action is
+          // simply `ingest` again (same scope) -- which already
+          // re-enqueues a fresh materialize job, per
+          // ensureMaterializeJobInTransaction's own terminal-FAILED
+          // supersede rule above.
+          const isRetryableErrorCode =
+            currentErrorCode !== null &&
+            (TRANSIENT_MAILBOX_ERROR_CODES.has(currentErrorCode) ||
+              PROCESSING_TRANSIENT_MAILBOX_ERROR_CODES.has(currentErrorCode));
+          if (!isRetryableErrorCode) throw DomainError.conflict();
           nextStatus = "review";
           errorCodeUpdate = null;
         }

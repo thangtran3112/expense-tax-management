@@ -28617,7 +28617,8 @@
                                   "ATTACHMENT_HASH_MISMATCH",
                                   "MALWARE_DETECTED",
                                   "OCR_EXTRACTION_FAILED",
-                                  "ATTACHMENT_CONFIRMATION_FAILED"
+                                  "ATTACHMENT_CONFIRMATION_FAILED",
+                                  "MAILBOX_MATERIALIZE_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -29255,7 +29256,8 @@
                             "ATTACHMENT_HASH_MISMATCH",
                             "MALWARE_DETECTED",
                             "OCR_EXTRACTION_FAILED",
-                            "ATTACHMENT_CONFIRMATION_FAILED"
+                            "ATTACHMENT_CONFIRMATION_FAILED",
+                            "MAILBOX_MATERIALIZE_FAILED"
                           ],
                           "type": "string"
                         },
@@ -29754,7 +29756,8 @@
                                   "ATTACHMENT_HASH_MISMATCH",
                                   "MALWARE_DETECTED",
                                   "OCR_EXTRACTION_FAILED",
-                                  "ATTACHMENT_CONFIRMATION_FAILED"
+                                  "ATTACHMENT_CONFIRMATION_FAILED",
+                                  "MAILBOX_MATERIALIZE_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -30186,7 +30189,8 @@
                                 "ATTACHMENT_HASH_MISMATCH",
                                 "MALWARE_DETECTED",
                                 "OCR_EXTRACTION_FAILED",
-                                "ATTACHMENT_CONFIRMATION_FAILED"
+                                "ATTACHMENT_CONFIRMATION_FAILED",
+                                "MAILBOX_MATERIALIZE_FAILED"
                               ],
                               "type": "string"
                             },
@@ -30501,7 +30505,8 @@
                                 "ATTACHMENT_HASH_MISMATCH",
                                 "MALWARE_DETECTED",
                                 "OCR_EXTRACTION_FAILED",
-                                "ATTACHMENT_CONFIRMATION_FAILED"
+                                "ATTACHMENT_CONFIRMATION_FAILED",
+                                "MAILBOX_MATERIALIZE_FAILED"
                               ],
                               "type": "string"
                             },

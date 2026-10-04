@@ -327,3 +327,26 @@ export async function materializeCandidate(
     ),
   };
 }
+
+/**
+ * Phase 3D-C Task 5 gap closure 2 -- production wiring seam. Anything
+ * that can mint a `MaterializeGmailClient` per connectionId (the real
+ * `createGmailMailboxProvider`'s new `getGmailDiscoveryClient`, or a test
+ * fake) satisfies this; `buildMaterializeDependencies` is the one place
+ * that assembles `MaterializeCandidateDependencies` from it plus the
+ * broker's own App client, so server.ts has no inline object literal a
+ * reviewer has to trust is wired to the real things.
+ */
+export interface MaterializeGmailClientProvider {
+  getGmailDiscoveryClient(connectionId: string): Promise<MaterializeGmailClient>;
+}
+
+export function buildMaterializeDependencies(
+  appClient: MailboxIngestionAppClient,
+  gmailClientProvider: MaterializeGmailClientProvider,
+): MaterializeCandidateDependencies {
+  return {
+    appClient,
+    getGmailClient: (connectionId) => gmailClientProvider.getGmailDiscoveryClient(connectionId),
+  };
+}

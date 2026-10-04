@@ -41,6 +41,7 @@ import {
   type GmailDiscoveryClientLike,
   type GmailMessageDetail,
 } from "./discovery.js";
+import type { MaterializeGmailClient, MaterializeGmailClientProvider } from "./ingestion.js";
 import { STRUCTURED_RECEIPT_MAX_DECODED_BYTES } from "./structured-receipt.js";
 import {
   createOAuthState,
@@ -422,7 +423,7 @@ async function rotateRefreshToken(
 
 export function createGmailMailboxProvider(
   options: GmailMailboxProviderOptions,
-): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter {
+): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter & MaterializeGmailClientProvider {
   const createClient = options.createOAuth2Client ?? defaultOAuth2ClientFactory(options);
   const fetchProfile = options.fetchProfile ?? defaultFetchProfile;
   const createDiscoveryClient = options.createGmailDiscoveryClient ?? createRealGmailDiscoveryClient;
@@ -478,6 +479,28 @@ export function createGmailMailboxProvider(
   return {
     async discover(input: DiscoveryInput): Promise<DiscoveryPageV1> {
       return discoveryEngine.discover(input);
+    },
+
+    /**
+     * Phase 3D-C Task 5 gap closure 2 -- the real per-connection Gmail
+     * client materializeCandidate (ingestion.ts) needs, built from the
+     * exact same authenticated-client plumbing `discover()` already uses
+     * above. `getMessageHtmlBody` is optional on `GmailDiscoveryClientLike`
+     * (every existing discovery fake predates it) but always present on
+     * `createRealGmailDiscoveryClient`'s real implementation; a test-only
+     * `createGmailDiscoveryClient` fake that omits it fails loudly here
+     * rather than materialize silently calling a missing method later.
+     */
+    async getGmailDiscoveryClient(connectionId): Promise<MaterializeGmailClient> {
+      const client = createDiscoveryClient(await loadOrCreateOAuth2Client(connectionId));
+      if (!client.getMessageHtmlBody) {
+        throw new Error(
+          "Gmail discovery client is missing getMessageHtmlBody (required for materialize)",
+        );
+      }
+      return client as GmailDiscoveryClientLike & {
+        getMessageHtmlBody: NonNullable<GmailDiscoveryClientLike["getMessageHtmlBody"]>;
+      };
     },
 
     async createAuthorizationUrl(input: OAuthStartInput): Promise<OAuthStartResult> {
