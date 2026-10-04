@@ -549,6 +549,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
   app.register(registerMailboxInternalRoutes, {
     mailboxScansDomain,
+    processingJobsDomain,
     ...(options.config.clerk?.mailboxBrokerServiceSubject
       ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
       : {}),

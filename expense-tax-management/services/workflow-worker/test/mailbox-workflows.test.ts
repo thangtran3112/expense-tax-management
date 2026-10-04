@@ -414,16 +414,16 @@ it("MailboxMaterializeWorkflow marks running, runs the combined materialize acti
       taskQueue: TASK_QUEUE,
       workflowsPath,
       activities: {
-        async mark_running(input: unknown) {
-          calls.push(["mark_running", input]);
+        async mailbox_mark_running(input: unknown) {
+          calls.push(["mailbox_mark_running", input]);
           return 2;
         },
         async mailbox_materialize_job(input: unknown) {
           calls.push(["mailbox_materialize_job", input]);
           return 3;
         },
-        async ocr_mark_failed(input: unknown) {
-          calls.push(["ocr_mark_failed", input]);
+        async mailbox_mark_failed(input: unknown) {
+          calls.push(["mailbox_mark_failed", input]);
           return 4;
         },
       },
@@ -442,7 +442,7 @@ it("MailboxMaterializeWorkflow marks running, runs the combined materialize acti
       }),
     );
     expect(calls).toEqual([
-      ["mark_running", { jobReference, expectedJobVersion: 2 }],
+      ["mailbox_mark_running", { jobReference, expectedJobVersion: 2 }],
       ["mailbox_materialize_job", { jobReference, expectedJobVersion: 2 }],
     ]);
     expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
@@ -462,15 +462,15 @@ it("MailboxMaterializeWorkflow marks the job failed (best-effort) when the combi
       taskQueue: TASK_QUEUE,
       workflowsPath,
       activities: {
-        async mark_running() {
+        async mailbox_mark_running() {
           return 2;
         },
         async mailbox_materialize_job() {
           const { ApplicationFailure } = await import("@temporalio/activity");
           throw ApplicationFailure.nonRetryable("broker call failed", "MailboxMaterializeNonRetryable");
         },
-        async ocr_mark_failed(input: unknown) {
-          calls.push(["ocr_mark_failed", input]);
+        async mailbox_mark_failed(input: unknown) {
+          calls.push(["mailbox_mark_failed", input]);
           return 5;
         },
       },
@@ -490,7 +490,7 @@ it("MailboxMaterializeWorkflow marks the job failed (best-effort) when the combi
     );
     expect(calls).toEqual([
       [
-        "ocr_mark_failed",
+        "mailbox_mark_failed",
         {
           jobReference,
           expectedJobVersion: 2,

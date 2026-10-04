@@ -210,23 +210,33 @@ export async function MailboxOcrReceiptWorkflow(jobReference: JobReferenceV1): P
  * final opaque MailboxMaterializationResultV1 ever cross the boundary.
  */
 interface MailboxMaterializeActivities {
+  mailbox_mark_running(input: { jobReference: JobReferenceV1; expectedJobVersion: number }): Promise<number>;
   mailbox_materialize_job(input: { jobReference: JobReferenceV1; expectedJobVersion: number }): Promise<number>;
+  mailbox_mark_failed(input: {
+    jobReference: JobReferenceV1;
+    expectedJobVersion: number;
+    message: string;
+  }): Promise<number>;
 }
 
-const { mailbox_materialize_job } = proxyActivities<MailboxMaterializeActivities>({
+const mailboxMaterialize = proxyActivities<MailboxMaterializeActivities>({
   startToCloseTimeout: "60 seconds",
   retry: { maximumAttempts: 3 },
 });
 
 export async function MailboxMaterializeWorkflow(jobReference: JobReferenceV1): Promise<void> {
   const ref = requireJobReference(jobReference, MAILBOX_MATERIALIZE_WORKFLOW_TYPE);
-  const version = await mailboxOcr.mark_running({ jobReference: ref, expectedJobVersion: 2 });
+  // Fix round 1 (review Important #1): every App callback below goes
+  // through mailboxMaterialize's own mailbox-scoped identity activities
+  // -- never mailboxOcr's generic ones (reserved for
+  // MailboxOcrReceiptWorkflow only).
+  const version = await mailboxMaterialize.mailbox_mark_running({ jobReference: ref, expectedJobVersion: 2 });
   try {
-    await mailbox_materialize_job({ jobReference: ref, expectedJobVersion: version });
+    await mailboxMaterialize.mailbox_materialize_job({ jobReference: ref, expectedJobVersion: version });
   } catch (error) {
     if (isCancellation(error)) throw error;
     try {
-      await mailboxOcr.ocr_mark_failed({
+      await mailboxMaterialize.mailbox_mark_failed({
         jobReference: ref,
         expectedJobVersion: version,
         message: "MAILBOX_MATERIALIZE_FAILED: broker materialize call or result submission error",

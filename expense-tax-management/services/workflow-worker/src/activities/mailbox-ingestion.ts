@@ -15,15 +15,19 @@
  *   `workflow-worker-mailbox` identity: `submitResult`/`getOcrInput`/
  *   `downloadFile` are ordinary job routes, not mailbox-specific ones, and
  *   need no mailbox credentials at all.
- * - `mailbox_materialize_job` (createMailboxMaterializeActivities): the
- *   combined materialize pipeline -- read-only candidateId resolution
- *   (generic App identity), the broker materialize call (mailbox-scoped
- *   `workflow-worker-mailbox` identity, scope `mailbox:materialize`,
- *   already provisioned on this client's broker token provider), then
- *   submits the opaque MailboxMaterializationResultV1 back to App via the
- *   same generic job-result route every other job type uses. Needs BOTH
- *   dependencies -- generic `appApi` for the job-status/result calls,
- *   mailbox-scoped `mailboxClient` for the broker call.
+ * - `mailbox_mark_running`/`mailbox_materialize_job`/`mailbox_mark_failed`
+ *   (createMailboxMaterializeActivities): fix round 1 (review Important
+ *   #1) -- every one of MailboxMaterializeWorkflow's App callbacks (job-
+ *   status transitions AND the materialize-input read AND the result
+ *   submit) goes through `mailboxClient` exclusively, the SAME mailbox-
+ *   scoped `workflow-worker-mailbox` identity (scope `mailbox:
+ *   materialize`) the broker materialize call already used, hitting App's
+ *   mailbox-scoped routes (routes/mailbox-internal.ts) -- never the
+ *   generic `appApi`/`jobs:write` identity routes/jobs.ts's routes use.
+ *   `mailbox_materialize_job` mutates the job's own status only on its
+ *   own success (the result-submit call, last); safe for Temporal to
+ *   retry the entire activity on any earlier failure without a stale
+ *   expectedJobVersion, same invariant `mailbox_ocr_receipt` relies on.
  */
 import { createHash } from "node:crypto";
 
@@ -116,13 +120,40 @@ export function createMailboxOcrActivities({ appApi, extractReceipt }: MailboxOc
   };
 }
 
+function throwMailboxClientFailure(error: unknown, retryableType: string, nonRetryableType: string): never {
+  if (error instanceof MailboxClientError) {
+    const message = `mailbox client request failed: ${error.code}`;
+    throw TRANSIENT_CLIENT_ERROR_CODES.has(error.code)
+      ? ApplicationFailure.retryable(message, retryableType)
+      : ApplicationFailure.nonRetryable(message, nonRetryableType);
+  }
+  throw error;
+}
+
 export interface MailboxMaterializeActivityDependencies {
-  readonly appApi: AppApiClient;
   readonly mailboxClient: MailboxAppApiClient;
 }
 
-export function createMailboxMaterializeActivities({ appApi, mailboxClient }: MailboxMaterializeActivityDependencies) {
+export function createMailboxMaterializeActivities({ mailboxClient }: MailboxMaterializeActivityDependencies) {
   return {
+    async mailbox_mark_running(input: {
+      jobReference: JobReferenceV1;
+      expectedJobVersion: number;
+    }): Promise<number> {
+      const jobId = input.jobReference.jobId;
+      try {
+        const job = await mailboxClient.mailboxJobStatus(jobId, {
+          schemaVersion: 1,
+          status: "RUNNING",
+          idempotencyKey: `${jobId}:status:running`,
+          expectedJobVersion: input.expectedJobVersion,
+        });
+        return job.version;
+      } catch (error) {
+        throwMailboxClientFailure(error, "MailboxMarkRunningTransient", "MailboxMarkRunningNonRetryable");
+      }
+    },
+
     /**
      * One call: resolve candidateId (read-only, retry-safe), call the
      * broker's materialize route by opaque candidateId (operationId =
@@ -140,27 +171,20 @@ export function createMailboxMaterializeActivities({ appApi, mailboxClient }: Ma
 
       let candidateId: string;
       try {
-        candidateId = (await appApi.getMaterializeInput(jobId)).candidateId;
+        candidateId = (await mailboxClient.mailboxJobMaterializeInput(jobId)).candidateId;
       } catch (error) {
-        throwAppApiFailure(error, "MailboxMaterializeInputTransient", "MailboxMaterializeInputNonRetryable");
+        throwMailboxClientFailure(error, "MailboxMaterializeInputTransient", "MailboxMaterializeInputNonRetryable");
       }
 
       let result: MailboxMaterializationResultV1;
       try {
         result = await mailboxClient.materializeCandidate({ candidateId, operationId: jobId });
       } catch (error) {
-        if (error instanceof MailboxClientError) {
-          const message = `mailbox client request failed: ${error.code}`;
-          throw TRANSIENT_CLIENT_ERROR_CODES.has(error.code)
-            ? ApplicationFailure.retryable(message, "MailboxMaterializeTransient")
-            : ApplicationFailure.nonRetryable(message, "MailboxMaterializeNonRetryable");
-        }
-        throw error;
+        throwMailboxClientFailure(error, "MailboxMaterializeTransient", "MailboxMaterializeNonRetryable");
       }
 
-      let job;
       try {
-        job = await appApi.submitResult(jobId, {
+        const job = await mailboxClient.mailboxJobResult(jobId, {
           schemaVersion: 1,
           status: "SUCCEEDED",
           idempotencyKey: `${jobId}:materialize:result:succeeded`,
@@ -168,10 +192,30 @@ export function createMailboxMaterializeActivities({ appApi, mailboxClient }: Ma
           resultSchemaVersion: "mailbox-materialize-v1",
           result,
         });
+        return job.version;
       } catch (error) {
-        throwAppApiFailure(error, "MailboxMaterializeSubmitTransient", "MailboxMaterializeSubmitNonRetryable");
+        throwMailboxClientFailure(error, "MailboxMaterializeSubmitTransient", "MailboxMaterializeSubmitNonRetryable");
       }
-      return job.version;
+    },
+
+    async mailbox_mark_failed(input: {
+      jobReference: JobReferenceV1;
+      expectedJobVersion: number;
+      message: string;
+    }): Promise<number> {
+      const jobId = input.jobReference.jobId;
+      try {
+        const job = await mailboxClient.mailboxJobStatus(jobId, {
+          schemaVersion: 1,
+          status: "FAILED",
+          idempotencyKey: `${jobId}:materialize:status:failed`,
+          expectedJobVersion: input.expectedJobVersion,
+          message: input.message,
+        });
+        return job.version;
+      } catch (error) {
+        throwMailboxClientFailure(error, "MailboxMarkFailedTransient", "MailboxMarkFailedNonRetryable");
+      }
     },
   };
 }

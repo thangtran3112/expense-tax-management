@@ -36,6 +36,7 @@ import { createTokenVerifier } from "../src/auth/verifier.js";
 import { createAppConfig } from "../src/config.js";
 import type { MailboxConnectionsDomain } from "../src/domain/mailbox-connections.js";
 import type { MailboxScansDomain } from "../src/domain/mailbox-scans.js";
+import type { ProcessingJobsDomain } from "../src/domain/processing-jobs.js";
 
 const TENANT_ISSUER = "https://identity.test";
 const TENANT_AUDIENCE = "expense-app";
@@ -77,6 +78,8 @@ const TENANT_ID = "22222222-2222-4222-8222-222222222222";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const CONNECTION_ID = randomUUID();
 const ATTEMPT_ID = randomUUID();
+const JOB_ID = randomUUID();
+const MATERIALIZE_CANDIDATE_ID = randomUUID();
 
 type KeyPair = Awaited<ReturnType<typeof generateKeyPair>>;
 
@@ -220,6 +223,45 @@ function createFakeScansDomain(): MailboxScansDomain {
   };
 }
 
+/**
+ * Phase 3D-C Task 5 fix round 1 -- fake backing the three new
+ * routes/mailbox-internal.ts job-callback routes (materialize-input/
+ * status/result), same per-file fake-domain-construction convention as
+ * createFakeDomain/createFakeScansDomain above.
+ */
+function createFakeProcessingJobsDomain(): ProcessingJobsDomain {
+  const job = {
+    id: JOB_ID,
+    tenantId: TENANT_ID,
+    personalProfileId: USER_ID,
+    businessId: null,
+    workflowType: "MailboxMaterializeWorkflow",
+    workflowId: `job-${JOB_ID}`,
+    taskQueue: "expense-tax-processing",
+    runId: "fake-run",
+    status: "RUNNING" as const,
+    targetAggregateType: "mailbox_candidate",
+    targetAggregateId: MATERIALIZE_CANDIDATE_ID,
+    expectedAggregateVersion: null,
+    inputParams: { mailboxCandidateId: MATERIALIZE_CANDIDATE_ID },
+    allowedResultSchemaVersion: "mailbox-materialize-v1",
+    result: null,
+    errorMessage: null,
+    version: 2,
+    createdAt: "2026-10-03T00:00:00.000Z",
+    updatedAt: "2026-10-03T00:00:00.000Z",
+    dispatchedAt: "2026-10-03T00:00:00.000Z",
+    completedAt: null,
+  };
+  return {
+    createJob: vi.fn(),
+    dispatchPendingJobs: vi.fn(async () => ({ dispatchedCount: 0 })),
+    getJob: vi.fn(async () => job),
+    recordStatusUpdate: vi.fn(async () => ({ statusCode: 200 as const, body: { ...job, status: "RUNNING" as const }, replayed: false })),
+    submitResult: vi.fn(async () => ({ statusCode: 200 as const, body: { ...job, status: "SUCCEEDED" as const }, replayed: false })),
+  };
+}
+
 const startPayload = () => ({
   scope: { kind: "personal", profileId: USER_ID },
   redirectOrigin: "https://expense-office.test",
@@ -257,6 +299,7 @@ describe("mailbox routes — real registration through buildApp", () => {
   function createTestApp(envOverrides: Record<string, string> = {}) {
     const mailboxConnectionsDomain = createFakeDomain();
     const mailboxScansDomain = createFakeScansDomain();
+    const processingJobsDomain = createFakeProcessingJobsDomain();
     const tenantVerifier = createTokenVerifier({
       tokenType: "tenant",
       issuer: TENANT_ISSUER,
@@ -285,9 +328,10 @@ describe("mailbox routes — real registration through buildApp", () => {
       },
       mailboxConnectionsDomain,
       mailboxScansDomain,
+      processingJobsDomain,
     });
     apps.add(app);
-    return { app, mailboxConnectionsDomain, mailboxScansDomain };
+    return { app, mailboxConnectionsDomain, mailboxScansDomain, processingJobsDomain };
   }
 
   async function postStart(app: ReturnType<typeof buildApp>, authorization?: string) {
@@ -323,6 +367,39 @@ describe("mailbox routes — real registration through buildApp", () => {
       url: `/internal/v1/mailbox/oauth/attempts/${ATTEMPT_ID}/consume`,
       headers: authorization !== undefined ? { authorization } : {},
       payload: consumePayload(),
+    });
+  }
+
+  async function getMaterializeInput(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "GET",
+      url: `/internal/v1/mailbox/jobs/${JOB_ID}/materialize-input`,
+      headers: authorization !== undefined ? { authorization } : {},
+    });
+  }
+
+  async function postMailboxJobStatus(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/jobs/${JOB_ID}/status`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: { schemaVersion: 1, status: "RUNNING", idempotencyKey: `t5fr1-${JOB_ID}`, expectedJobVersion: 2 },
+    });
+  }
+
+  async function postMailboxJobResult(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/jobs/${JOB_ID}/result`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: {
+        schemaVersion: 1,
+        status: "SUCCEEDED",
+        idempotencyKey: `t5fr1-result-${JOB_ID}`,
+        expectedJobVersion: 2,
+        resultSchemaVersion: "mailbox-materialize-v1",
+        result: { candidateId: MATERIALIZE_CANDIDATE_ID, status: "queued" },
+      },
     });
   }
 
@@ -622,5 +699,108 @@ describe("mailbox routes — real registration through buildApp", () => {
       expect(response.statusCode).toBe(403);
       expect(mailboxScansDomain.finalizeScanRun).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * Phase 3D-C Task 5 fix round 1 (review Important #1 + #4) -- the
+   * three new mailbox-scoped job-callback routes (materialize-input/
+   * status/result). Guarded by the worker's own service principal
+   * (subject "workflow-worker-mailbox", scope "mailbox:materialize" --
+   * distinct from scheduled-scans/finalize's "mailbox:discover" above),
+   * same real-signed-fixture rejection matrix as every other describe
+   * block in this file: no token, a validly-signed tenant token (wrong
+   * issuer/audience/token type simultaneously), an attacker-signed
+   * service token (wrong signature), the broker's own correctly-issued
+   * token (wrong subject), and the correct subject missing the required
+   * scope.
+   */
+  describe("internal mailbox/jobs/:jobId/{materialize-input,status,result} (Task 5 fix round 1)", () => {
+    async function materializeWorkerToken(overrides: Partial<SignOptions> = {}): Promise<string> {
+      return signToken({
+        key: serviceKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: WORKER_SUBJECT,
+        scopes: ["mailbox:materialize"],
+        tokenType: "service",
+        ...overrides,
+      });
+    }
+
+    const routes: readonly {
+      readonly name: string;
+      readonly call: (app: ReturnType<typeof buildApp>, authorization?: string) => ReturnType<typeof getMaterializeInput>;
+      readonly domainMethod: (domain: ProcessingJobsDomain) => ReturnType<typeof vi.fn>;
+    }[] = [
+      {
+        name: "GET materialize-input",
+        call: getMaterializeInput,
+        domainMethod: (domain) => domain.getJob as ReturnType<typeof vi.fn>,
+      },
+      {
+        name: "POST status",
+        call: postMailboxJobStatus,
+        domainMethod: (domain) => domain.recordStatusUpdate as ReturnType<typeof vi.fn>,
+      },
+      {
+        name: "POST result",
+        call: postMailboxJobResult,
+        domainMethod: (domain) => domain.submitResult as ReturnType<typeof vi.fn>,
+      },
+    ];
+
+    for (const route of routes) {
+      describe(route.name, () => {
+        it("is reachable with the worker's own validly-signed mailbox:materialize principal", async () => {
+          const { app, processingJobsDomain } = createTestApp();
+          const response = await route.call(app, `Bearer ${await materializeWorkerToken()}`);
+          expect(response.statusCode).toBe(200);
+          expect(route.domainMethod(processingJobsDomain)).toHaveBeenCalledOnce();
+        });
+
+        it("rejects a request with no token", async () => {
+          const { app } = createTestApp();
+          expect((await route.call(app)).statusCode).toBe(401);
+        });
+
+        it("rejects a validly-signed tenant token (wrong issuer/audience/token type)", async () => {
+          const { app, processingJobsDomain } = createTestApp();
+          const token = await signToken({ key: tenantKeys.privateKey });
+          const response = await route.call(app, `Bearer ${token}`);
+          expect(response.statusCode).toBe(401);
+          expect(route.domainMethod(processingJobsDomain)).not.toHaveBeenCalled();
+        });
+
+        it("rejects a service token signed by an attacker holding a different key", async () => {
+          const { app, processingJobsDomain } = createTestApp();
+          const token = await signToken({
+            key: attackerKeys.privateKey,
+            issuer: SERVICE_ISSUER,
+            audience: SERVICE_AUDIENCE,
+            subject: WORKER_SUBJECT,
+            scopes: ["mailbox:materialize"],
+            tokenType: "service",
+          });
+          expect((await route.call(app, `Bearer ${token}`)).statusCode).toBe(401);
+          expect(route.domainMethod(processingJobsDomain)).not.toHaveBeenCalled();
+        });
+
+        it("rejects the broker's own correctly-issued token (wrong subject)", async () => {
+          const { app, processingJobsDomain } = createTestApp();
+          const token = await materializeWorkerToken({ subject: BROKER_SUBJECT, scopes: ["mailbox:write"] });
+          const response = await route.call(app, `Bearer ${token}`);
+          expect(response.statusCode).toBe(403);
+          expect(route.domainMethod(processingJobsDomain)).not.toHaveBeenCalled();
+        });
+
+        it("rejects the correct subject missing the required mailbox:materialize scope (e.g. mailbox:discover only)", async () => {
+          const { app, processingJobsDomain } = createTestApp();
+          const token = await materializeWorkerToken({ scopes: ["mailbox:discover"] });
+          const response = await route.call(app, `Bearer ${token}`);
+          expect(response.statusCode).toBe(403);
+          expect(route.domainMethod(processingJobsDomain)).not.toHaveBeenCalled();
+        });
+      });
+    }
   });
 });

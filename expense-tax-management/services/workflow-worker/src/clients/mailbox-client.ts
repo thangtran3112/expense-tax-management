@@ -20,8 +20,12 @@
  */
 import {
   MailboxMaterializationResultV1Schema,
+  ProcessingJobSchema,
   type DiscoveryPageV1,
+  type JobResultSubmitRequestV1,
+  type JobStatusUpdateRequestV1,
   type MailboxMaterializationResultV1,
+  type ProcessingJob,
 } from "@expense-tax/contracts";
 import { z } from "zod";
 
@@ -106,6 +110,12 @@ const FinalizeScanResultSchema = z.object({
   leaseReleased: z.boolean(),
 });
 
+/**
+ * Phase 3D-C Task 5 fix round 1 (review Important #1) -- same local-
+ * schema convention as DiscoveryPageV1Schema above.
+ */
+const MaterializeInputResultSchema = z.object({ candidateId: z.string() });
+
 export interface MailboxAppApiClient {
   /** Mints (and caches) a Clerk M2M token scoped to the worker's mailbox identity, audience = App API. */
   mintAppToken(): Promise<string>;
@@ -153,6 +163,17 @@ export interface MailboxAppApiClient {
     readonly candidateId: string;
     readonly operationId: string;
   }): Promise<MailboxMaterializationResultV1>;
+  /**
+   * Phase 3D-C Task 5 fix round 1 (review Important #1) -- the three
+   * calls MailboxMaterializeWorkflow's combined activity makes against
+   * App, all under this client's mailbox-scoped `workflow-worker-
+   * mailbox` identity (never the generic worker identity
+   * clients/app-api.ts uses) and App's mailbox-scoped routes
+   * (routes/mailbox-internal.ts), never routes/jobs.ts's generic ones.
+   */
+  mailboxJobMaterializeInput(jobId: string): Promise<{ readonly candidateId: string }>;
+  mailboxJobStatus(jobId: string, request: JobStatusUpdateRequestV1): Promise<ProcessingJob>;
+  mailboxJobResult(jobId: string, request: JobResultSubmitRequestV1): Promise<ProcessingJob>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -329,6 +350,29 @@ export function createMailboxAppApiClient(
         method: "POST",
         responseSchema: MailboxMaterializationResultV1Schema,
         body: { operationId },
+      });
+    },
+    mailboxJobMaterializeInput(jobId) {
+      return client.requestAppApi({
+        path: `/internal/v1/mailbox/jobs/${jobId}/materialize-input`,
+        method: "GET",
+        responseSchema: MaterializeInputResultSchema,
+      });
+    },
+    mailboxJobStatus(jobId, request) {
+      return client.requestAppApi({
+        path: `/internal/v1/mailbox/jobs/${jobId}/status`,
+        method: "POST",
+        responseSchema: ProcessingJobSchema,
+        body: request,
+      });
+    },
+    mailboxJobResult(jobId, request) {
+      return client.requestAppApi({
+        path: `/internal/v1/mailbox/jobs/${jobId}/result`,
+        method: "POST",
+        responseSchema: ProcessingJobSchema,
+        body: request,
       });
     },
   };

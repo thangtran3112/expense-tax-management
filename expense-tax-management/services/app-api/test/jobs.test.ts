@@ -802,51 +802,9 @@ describe("App API job routes", () => {
     expect(enrichmentJobsDomain.submitEnrichmentResult).not.toHaveBeenCalled();
   });
 
-  // ------------------------------------------------------------------ //
-  // Phase 3D-C Task 5 gap closure -- read-only materialize-input resolver
-  // for MailboxMaterializeWorkflow's combined activity.
-  // ------------------------------------------------------------------ //
-
-  it("materialize-input returns the candidateId from the job's own input_params for the worker principal", async () => {
-    const { app, processingJobsDomain } = createTestApp();
-    (processingJobsDomain.getJob as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ...JOB,
-      workflowType: "MailboxMaterializeWorkflow",
-      inputParams: { mailboxCandidateId: "66666666-6666-4666-8666-666666666666" },
-    });
-
-    const response = await app.inject({
-      method: "GET",
-      url: `/internal/v1/jobs/${JOB_ID}/materialize-input`,
-      headers: { authorization: "Bearer ai-worker-token" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ candidateId: "66666666-6666-4666-8666-666666666666" });
-    expect(processingJobsDomain.getJob).toHaveBeenCalledWith(JOB_ID);
-  });
-
-  it("materialize-input rejects a job whose input_params carries no candidateId", async () => {
-    const { app } = createTestApp();
-
-    const response = await app.inject({
-      method: "GET",
-      url: `/internal/v1/jobs/${JOB_ID}/materialize-input`,
-      headers: { authorization: "Bearer ai-worker-token" },
-    });
-
-    expect(response.statusCode).toBe(400);
-  });
-
-  it("materialize-input rejects the platform-admin principal (wrong scope)", async () => {
-    const { app } = createTestApp();
-
-    const response = await app.inject({
-      method: "GET",
-      url: `/internal/v1/jobs/${JOB_ID}/materialize-input`,
-      headers: { authorization: "Bearer platform-admin-token" },
-    });
-
-    expect(response.statusCode).toBe(403);
-  });
+  // Phase 3D-C Task 5 fix round 1 (review Important #1): the
+  // materialize-input read moved to routes/mailbox-internal.ts, guarded
+  // by the mailbox-scoped identity instead of this file's generic
+  // ai-worker one -- see mailbox-routes-registration.test.ts for its
+  // real-signed-fixture coverage.
 });

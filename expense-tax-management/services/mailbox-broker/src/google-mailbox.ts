@@ -171,6 +171,27 @@ function mapGoogleApiError(error: unknown): never {
   throw new GmailApiError("unknown");
 }
 
+/**
+ * Phase 3D-C Task 5 fix round 1 (review Important #3) -- decodes only
+ * enough base64url INPUT to produce at most `maxBytes + 1` decoded bytes,
+ * never the other way around (decode-then-slice, the original bug: a
+ * large `text/html` part was fully decoded into one allocation before
+ * the bound was ever applied). Every 4 base64url characters decode to
+ * exactly 3 bytes with no padding ambiguity, so slicing the *input
+ * string* to a 4-aligned prefix before ever calling `Buffer.from` is
+ * always a well-formed (if incomplete) base64url stream -- the decoded
+ * prefix's length is deterministic from the input length alone, no
+ * trial decode needed. Exported (pure, no googleapis/network
+ * dependency) so it's directly unit-testable without the "operator-
+ * gated, no real Google network" exemption the surrounding Gmail-API
+ * wrapper methods still correctly claim.
+ */
+export function decodeBase64UrlBounded(base64Url: string, maxBytes: number): Buffer {
+  const neededChars = Math.min(base64Url.length, Math.ceil((maxBytes + 2) / 3) * 4);
+  const decoded = Buffer.from(base64Url.slice(0, neededChars), "base64url");
+  return decoded.length > maxBytes ? decoded.subarray(0, maxBytes + 1) : decoded;
+}
+
 function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
   const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
 
@@ -323,24 +344,20 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
      * full message still arrives over the wire in one response (same as
      * `getMessage` above); the bound this enforces is on what gets
      * decoded and handed onward: never more than
-     * `STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1` bytes, so the parser's
-     * own existing `readBoundedUtf8` bound check (structured-receipt.ts)
-     * still sees -- and rejects -- an oversized body, without this
-     * function ever buffering the full oversized content for longer than
-     * one `Buffer.subarray` call. Never logs or returns the body through
-     * any path other than this bounded AsyncIterable.
+     * `STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1` bytes -- fix round 1
+     * (review Important #3): `decodeBase64UrlBounded` applies that bound
+     * DURING decode (slicing the base64url input itself first), never
+     * decodes the full part before bounding it. The parser's own existing
+     * `readBoundedUtf8` bound check (structured-receipt.ts) still sees --
+     * and rejects -- an oversized body. Never logs or returns the body
+     * through any path other than this bounded AsyncIterable.
      */
     async getMessageHtmlBody(id) {
       try {
         const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
         const htmlData = findHtmlPartData(response.data.payload ?? undefined);
         if (htmlData === null) return null;
-        const decoded = Buffer.from(htmlData, "base64url");
-        const bounded =
-          decoded.length > STRUCTURED_RECEIPT_MAX_DECODED_BYTES
-            ? decoded.subarray(0, STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1)
-            : decoded;
-        return chunksOf(bounded);
+        return chunksOf(decodeBase64UrlBounded(htmlData, STRUCTURED_RECEIPT_MAX_DECODED_BYTES));
       } catch (error) {
         mapGoogleApiError(error);
       }

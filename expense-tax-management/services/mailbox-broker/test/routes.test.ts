@@ -8,6 +8,7 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { generateKeyPair, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp, type BuildAppOptions } from "../src/app.js";
@@ -877,7 +878,7 @@ describe("mailbox-broker routes", () => {
         issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes });
       const appApiToken = (scopes: readonly string[]) =>
         issuer.mint({ subject: APP_API_SUBJECT, audience: AUDIENCE, scopes });
-      return { app, deps, workerToken, appApiToken };
+      return { app, deps, workerToken, appApiToken, issuer };
     }
 
     it("accepts the worker principal with mailbox:materialize, uploads the attachment, and returns the opaque result", async () => {
@@ -948,6 +949,74 @@ describe("mailbox-broker routes", () => {
         payload: { operationId: "op-1" },
       });
 
+      expect(response.statusCode).toBe(401);
+    });
+
+    /**
+     * Phase 3D-C Task 5 fix round 1 (review Important #4) -- the broker's
+     * own inbound auth model (auth/clerk.ts) has exactly two callers,
+     * both service-typed (no tenant-token concept exists for internal
+     * broker routes at all, unlike App API's tenant-vs-service split);
+     * "wrong caller"/"missing scope" above are already covered. These add
+     * the remaining real-signed-fixture rejection cases: wrong audience,
+     * wrong issuer, and a different signing key (attacker-signed).
+     */
+    it("rejects a validly-signed worker token for the wrong audience", async () => {
+      const { app, issuer } = await createMaterializeTestApp();
+      // Signed by the SAME trusted issuer/key as every accepted token in
+      // this block -- only the audience claim differs.
+      const token = await issuer.mint({
+        subject: WORKER_SUBJECT,
+        audience: "wrong-audience",
+        scopes: ["mailbox:materialize"],
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a token signed by an attacker holding a different key (same claims otherwise)", async () => {
+      const { app } = await createMaterializeTestApp();
+      const attackerKeys = await generateKeyPair("RS256");
+      const now = Math.floor(Date.now() / 1_000);
+      const token = await new SignJWT({ scope: "mailbox:materialize" })
+        .setProtectedHeader({ alg: "RS256" })
+        .setIssuer("https://clerk.test")
+        .setAudience(AUDIENCE)
+        .setSubject(WORKER_SUBJECT)
+        .setJti(randomUUID())
+        .setIssuedAt(now)
+        .setExpirationTime(now + 300)
+        .sign(attackerKeys.privateKey);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a token issued by the wrong issuer (same audience/subject/scope, signed by a different issuer's key)", async () => {
+      const { app } = await createMaterializeTestApp();
+      const wrongIssuer = await createFakeClerkIssuer({ issuerUrl: "https://attacker-issuer.test" });
+      const token = await wrongIssuer.mint({
+        subject: WORKER_SUBJECT,
+        audience: AUDIENCE,
+        scopes: ["mailbox:materialize"],
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
       expect(response.statusCode).toBe(401);
     });
 

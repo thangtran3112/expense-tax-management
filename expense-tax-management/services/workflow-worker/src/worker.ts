@@ -56,7 +56,7 @@ export async function runWorker(
     const mailboxActivities = mailboxClient
       ? {
           ...createMailboxActivities({ mailboxClient }),
-          ...createMailboxMaterializeActivities({ appApi, mailboxClient }),
+          ...createMailboxMaterializeActivities({ mailboxClient }),
         }
       : {};
     const worker = await factories.create({
