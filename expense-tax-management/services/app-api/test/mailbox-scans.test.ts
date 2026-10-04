@@ -598,5 +598,56 @@ describe.skipIf(!requested)(
       const bindingAfter = await domain.loadScanBinding(started.scanRun.id);
       expect(bindingAfter.nextPageSequence).toBe(2);
     });
+
+    it("404 full-sync recovery: a later page re-listing an already-staged provider_message_id skips it instead of throwing a constraint violation", async () => {
+      const domain = createDomain();
+      const connectionId = createActiveConnection();
+      const started = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      const binding1 = await domain.loadScanBinding(started.scanRun.id);
+      const repeatedProviderMessageId = `gmail-${randomUUID()}`;
+
+      const page1 = await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding1.expectedConnectionVersion,
+          cursorBeforeDigest: binding1.currentCursorDigest,
+          preFenceToken: binding1.preFenceToken,
+          pageSequence: 1,
+          messages: [{ ...stagingInput().messages[0]!, providerMessageId: repeatedProviderMessageId }],
+        }),
+      );
+      expect(page1.counts).toEqual({ discovered: 1, staged: 1, review: 0, failed: 0 });
+
+      const binding2 = await domain.loadScanBinding(started.scanRun.id);
+      const freshProviderMessageId = `gmail-${randomUUID()}`;
+      const page2 = await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding2.expectedConnectionVersion,
+          cursorBeforeDigest: binding2.currentCursorDigest,
+          preFenceToken: binding2.preFenceToken,
+          pageSequence: 2,
+          messages: [
+            // A bounded full-sync recovery (after a stale history ID 404)
+            // can re-list a message page 1 already staged -- it must be
+            // silently skipped here, not a raw unique-constraint crash.
+            { ...stagingInput().messages[0]!, providerMessageId: repeatedProviderMessageId },
+            { ...stagingInput().messages[0]!, providerMessageId: freshProviderMessageId },
+          ],
+        }),
+      );
+
+      expect(page2.counts).toEqual({ discovered: 2, staged: 1, review: 0, failed: 0 });
+      expect(page2.candidateIds).toHaveLength(1); // only the genuinely new row
+
+      const rowCount = runtimeSql(
+        `SELECT count(*) FROM app.mailbox_candidates WHERE connection_id = '${connectionId}' AND provider_message_id = '${repeatedProviderMessageId}'`,
+      );
+      expect(rowCount).toBe("1"); // never duplicated
+    });
   },
 );

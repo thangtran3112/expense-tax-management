@@ -51,6 +51,10 @@ const providerAdapter = createGmailMailboxProvider({
   vaultKeys: config.vault,
   database,
   appClient,
+  // Phase 3D-B Task 4 -- same client, already implements
+  // MailboxBrokerDiscoveryAppClient (createMailboxAppClient returns the
+  // intersection type).
+  discoveryAppClient: appClient,
 });
 
 // Fix round 2: the begin route builds the Google authorization URL itself
@@ -65,6 +69,13 @@ const app = buildApp({
   config,
   appClient,
   providerAdapter,
+  // Phase 3D-B Task 4 -- `appClient`/`providerAdapter` already implement
+  // the discovery interfaces (createMailboxAppClient/
+  // createGmailMailboxProvider both return the wider intersection type);
+  // passed again under these names purely to satisfy buildApp's distinct
+  // optional fields.
+  discoveryAppClient: appClient,
+  discoveryProviderAdapter: providerAdapter,
   buildGoogleAuthorizationUrl,
   allowedRedirectOrigins: requiredCommaListEnvironmentValue("MAILBOX_ALLOWED_REDIRECT_ORIGINS"),
   ...(process.env.MAILBOX_CALLBACK_HOST?.trim()

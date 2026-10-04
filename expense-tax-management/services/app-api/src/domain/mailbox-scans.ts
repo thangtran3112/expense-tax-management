@@ -22,9 +22,15 @@
  * dispatch -- and its "bypass the Task 7 generation fence" ruling -- in
  * the one place that already imports the Temporal starter.
  *
- * Three domain functions beyond lease/scan-run bookkeeping:
+ * Four domain functions beyond lease/scan-run bookkeeping:
  * - loadScanBinding: the broker's read of "where does this scan currently
  *   stand" (connection version + cursor fence + next expected page).
+ * - loadCandidateBinding (Phase 3D-B Task 4): the broker-authenticated
+ *   `POST .../candidates/:candidateId/broker-binding` read -- returns a
+ *   candidate's connectionId/version/provider message+thread IDs so the
+ *   broker can refetch it later (3D-C's materialize flow). A plain
+ *   lookup, no lease/fence involvement: unlike loadScanBinding, nothing
+ *   here mutates or depends on which scan run is currently active.
  * - recordCandidateMetadata: the fenced page callback. Locks run and
  *   connection, requires the run to still hold the connection's active
  *   scan lease (fix round 1: a run whose lease was stolen by a later run
@@ -44,6 +50,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
   mailboxIdempotencyKey,
+  type MailboxBrokerCandidateBindingV1,
   type MailboxBrokerScanBindingV1,
   type MailboxCandidateMetadataStagingResultV1,
   type MailboxCandidateMetadataStagingV1,
@@ -147,6 +154,7 @@ export interface MailboxScansDomain {
     input: ListScanRunsInput,
   ): Promise<{ readonly items: readonly MailboxScanRunV1[] }>;
   loadScanBinding(scanRunId: string): Promise<MailboxBrokerScanBindingV1>;
+  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
   recordCandidateMetadata(
     input: MailboxCandidateMetadataStagingV1,
   ): Promise<MailboxCandidateMetadataStagingResultV1>;
@@ -397,6 +405,22 @@ export function createMailboxScansDomain(
       };
     },
 
+    async loadCandidateBinding(candidateId) {
+      const candidate = await database
+        .selectFrom("app.mailbox_candidates")
+        .select(["id", "connection_id", "version", "provider_message_id", "provider_thread_id"])
+        .where("id", "=", candidateId)
+        .executeTakeFirst();
+      if (!candidate) throw DomainError.notFound();
+      return {
+        candidateId: candidate.id,
+        connectionId: candidate.connection_id,
+        expectedCandidateVersion: candidate.version,
+        providerMessageId: candidate.provider_message_id,
+        providerThreadId: candidate.provider_thread_id,
+      };
+    },
+
     async recordCandidateMetadata(input) {
       const operationKey = `stage-candidate-page:${input.scanRunId}`;
       const payloadHash = hashNormalizedRequest({
@@ -475,9 +499,6 @@ export function createMailboxScansDomain(
         }
 
         const now = new Date();
-        let staged = 0;
-        let review = 0;
-        const candidateIds: string[] = [];
         const candidateRows = input.messages.flatMap((message) => {
           // not_receipt is discovered-only: it contributes to this
           // page's discovered count but is never persisted as a
@@ -488,13 +509,9 @@ export function createMailboxScansDomain(
           if (message.classification === "not_receipt") return [];
           const status: "staged" | "review" =
             message.classification === "receipt" ? "staged" : "review";
-          if (status === "staged") staged += 1;
-          else review += 1;
-          const id = randomUUID();
-          candidateIds.push(id);
           return [
             {
-              id,
+              id: randomUUID(),
               scan_run_id: input.scanRunId,
               connection_id: input.connectionId,
               tenant_id: scanRun.tenant_id,
@@ -529,8 +546,31 @@ export function createMailboxScansDomain(
           ];
         });
 
+        // Phase 3D-B Task 4 -- 404-recovery's bounded full sync can
+        // re-list a provider_message_id this connection already has a
+        // candidate for (from an earlier, now-stale incremental sync).
+        // Spec: "Existing unique message IDs make recovery idempotent."
+        // `onConflict...doNothing()` silently skips exactly those rows
+        // (migration 019's own `mailbox_candidates_message_unique`
+        // constraint) instead of throwing a raw constraint violation;
+        // `staged`/`review`/`candidateIds` are computed only from rows
+        // that actually inserted, via `returning`, not from every row
+        // this page attempted.
+        let staged = 0;
+        let review = 0;
+        const candidateIds: string[] = [];
         if (candidateRows.length > 0) {
-          await transaction.insertInto("app.mailbox_candidates").values(candidateRows).execute();
+          const insertedRows = await transaction
+            .insertInto("app.mailbox_candidates")
+            .values(candidateRows)
+            .onConflict((builder) => builder.columns(["connection_id", "provider_message_id"]).doNothing())
+            .returning(["id", "classification"])
+            .execute();
+          for (const row of insertedRows) {
+            candidateIds.push(row.id);
+            if (row.classification === "receipt") staged += 1;
+            else review += 1;
+          }
         }
 
         // Durable page outcome before the cursor advances (spec: "cursor

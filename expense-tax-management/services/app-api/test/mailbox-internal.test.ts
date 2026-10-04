@@ -44,8 +44,11 @@ function brokerPrincipal(overrides: Partial<AuthPrincipal> = {}): AuthPrincipal 
   };
 }
 
+const CANDIDATE_ID = randomUUID();
+
 function createFakeDomain(): MailboxScansDomain & {
   readonly loadScanBinding: ReturnType<typeof vi.fn>;
+  readonly loadCandidateBinding: ReturnType<typeof vi.fn>;
   readonly recordCandidateMetadata: ReturnType<typeof vi.fn>;
 } {
   return {
@@ -60,6 +63,13 @@ function createFakeDomain(): MailboxScansDomain & {
       currentCursorDigest: "a".repeat(64),
       preFenceToken: "b".repeat(64),
       nextPageSequence: 1,
+    })),
+    loadCandidateBinding: vi.fn(async (candidateId: string) => ({
+      candidateId,
+      connectionId: CONNECTION_ID,
+      expectedCandidateVersion: 1,
+      providerMessageId: "gmail-message-1",
+      providerThreadId: null,
     })),
     recordCandidateMetadata: vi.fn(async (input) => ({
       schemaVersion: 1 as const,
@@ -133,6 +143,60 @@ describe("routes/mailbox-internal.ts", () => {
     const response = await app.inject({
       method: "POST",
       url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/broker-binding`,
+      headers: { authorization: "Bearer fake" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("candidate broker-binding: accepts a principal with mailbox:materialize and returns the binding", async () => {
+    const { app, mailboxScansDomain } = createApp(async () =>
+      brokerPrincipal({ scopes: ["mailbox:materialize"] }),
+    );
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/broker-binding`,
+      headers: { authorization: "Bearer fake" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      candidateId: CANDIDATE_ID,
+      connectionId: CONNECTION_ID,
+      expectedCandidateVersion: 1,
+      providerMessageId: "gmail-message-1",
+      providerThreadId: null,
+    });
+    expect(mailboxScansDomain.loadCandidateBinding).toHaveBeenCalledWith(CANDIDATE_ID);
+  });
+
+  it("candidate broker-binding: rejects a principal with only mailbox:write (wrong scope for this route)", async () => {
+    const { app } = createApp(async () => brokerPrincipal({ scopes: ["mailbox:write"] }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/broker-binding`,
+      headers: { authorization: "Bearer fake" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("candidate broker-binding: rejects a wrong service subject with 403", async () => {
+    const { app } = createApp(async () =>
+      brokerPrincipal({ subject: "someone-else", scopes: ["mailbox:materialize"] }),
+    );
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/broker-binding`,
       headers: { authorization: "Bearer fake" },
       payload: {},
     });

@@ -19,6 +19,11 @@ export type {
   AdvanceTokenGenerationResult,
   MailboxBrokerConnectionAppClient,
   MailboxProviderAdapter,
+  // Phase 3D-B Task 4 -- discovery boundary shapes.
+  DiscoveryInput,
+  DiscoveryPageV1,
+  MailboxBrokerDiscoveryAppClient,
+  MailboxDiscoveryProviderAdapter,
 } from "@expense-tax/contracts";
 
 export { mailboxIdempotencyKey } from "@expense-tax/contracts";

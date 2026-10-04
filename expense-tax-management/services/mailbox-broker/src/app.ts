@@ -16,7 +16,12 @@ import { createServiceGuardFactory } from "./plugins/auth.js";
 import type { CreateServiceVerifierOptions } from "./auth/clerk.js";
 import { registerConnectionRoutes } from "./routes/connections.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
-import type { MailboxBrokerConnectionAppClient, MailboxProviderAdapter } from "./contracts.js";
+import type {
+  MailboxBrokerConnectionAppClient,
+  MailboxBrokerDiscoveryAppClient,
+  MailboxDiscoveryProviderAdapter,
+  MailboxProviderAdapter,
+} from "./contracts.js";
 import type { GoogleAuthorizationUrlBuilder } from "./google-authorization-url.js";
 import { SENSITIVE_LOG_PATHS } from "./logging.js";
 
@@ -41,6 +46,15 @@ export interface BuildAppOptions {
   readonly beginTicketTtlSeconds?: number;
   /** Test-only: substitutes the real remote JWKS fetch (see test-doubles.ts's `createFakeClerkIssuer`). */
   readonly inboundKeyResolver?: CreateServiceVerifierOptions["keyResolver"];
+  /**
+   * Phase 3D-B Task 4 -- discovery route dependencies. Optional: omitting
+   * both (every existing caller of `buildApp`, routes.test.ts included)
+   * simply skips registering the discover route, so no existing test or
+   * call site needed to change (`registerConnectionRoutes`'s own three
+   * discovery fields follow the same optional convention).
+   */
+  readonly discoveryAppClient?: MailboxBrokerDiscoveryAppClient;
+  readonly discoveryProviderAdapter?: MailboxDiscoveryProviderAdapter;
 }
 
 /**
@@ -108,6 +122,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     providerAdapter: options.providerAdapter,
     appClient: options.appClient,
     appApiRevokeGuard: createGuard("app-api", ["connections:revoke"]),
+    ...(options.discoveryProviderAdapter ? { discoveryProviderAdapter: options.discoveryProviderAdapter } : {}),
+    ...(options.discoveryAppClient ? { discoveryAppClient: options.discoveryAppClient } : {}),
+    ...(options.discoveryProviderAdapter && options.discoveryAppClient
+      ? { workerDiscoverGuard: createGuard("worker", ["mailbox:discover"]) }
+      : {}),
   });
 
   // Phase 3D-A Task 5: liveness only (no token-vault-database probe),

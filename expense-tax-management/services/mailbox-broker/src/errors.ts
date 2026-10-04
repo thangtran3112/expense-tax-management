@@ -13,6 +13,7 @@ import { ServiceAuthError } from "./auth/clerk.js";
 import { MailboxAppClientError } from "./app-client.js";
 import { OAuthStateInvalidError } from "./oauth-state.js";
 import { BeginTicketInvalidError } from "./begin-ticket.js";
+import { GmailApiError } from "./discovery.js";
 
 interface ErrorEnvelope {
   readonly error: {
@@ -50,6 +51,15 @@ export function registerErrorHandlers(app: FastifyInstance): void {
     if (error instanceof MailboxAppClientError) {
       const statusCode = error.status && error.status >= 400 && error.status < 500 ? error.status : 502;
       reply.code(statusCode).send(errorEnvelope("APP_API_REQUEST_FAILED", error.message, request.id));
+      return;
+    }
+
+    if (error instanceof GmailApiError) {
+      const statusCode =
+        error.code === "reauth_required" ? 409 : error.code === "rate_limited" ? 429 : 503;
+      reply
+        .code(statusCode)
+        .send(errorEnvelope(`GOOGLE_${error.code.toUpperCase()}`, error.message, request.id));
       return;
     }
 

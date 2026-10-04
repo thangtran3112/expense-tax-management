@@ -22,6 +22,10 @@ import type { Kysely } from "kysely";
 
 import type {
   ConnectedAccount,
+  DiscoveryInput,
+  DiscoveryPageV1,
+  MailboxBrokerDiscoveryAppClient,
+  MailboxDiscoveryProviderAdapter,
   MailboxProvider,
   MailboxProviderAdapter,
   OAuthCallbackInput,
@@ -31,6 +35,12 @@ import type {
 } from "./contracts.js";
 import type { MailboxBrokerConnectionAppClient } from "./contracts.js";
 import type { VaultDatabase } from "./database/types.js";
+import {
+  createDiscoveryEngine,
+  GmailApiError,
+  type GmailDiscoveryClientLike,
+  type GmailMessageDetail,
+} from "./discovery.js";
 import {
   createOAuthState,
   decodeOAuthStatePayload,
@@ -85,6 +95,19 @@ export interface GmailMailboxProviderOptions {
   readonly createOAuth2Client?: () => OAuth2ClientLike;
   readonly fetchProfile?: (client: OAuth2ClientLike) => Promise<GmailProfile>;
   readonly onRefreshRotationError?: (connectionId: string, error: unknown) => void;
+  /**
+   * Phase 3D-B Task 4 -- `discover()` support. Optional and separate from
+   * the required `appClient` above: most existing callers of this
+   * factory (every OAuth-only test in this suite, unchanged) never call
+   * `discover()`, so they are not required to supply a discovery-capable
+   * client. The real `server.ts` passes the same `createMailboxAppClient`
+   * instance for both (it already implements both interfaces).
+   */
+  readonly discoveryAppClient?: MailboxBrokerDiscoveryAppClient;
+  /** Defaults to a real `googleapis` Gmail v1 client wrapper; tests substitute a fake (no real Google network access). */
+  readonly createGmailDiscoveryClient?: (client: OAuth2ClientLike) => GmailDiscoveryClientLike;
+  readonly discoveryPageSize?: number;
+  readonly discoveryLookbackDays?: number;
 }
 
 function defaultOAuth2ClientFactory(options: GmailMailboxProviderOptions): () => OAuth2ClientLike {
@@ -108,6 +131,126 @@ function defaultFetchProfile(client: OAuth2ClientLike): Promise<GmailProfile> {
     }
     return { emailAddress, historyId };
   });
+}
+
+/**
+ * Phase 3D-B Task 4 -- real `googleapis` Gmail v1 wrapper satisfying
+ * `GmailDiscoveryClientLike` (discovery.ts). Operator-gated (no test in
+ * this task makes a real Google network call, per the brief); covered
+ * indirectly by discovery.test.ts's fakes exercising the narrow
+ * interface this wraps.
+ */
+function mapGoogleApiError(error: unknown): never {
+  const status = (error as { code?: number; response?: { status?: number } } | undefined)?.response
+    ?.status ?? (error as { code?: number } | undefined)?.code;
+  if (status === 404) throw new GmailApiError("not_found");
+  if (status === 401) throw new GmailApiError("reauth_required");
+  if (status === 429) throw new GmailApiError("rate_limited");
+  if (typeof status === "number" && status >= 500) throw new GmailApiError("unavailable");
+  throw error;
+}
+
+function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
+  const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
+
+  function parseAttachmentParts(
+    part: { parts?: unknown[]; filename?: string | null; mimeType?: string | null; body?: { attachmentId?: string | null } } | undefined,
+  ): { attachmentId: string; filename: string; mimeType: string }[] {
+    if (!part) return [];
+    const results: { attachmentId: string; filename: string; mimeType: string }[] = [];
+    if (part.filename && part.body?.attachmentId && part.mimeType) {
+      results.push({ attachmentId: part.body.attachmentId, filename: part.filename, mimeType: part.mimeType });
+    }
+    for (const child of part.parts ?? []) {
+      results.push(...parseAttachmentParts(child as typeof part));
+    }
+    return results;
+  }
+
+  return {
+    async listMessageIds(input) {
+      try {
+        const response = await gmail.users.messages.list({
+          userId: "me",
+          q: input.query,
+          maxResults: input.maxResults,
+        });
+        return {
+          ids: (response.data.messages ?? []).map((message) => ({
+            id: message.id as string,
+            threadId: message.threadId ?? null,
+          })),
+        };
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+
+    async listHistory(input) {
+      try {
+        const response = await gmail.users.history.list({
+          userId: "me",
+          startHistoryId: input.startHistoryId,
+          maxResults: input.maxResults,
+          historyTypes: ["messageAdded"],
+        });
+        const ids: { id: string; threadId: string | null }[] = [];
+        for (const entry of response.data.history ?? []) {
+          for (const added of entry.messagesAdded ?? []) {
+            if (added.message?.id) {
+              ids.push({ id: added.message.id, threadId: added.message.threadId ?? null });
+            }
+          }
+        }
+        return { historyId: response.data.historyId ?? input.startHistoryId, ids };
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+
+    async getMessage(id): Promise<GmailMessageDetail> {
+      try {
+        const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+        const headers = response.data.payload?.headers ?? [];
+        const header = (name: string) =>
+          headers.find((candidate) => candidate.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
+        const dateHeader = header("date");
+        return {
+          id: response.data.id as string,
+          threadId: response.data.threadId ?? null,
+          receivedAt: dateHeader ? new Date(dateHeader).toISOString() : new Date().toISOString(),
+          senderAddress: header("from"),
+          subject: header("subject"),
+          attachments: parseAttachmentParts(response.data.payload ?? undefined),
+        };
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+
+    async getAttachment(input) {
+      try {
+        const response = await gmail.users.messages.attachments.get({
+          userId: "me",
+          messageId: input.messageId,
+          id: input.attachmentId,
+        });
+        return Buffer.from(response.data.data ?? "", "base64url");
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+
+    async getProfileHistoryId() {
+      try {
+        const response = await gmail.users.getProfile({ userId: "me" });
+        if (!response.data.historyId) throw new Error("Gmail profile response missing historyId");
+        return response.data.historyId;
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+  };
 }
 
 /**
@@ -185,9 +328,10 @@ async function rotateRefreshToken(
 
 export function createGmailMailboxProvider(
   options: GmailMailboxProviderOptions,
-): MailboxProviderAdapter {
+): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter {
   const createClient = options.createOAuth2Client ?? defaultOAuth2ClientFactory(options);
   const fetchProfile = options.fetchProfile ?? defaultFetchProfile;
+  const createDiscoveryClient = options.createGmailDiscoveryClient ?? createRealGmailDiscoveryClient;
   const liveClients = new Map<string, OAuth2ClientLike>();
 
   function registerRefreshRotation(connectionId: string, client: OAuth2ClientLike): void {
@@ -199,7 +343,49 @@ export function createGmailMailboxProvider(
     });
   }
 
+  /**
+   * Phase 3D-B Task 4 -- `discover()` needs an authenticated OAuth2Client
+   * for a connection independent of whether this same broker process
+   * instance handled that connection's original OAuth exchange (a
+   * discovery call can land on any broker replica). Reconstructs one
+   * from the token vault's active generation when not already cached.
+   */
+  async function loadOrCreateOAuth2Client(connectionId: string): Promise<OAuth2ClientLike> {
+    const cached = liveClients.get(connectionId);
+    if (cached) return cached;
+
+    const row = await selectActiveVaultRowForConnection(options.database, connectionId);
+    if (!row) throw new Error(`No active vault row for connection "${connectionId}"`);
+    const key = options.vaultKeys.keys.get(row.key_id);
+    if (!key) throw new Error(`Vault key "${row.key_id}" is not loaded`);
+    const refreshToken = decryptVaultRow(row, key, connectionId, row.generation).toString("utf8");
+
+    const client = createClient();
+    client.setCredentials({ refresh_token: refreshToken });
+    liveClients.set(connectionId, client);
+    registerRefreshRotation(connectionId, client);
+    return client;
+  }
+
+  const discoveryEngine = createDiscoveryEngine({
+    appClient: options.discoveryAppClient ?? {
+      loadScanBinding(): Promise<never> {
+        throw new Error("discover() requires GmailMailboxProviderOptions.discoveryAppClient to be configured");
+      },
+      stageCandidateMetadata(): Promise<never> {
+        throw new Error("discover() requires GmailMailboxProviderOptions.discoveryAppClient to be configured");
+      },
+    },
+    getGmailClient: async (connectionId) => createDiscoveryClient(await loadOrCreateOAuth2Client(connectionId)),
+    ...(options.discoveryPageSize !== undefined ? { pageSize: options.discoveryPageSize } : {}),
+    ...(options.discoveryLookbackDays !== undefined ? { lookbackDays: options.discoveryLookbackDays } : {}),
+  });
+
   return {
+    async discover(input: DiscoveryInput): Promise<DiscoveryPageV1> {
+      return discoveryEngine.discover(input);
+    },
+
     async createAuthorizationUrl(input: OAuthStartInput): Promise<OAuthStartResult> {
       const stateResult = createOAuthState({
         connectionId: input.connectionId,
@@ -298,7 +484,7 @@ export function createGmailMailboxProvider(
 export function createMailboxProviderAdapter(
   provider: MailboxProvider,
   options: GmailMailboxProviderOptions,
-): MailboxProviderAdapter {
+): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter {
   if (provider === "outlook") {
     const error = new Error("PROVIDER_UNSUPPORTED");
     error.name = "PROVIDER_UNSUPPORTED";

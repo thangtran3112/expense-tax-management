@@ -41,6 +41,15 @@ export interface MailboxInternalRouteOptions {
 const errors = { 401: ErrorResponseSchema, 403: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema };
 
 const ScanRunIdParamsSchema = z.strictObject({ scanRunId: z.uuid() });
+const CandidateIdParamsSchema = z.strictObject({ candidateId: z.uuid() });
+
+const CandidateBrokerBindingResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+  connectionId: z.uuid(),
+  expectedCandidateVersion: z.number().int(),
+  providerMessageId: z.string(),
+  providerThreadId: z.string().nullable(),
+});
 
 const BrokerBindingResponseSchema = z.strictObject({
   scanRunId: z.uuid(),
@@ -120,6 +129,16 @@ export async function registerMailboxInternalRoutes(
   const workerGuard = [
     serviceGuard(options.workerServiceSubject ?? "workflow-worker-mailbox", ["mailbox:discover"]),
   ];
+  /**
+   * Phase 3D-B Task 4 Step 3a -- distinct scope ("mailbox:materialize",
+   * the brief's exact wording) from the page-callback routes' "mailbox:
+   * write", even though both guards accept the same broker subject: this
+   * route hands back provider message/thread IDs (never exposed by the
+   * scan-binding/candidate-page routes), so it is authorized separately.
+   */
+  const brokerMaterializeGuard = [
+    serviceGuard(options.brokerServiceSubject ?? "mailbox-broker-app", ["mailbox:materialize"]),
+  ];
 
   typedApp.post(
     "/internal/v1/mailbox/scan-runs/:scanRunId/broker-binding",
@@ -135,6 +154,23 @@ export async function registerMailboxInternalRoutes(
     },
     async (request) => {
       return options.mailboxScansDomain.loadScanBinding(request.params.scanRunId);
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/candidates/:candidateId/broker-binding",
+    {
+      preHandler: brokerMaterializeGuard,
+      schema: {
+        hide: true,
+        params: CandidateIdParamsSchema,
+        body: z.strictObject({}),
+        security: [{ serviceBearer: [] }],
+        response: { 200: CandidateBrokerBindingResponseSchema, ...errors },
+      },
+    },
+    async (request) => {
+      return options.mailboxScansDomain.loadCandidateBinding(request.params.candidateId);
     },
   );
 

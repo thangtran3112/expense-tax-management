@@ -669,4 +669,137 @@ describe("mailbox-broker routes", () => {
       expect(response.statusCode).toBe(400);
     });
   });
+
+  // ------------------------------------------------------------------ //
+  // Discover (Phase 3D-B Task 4) -- optional wiring: omitting
+  // discoveryProviderAdapter/discoveryAppClient (every test above, and
+  // every pre-existing caller of buildApp) skips registering the route
+  // entirely, so this is the only block that supplies them.
+  // ------------------------------------------------------------------ //
+  describe("POST /internal/v1/mailbox/scan-runs/:scanRunId/discover", () => {
+    const SCAN_RUN_ID = randomUUID();
+
+    function fakeDiscoveryProviderAdapter() {
+      return {
+        discover: vi.fn(async (input: { scanRunId: string }) => ({
+          scanRunId: input.scanRunId,
+          pageSequence: 1,
+          candidateCount: 0,
+          retryCount: 0,
+        })),
+      };
+    }
+
+    async function createDiscoveryTestApp() {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const discoveryProviderAdapter = fakeDiscoveryProviderAdapter();
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+        discoveryProviderAdapter,
+        discoveryAppClient: { loadScanBinding: vi.fn(), stageCandidateMetadata: vi.fn() },
+      });
+      apps.add(app);
+      const workerToken = (scopes: readonly string[]) =>
+        issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes });
+      const appApiToken = (scopes: readonly string[]) =>
+        issuer.mint({ subject: APP_API_SUBJECT, audience: AUDIENCE, scopes });
+      return { app, discoveryProviderAdapter, workerToken, appApiToken };
+    }
+
+    it("accepts the worker principal with mailbox:discover and returns the opaque page", async () => {
+      const { app, discoveryProviderAdapter, workerToken } = await createDiscoveryTestApp();
+      const token = await workerToken(["mailbox:discover"]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        scanRunId: SCAN_RUN_ID,
+        pageSequence: 1,
+        candidateCount: 0,
+        retryCount: 0,
+      });
+      expect(discoveryProviderAdapter.discover).toHaveBeenCalledWith(
+        expect.objectContaining({ scanRunId: SCAN_RUN_ID }),
+      );
+    });
+
+    it("rejects the app-api principal (wrong caller)", async () => {
+      const { app, appApiToken } = await createDiscoveryTestApp();
+      const token = await appApiToken(["mailbox:discover"]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a worker token missing the mailbox:discover scope", async () => {
+      const { app, workerToken } = await createDiscoveryTestApp();
+      const token = await workerToken([]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("is not registered when discoveryProviderAdapter/discoveryAppClient are omitted", async () => {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+      });
+      apps.add(app);
+      const token = await issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes: ["mailbox:discover"] });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+  });
 });
