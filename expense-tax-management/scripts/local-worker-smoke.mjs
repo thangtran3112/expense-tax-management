@@ -135,19 +135,24 @@ export function assertLocalDatabaseHost(hostname, label) {
  * Refuses to run unless Docker itself is local: a `postgres`-hostname
  * connection string is only actually local if the Docker daemon being
  * driven is local too -- otherwise "postgres" resolves inside someone
- * else's remote Docker network. Checks two independent signals: an
- * explicit DOCKER_HOST override, and the active Docker context's own
- * endpoint (`docker context inspect`, `Endpoints.docker.Host`). Neither
+ * else's remote Docker network. Refuses whenever DOCKER_HOST is set at
+ * all, regardless of its value: a `unix://` DOCKER_HOST can still be a
+ * local socket proxying to a remote/production daemon (e.g. an SSH or
+ * TCP forwarder bound to a local path), so "starts with unix://" cannot
+ * be trusted as a locality proof once DOCKER_HOST overrides the context.
+ * Only the active Docker context's own endpoint (`docker context
+ * inspect`, `Endpoints.docker.Host`) is checked for `unix://`. Neither
  * value is a credential; both are safe to read directly on the host.
  */
 export function assertLocalDockerEndpoint(
   env = process.env,
   currentContextEndpoint = currentDockerContextEndpoint,
 ) {
-  const dockerHost = env.DOCKER_HOST;
-  if (dockerHost && !dockerHost.startsWith("unix://")) {
+  if (env.DOCKER_HOST) {
     throw new Error(
-      `refusing to run: DOCKER_HOST is set to a non-local endpoint "${dockerHost}"`,
+      `refusing to run: DOCKER_HOST is set ("${env.DOCKER_HOST}") -- even a unix:// ` +
+        `value may be a local socket proxying to a remote/production daemon. Unset ` +
+        `DOCKER_HOST and use a local Docker context instead.`,
     );
   }
   const endpoint = currentContextEndpoint();

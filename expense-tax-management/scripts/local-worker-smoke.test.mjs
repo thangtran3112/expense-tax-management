@@ -127,6 +127,17 @@ describe("local worker smoke safety guards", () => {
     );
   });
 
+  it("refuses even a unix:// DOCKER_HOST (it may proxy to a remote daemon)", () => {
+    assert.throws(
+      () =>
+        assertLocalDockerEndpoint(
+          { DOCKER_HOST: "unix:///tmp/x" },
+          () => "unix:///var/run/docker.sock",
+        ),
+      /DOCKER_HOST/,
+    );
+  });
+
   it("refuses when the current Docker context endpoint is not a local unix socket", () => {
     assert.throws(
       () => assertLocalDockerEndpoint({}, () => "tcp://remote-docker.example.com:2376"),
