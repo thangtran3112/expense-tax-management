@@ -801,4 +801,10 @@ describe("App API job routes", () => {
     expect(response.statusCode).toBe(400);
     expect(enrichmentJobsDomain.submitEnrichmentResult).not.toHaveBeenCalled();
   });
+
+  // Phase 3D-C Task 5 fix round 1 (review Important #1): the
+  // materialize-input read moved to routes/mailbox-internal.ts, guarded
+  // by the mailbox-scoped identity instead of this file's generic
+  // ai-worker one -- see mailbox-routes-registration.test.ts for its
+  // real-signed-fixture coverage.
 });

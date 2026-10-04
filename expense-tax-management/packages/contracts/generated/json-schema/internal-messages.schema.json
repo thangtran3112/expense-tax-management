@@ -21,7 +21,9 @@
         "OcrReceiptWorkflow",
         "ForwardedReceiptWorkflow",
         "ExpenseEnrichmentWorkflow",
-        "MailboxScanWorkflow"
+        "MailboxScanWorkflow",
+        "MailboxOcrReceiptWorkflow",
+        "MailboxMaterializeWorkflow"
       ],
       "type": "string"
     }

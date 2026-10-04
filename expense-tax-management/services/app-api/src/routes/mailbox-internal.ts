@@ -23,24 +23,44 @@
  *   cancellation -- marks the scan run completed/failed and releases the
  *   connection's scan lease, only if this run still holds it.
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   AttachmentManifestV1Schema,
   ErrorResponseSchema,
+  JobResultSubmitRequestV1Schema,
+  JobStatusUpdateRequestV1Schema,
   MailboxCandidateClassificationSchema,
+  ProcessingJobParamsSchema,
+  ProcessingJobSchema,
 } from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
 import type { MailboxScansDomain } from "../domain/mailbox-scans.js";
+import type { ProcessingJobsDomain } from "../domain/processing-jobs.js";
+import { DomainError } from "../errors.js";
 import { serviceGuard } from "../plugins/auth.js";
 
 export interface MailboxInternalRouteOptions {
   readonly mailboxScansDomain: MailboxScansDomain;
+  /**
+   * Phase 3D-C Task 5 fix round 1 (review Important #1) -- the worker's
+   * materialize-input/status/result callbacks below need the SAME
+   * generic job domain every other job type's routes (routes/jobs.ts)
+   * already uses; no mailbox-specific domain logic, only a mailbox-
+   * scoped identity guard in front of it.
+   */
+  readonly processingJobsDomain: ProcessingJobsDomain;
   /** Default mirrors the plan's exact machine subject: "mailbox-broker-app". */
   readonly brokerServiceSubject?: string;
   /** Default mirrors 3D-A Task 5's exact worker machine subject: "workflow-worker-mailbox". */
   readonly workerServiceSubject?: string;
+}
+
+function actorServicePrincipal(request: FastifyRequest): string {
+  const clientId = request.authPrincipal?.clientId;
+  if (!clientId) throw DomainError.forbidden();
+  return clientId;
 }
 
 const errors = { 401: ErrorResponseSchema, 403: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema };
@@ -137,6 +157,26 @@ const FinalizeScanResponseSchema = z.strictObject({
   leaseReleased: z.boolean(),
 });
 
+/**
+ * Phase 3D-C Task 5 fix round 1 (review Important #1) -- the worker's
+ * MailboxMaterializeWorkflow combined activity calls these three routes
+ * instead of routes/jobs.ts's generic `ai-worker`-guarded ones, using the
+ * SAME mailbox-scoped identity (subject "workflow-worker-mailbox") every
+ * other worker-facing route in this file already requires -- but scope
+ * "mailbox:materialize" (distinct from scheduled-scans/finalize's own
+ * "mailbox:discover" above, mirroring the broker-binding route's own
+ * scope split a few lines up), the exact scope
+ * clients/mailbox-client.ts's appTokenProvider already requests. No new
+ * domain logic: each route is a thin, mailbox-guarded alias over
+ * ProcessingJobsDomain's existing getJob/recordStatusUpdate/submitResult
+ * -- the same generic job row every job type shares.
+ */
+const MaterializeInputResponseSchema = z.strictObject({ candidateId: z.uuid() });
+/** Adds the two status codes recordStatusUpdate/submitResult can also
+ * throw (DomainError.validation()/preconditionFailed()) -- never widens
+ * this file's own shared `errors` map, used by every other route here. */
+const jobCallbackErrors = { ...errors, 400: ErrorResponseSchema, 412: ErrorResponseSchema };
+
 export async function registerMailboxInternalRoutes(
   app: FastifyInstance,
   options: MailboxInternalRouteOptions,
@@ -157,6 +197,9 @@ export async function registerMailboxInternalRoutes(
    */
   const brokerMaterializeGuard = [
     serviceGuard(options.brokerServiceSubject ?? "mailbox-broker-app", ["mailbox:materialize"]),
+  ];
+  const workerMaterializeGuard = [
+    serviceGuard(options.workerServiceSubject ?? "workflow-worker-mailbox", ["mailbox:materialize"]),
   ];
 
   typedApp.post(
@@ -268,6 +311,79 @@ export async function registerMailboxInternalRoutes(
         status: result.scanRun.status,
         leaseReleased: result.leaseReleased,
       };
+    },
+  );
+
+  typedApp.get(
+    "/internal/v1/mailbox/jobs/:jobId/materialize-input",
+    {
+      preHandler: workerMaterializeGuard,
+      schema: {
+        hide: true,
+        params: ProcessingJobParamsSchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: MaterializeInputResponseSchema, ...jobCallbackErrors },
+      },
+    },
+    async (request) => {
+      // Phase 3D-C Task 5 fix round 2 (review Important #1): restricts
+      // this worker-identity route to EXACTLY the MailboxMaterializeWorkflow
+      // job it was created for -- see ProcessingJobsDomain's own doc
+      // comment on this flag for the full threat model.
+      const job = await options.processingJobsDomain.getJob(request.params.jobId, {
+        requireMailboxMaterializeWorkflow: true,
+      });
+      const candidateId = (job.inputParams as Record<string, unknown> | null)?.["mailboxCandidateId"];
+      if (typeof candidateId !== "string") throw DomainError.validation();
+      return { candidateId };
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/jobs/:jobId/status",
+    {
+      preHandler: workerMaterializeGuard,
+      schema: {
+        hide: true,
+        params: ProcessingJobParamsSchema,
+        body: JobStatusUpdateRequestV1Schema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: ProcessingJobSchema, ...jobCallbackErrors },
+      },
+    },
+    async (request, reply) => {
+      const result = await options.processingJobsDomain.recordStatusUpdate({
+        jobId: request.params.jobId,
+        request: request.body,
+        actorServicePrincipal: actorServicePrincipal(request),
+        requestId: request.id,
+        requireMailboxMaterializeWorkflow: true,
+      });
+      return reply.code(result.statusCode).send(result.body);
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/jobs/:jobId/result",
+    {
+      preHandler: workerMaterializeGuard,
+      schema: {
+        hide: true,
+        params: ProcessingJobParamsSchema,
+        body: JobResultSubmitRequestV1Schema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: ProcessingJobSchema, ...jobCallbackErrors },
+      },
+    },
+    async (request, reply) => {
+      const result = await options.processingJobsDomain.submitResult({
+        jobId: request.params.jobId,
+        request: request.body,
+        actorServicePrincipal: actorServicePrincipal(request),
+        requestId: request.id,
+        requireMailboxMaterializeWorkflow: true,
+      });
+      return reply.code(result.statusCode).send(result.body);
     },
   );
 }

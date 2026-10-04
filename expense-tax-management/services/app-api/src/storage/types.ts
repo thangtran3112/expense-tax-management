@@ -30,6 +30,35 @@ export interface WriteObjectInput {
 }
 
 /**
+ * Phase 3D-C Task 3 fix round 2 (review: "Stream request bytes to the
+ * storage adapter incrementally... hashing and counting bytes as they
+ * flow, aborting at the limit"). Thrown by writeObjectStream the instant
+ * the cumulative byte count exceeds maxBytes -- the implementation must
+ * stop reading the source and delete whatever partial object it had
+ * started writing before this rejects.
+ */
+export class StorageWriteSizeExceededError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`stream exceeded ${maxBytes} bytes`);
+    this.name = "StorageWriteSizeExceededError";
+  }
+}
+
+export interface WriteObjectStreamInput {
+  readonly storageKey: string;
+  readonly contentType: string;
+  readonly maxBytes: number;
+}
+
+export interface WriteObjectStreamResult {
+  readonly sizeBytes: number;
+  readonly sha256Hex: string;
+  /** First up to 16 bytes actually written -- enough for magic-byte
+   * content-type sniffing without reading the object back. */
+  readonly headerBytes: Buffer;
+}
+
+/**
  * Storage adapter boundary. Shaped like GCS semantics (signed URLs with
  * expiry, stat/head, delete) so a future GCS implementation slots in
  * without changing the domain. URL issuance takes both fileId and
@@ -44,5 +73,18 @@ export interface StorageAdapter {
   statObject(storageKey: string): Promise<ObjectStat | null>;
   readObject(storageKey: string): Promise<Buffer>;
   writeObject(input: WriteObjectInput): Promise<void>;
+  /**
+   * Writes `source` incrementally -- hashing and counting bytes as each
+   * chunk arrives, never materializing the whole body as one in-memory
+   * Buffer -- aborting (and deleting whatever partial object it had
+   * started) the instant `maxBytes` is exceeded.
+   */
+  writeObjectStream(
+    input: WriteObjectStreamInput,
+    source: AsyncIterable<Buffer>,
+  ): Promise<WriteObjectStreamResult>;
+  /** Promotes an object already written (e.g. via writeObjectStream) to a
+   * new key without re-reading its bytes into memory. */
+  moveObject(fromStorageKey: string, toStorageKey: string): Promise<void>;
   deleteObject(storageKey: string): Promise<void>;
 }

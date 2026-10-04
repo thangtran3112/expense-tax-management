@@ -6978,6 +6978,45 @@
                             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                             "type": "string"
                           },
+                          "mailboxProvenance": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mailboxAccountEmail": {
+                                    "format": "email",
+                                    "maxLength": 320,
+                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "type": "string"
+                                  },
+                                  "pendingDuplicateReview": {
+                                    "type": "boolean"
+                                  },
+                                  "receivedAt": {
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                    "type": "string"
+                                  },
+                                  "senderAddress": {
+                                    "format": "email",
+                                    "maxLength": 320,
+                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "senderAddress",
+                                  "receivedAt",
+                                  "mailboxAccountEmail",
+                                  "pendingDuplicateReview"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "merchant": {
                             "maxLength": 200,
                             "minLength": 1,
@@ -7011,7 +7050,8 @@
                             "enum": [
                               "manual",
                               "ocr",
-                              "forwarded_email"
+                              "forwarded_email",
+                              "connected_mailbox"
                             ],
                             "type": "string"
                           },
@@ -7102,6 +7142,7 @@
                           "incurredOn",
                           "taxYear",
                           "source",
+                          "mailboxProvenance",
                           "status",
                           "version",
                           "createdAt",
@@ -7529,6 +7570,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -7562,7 +7642,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -7653,6 +7734,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",
@@ -8262,6 +8344,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -8295,7 +8416,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -8386,6 +8508,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",
@@ -8793,6 +8916,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -8826,7 +8988,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -8917,6 +9080,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",
@@ -28460,6 +28624,19 @@
           },
           {
             "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "enum": [
+                "in_progress",
+                "needs_attention",
+                "completed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "cursor",
             "required": false,
             "schema": {
@@ -28604,7 +28781,17 @@
                                   "GOOGLE_UNAVAILABLE",
                                   "VERSION_CONFLICT",
                                   "IDEMPOTENCY_CONFLICT",
-                                  "REVOKE_PENDING"
+                                  "REVOKE_PENDING",
+                                  "ATTACHMENT_BOUND_EXCEEDED",
+                                  "ATTACHMENT_SIGNATURE_REJECTED",
+                                  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                  "STRUCTURED_RECEIPT_NOT_FOUND",
+                                  "STRUCTURED_RECEIPT_INCOMPLETE",
+                                  "ATTACHMENT_HASH_MISMATCH",
+                                  "MALWARE_DETECTED",
+                                  "OCR_EXTRACTION_FAILED",
+                                  "ATTACHMENT_CONFIRMATION_FAILED",
+                                  "MAILBOX_MATERIALIZE_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -28642,6 +28829,62 @@
                             "maxLength": 500,
                             "minLength": 1,
                             "type": "string"
+                          },
+                          "ingestionProgress": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "attachments": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "failed": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "pending": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "succeeded": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "total": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "total",
+                                      "succeeded",
+                                      "failed",
+                                      "pending"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "phase": {
+                                    "enum": [
+                                      "materializing",
+                                      "processing_attachments"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "phase",
+                                  "attachments"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "processingJobId": {
                             "anyOf": [
@@ -28800,6 +29043,7 @@
                           "expenseId",
                           "sourceId",
                           "duplicateMatchId",
+                          "ingestionProgress",
                           "version",
                           "idempotencyKey",
                           "errorCode",
@@ -28815,6 +29059,11 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "totalCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -29233,7 +29482,17 @@
                             "GOOGLE_UNAVAILABLE",
                             "VERSION_CONFLICT",
                             "IDEMPOTENCY_CONFLICT",
-                            "REVOKE_PENDING"
+                            "REVOKE_PENDING",
+                            "ATTACHMENT_BOUND_EXCEEDED",
+                            "ATTACHMENT_SIGNATURE_REJECTED",
+                            "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                            "STRUCTURED_RECEIPT_NOT_FOUND",
+                            "STRUCTURED_RECEIPT_INCOMPLETE",
+                            "ATTACHMENT_HASH_MISMATCH",
+                            "MALWARE_DETECTED",
+                            "OCR_EXTRACTION_FAILED",
+                            "ATTACHMENT_CONFIRMATION_FAILED",
+                            "MAILBOX_MATERIALIZE_FAILED"
                           ],
                           "type": "string"
                         },
@@ -29271,6 +29530,62 @@
                       "maxLength": 500,
                       "minLength": 1,
                       "type": "string"
+                    },
+                    "ingestionProgress": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "attachments": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "failed": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "pending": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "succeeded": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "total": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "succeeded",
+                                "failed",
+                                "pending"
+                              ],
+                              "type": "object"
+                            },
+                            "phase": {
+                              "enum": [
+                                "materializing",
+                                "processing_attachments"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "attachments"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "processingJobId": {
                       "anyOf": [
@@ -29429,6 +29744,7 @@
                     "expenseId",
                     "sourceId",
                     "duplicateMatchId",
+                    "ingestionProgress",
                     "version",
                     "idempotencyKey",
                     "errorCode",
@@ -29723,7 +30039,17 @@
                                   "GOOGLE_UNAVAILABLE",
                                   "VERSION_CONFLICT",
                                   "IDEMPOTENCY_CONFLICT",
-                                  "REVOKE_PENDING"
+                                  "REVOKE_PENDING",
+                                  "ATTACHMENT_BOUND_EXCEEDED",
+                                  "ATTACHMENT_SIGNATURE_REJECTED",
+                                  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                  "STRUCTURED_RECEIPT_NOT_FOUND",
+                                  "STRUCTURED_RECEIPT_INCOMPLETE",
+                                  "ATTACHMENT_HASH_MISMATCH",
+                                  "MALWARE_DETECTED",
+                                  "OCR_EXTRACTION_FAILED",
+                                  "ATTACHMENT_CONFIRMATION_FAILED",
+                                  "MAILBOX_MATERIALIZE_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -30146,7 +30472,17 @@
                                 "GOOGLE_UNAVAILABLE",
                                 "VERSION_CONFLICT",
                                 "IDEMPOTENCY_CONFLICT",
-                                "REVOKE_PENDING"
+                                "REVOKE_PENDING",
+                                "ATTACHMENT_BOUND_EXCEEDED",
+                                "ATTACHMENT_SIGNATURE_REJECTED",
+                                "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                "STRUCTURED_RECEIPT_NOT_FOUND",
+                                "STRUCTURED_RECEIPT_INCOMPLETE",
+                                "ATTACHMENT_HASH_MISMATCH",
+                                "MALWARE_DETECTED",
+                                "OCR_EXTRACTION_FAILED",
+                                "ATTACHMENT_CONFIRMATION_FAILED",
+                                "MAILBOX_MATERIALIZE_FAILED"
                               ],
                               "type": "string"
                             },
@@ -30452,7 +30788,17 @@
                                 "GOOGLE_UNAVAILABLE",
                                 "VERSION_CONFLICT",
                                 "IDEMPOTENCY_CONFLICT",
-                                "REVOKE_PENDING"
+                                "REVOKE_PENDING",
+                                "ATTACHMENT_BOUND_EXCEEDED",
+                                "ATTACHMENT_SIGNATURE_REJECTED",
+                                "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                "STRUCTURED_RECEIPT_NOT_FOUND",
+                                "STRUCTURED_RECEIPT_INCOMPLETE",
+                                "ATTACHMENT_HASH_MISMATCH",
+                                "MALWARE_DETECTED",
+                                "OCR_EXTRACTION_FAILED",
+                                "ATTACHMENT_CONFIRMATION_FAILED",
+                                "MAILBOX_MATERIALIZE_FAILED"
                               ],
                               "type": "string"
                             },
@@ -33389,6 +33735,45 @@
                             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                             "type": "string"
                           },
+                          "mailboxProvenance": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mailboxAccountEmail": {
+                                    "format": "email",
+                                    "maxLength": 320,
+                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "type": "string"
+                                  },
+                                  "pendingDuplicateReview": {
+                                    "type": "boolean"
+                                  },
+                                  "receivedAt": {
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                    "type": "string"
+                                  },
+                                  "senderAddress": {
+                                    "format": "email",
+                                    "maxLength": 320,
+                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "senderAddress",
+                                  "receivedAt",
+                                  "mailboxAccountEmail",
+                                  "pendingDuplicateReview"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "merchant": {
                             "maxLength": 200,
                             "minLength": 1,
@@ -33422,7 +33807,8 @@
                             "enum": [
                               "manual",
                               "ocr",
-                              "forwarded_email"
+                              "forwarded_email",
+                              "connected_mailbox"
                             ],
                             "type": "string"
                           },
@@ -33513,6 +33899,7 @@
                           "incurredOn",
                           "taxYear",
                           "source",
+                          "mailboxProvenance",
                           "status",
                           "version",
                           "createdAt",
@@ -33940,6 +34327,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -33973,7 +34399,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -34064,6 +34491,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",
@@ -34673,6 +35101,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -34706,7 +35173,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -34797,6 +35265,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",
@@ -35204,6 +35673,45 @@
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$",
                       "type": "string"
                     },
+                    "mailboxProvenance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "mailboxAccountEmail": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            },
+                            "pendingDuplicateReview": {
+                              "type": "boolean"
+                            },
+                            "receivedAt": {
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "type": "string"
+                            },
+                            "senderAddress": {
+                              "format": "email",
+                              "maxLength": 320,
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "senderAddress",
+                            "receivedAt",
+                            "mailboxAccountEmail",
+                            "pendingDuplicateReview"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merchant": {
                       "maxLength": 200,
                       "minLength": 1,
@@ -35237,7 +35745,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -35328,6 +35837,7 @@
                     "incurredOn",
                     "taxYear",
                     "source",
+                    "mailboxProvenance",
                     "status",
                     "version",
                     "createdAt",

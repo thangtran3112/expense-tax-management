@@ -273,7 +273,14 @@ describe.skipIf(!integrationEnabled)("Phase 3D-B Task 6 — mailbox discovery/re
     `);
 
     mailboxScansDomain = createMailboxScansDomain(database, { plansDomain: fakePlansDomain() }, { scanLeaseTtlSeconds: 900 });
-    mailboxCandidatesDomain = createMailboxCandidatesDomain(database);
+    // Phase 3D-C Task 5 gap closure (b2cdc66) added createMailboxCandidatesDomain's
+    // required `{ mailboxEnabled }` constructor option (its own `ingest` branch
+    // throws FEATURE_DISABLED before creating a materialize job when false) --
+    // this suite predates that change and was never updated, so the single
+    // `ingest` test below 500'd on `deps.mailboxEnabled` being undefined on
+    // every real run of the zero-skip chain since. Caught by Task 7's own
+    // end-to-end verification; fixed here (not a Task 5 file).
+    mailboxCandidatesDomain = createMailboxCandidatesDomain(database, { mailboxEnabled: true });
   });
 
   afterAll(async () => {

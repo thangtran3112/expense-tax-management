@@ -71,7 +71,16 @@ import { registerEnrichmentRoutes } from "./routes/enrichment.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { createExportsDomain, type ExportsDomain } from "./domain/exports.js";
 import { registerFileRoutes } from "./routes/files.js";
-import { createFilesDomain, type FilesDomain } from "./domain/files.js";
+import {
+  createFilesDomain,
+  createMailboxStagingScanner,
+  type FilesDomain,
+} from "./domain/files.js";
+import { registerMailboxIngestionRoutes } from "./routes/mailbox-ingestion.js";
+import {
+  createMailboxIngestionDomain,
+  type MailboxIngestionDomain,
+} from "./domain/mailbox-ingestion.js";
 import { registerOcrRoutes } from "./routes/ocr.js";
 import { createOcrJobsDomain, type OcrJobsDomain } from "./domain/ocr.js";
 import {
@@ -217,6 +226,7 @@ export interface BuildAppOptions {
   readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
   readonly mailboxScansDomain?: MailboxScansDomain;
   readonly mailboxCandidatesDomain?: MailboxCandidatesDomain;
+  readonly mailboxIngestionDomain?: MailboxIngestionDomain;
 }
 
 /**
@@ -279,6 +289,20 @@ function createDisabledMailboxCandidatesDomain(): MailboxCandidatesDomain {
   };
 }
 
+/** Same "explicitly disabled, not misconfigured" convention, applied to
+ * Task 3's ingestion domain. */
+function createDisabledMailboxIngestionDomain(): MailboxIngestionDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    issueUploadGrant: disabled,
+    receiveAttachment: disabled,
+    submitStructuredReceipt: disabled,
+    recordConnectedMailboxEvidence: disabled,
+  };
+}
+
 function loggerWithRedaction(logger: BuildAppOptions["logger"]): LoggerOption {
   if (logger === false) {
     return false;
@@ -334,7 +358,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       urlSigningKey: options.config.storage.urlSigningKey,
     });
   const filesDomain =
-    options.filesDomain ?? createFilesDomain(database, storageAdapter);
+    options.filesDomain ??
+    createFilesDomain(database, storageAdapter, {
+      mailboxScanner: createMailboxStagingScanner(
+        storageAdapter,
+        options.malwareScanner ?? PatternMalwareScanner,
+      ),
+    });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -498,7 +528,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const mailboxCandidatesDomain =
     options.mailboxCandidatesDomain ??
     (options.config.mailboxEnabled
-      ? createMailboxCandidatesDomain(database)
+      ? createMailboxCandidatesDomain(database, { mailboxEnabled: options.config.mailboxEnabled })
       : createDisabledMailboxCandidatesDomain());
   // Always registered (same pattern as every other route group in this
   // file) so the customer-facing route is always present in the generated
@@ -519,6 +549,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
   app.register(registerMailboxInternalRoutes, {
     mailboxScansDomain,
+    processingJobsDomain,
     ...(options.config.clerk?.mailboxBrokerServiceSubject
       ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
       : {}),
@@ -529,6 +560,21 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.register(registerMailboxCandidateRoutes, {
     mailboxCandidatesDomain,
     identityResolver: identityDomain,
+  });
+  // Phase 3D-C Task 3 -- depends on filesDomain (constructed above), so
+  // this domain/route pair is wired after the mailbox Task 1/2/5 block
+  // even though it belongs to the same "always registered, fails closed
+  // when disabled" family.
+  const mailboxIngestionDomain =
+    options.mailboxIngestionDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxIngestionDomain(database, { filesDomain, plansDomain })
+      : createDisabledMailboxIngestionDomain());
+  app.register(registerMailboxIngestionRoutes, {
+    mailboxIngestionDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
   });
   const exportsDomain =
     options.exportsDomain ??

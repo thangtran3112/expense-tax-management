@@ -8,6 +8,8 @@ import {
   JobReferenceV1Schema,
   LEGACY_AI_WORKER_TASK_QUEUE,
   LEGACY_TEMPORAL_NAMESPACE,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   MAILBOX_SCAN_WORKFLOW_TYPE,
   OCR_RECEIPT_WORKFLOW_TYPE,
   TARGET_TEMPORAL_NAMESPACE,
@@ -21,6 +23,8 @@ const workflowTypes = [
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
   MAILBOX_SCAN_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
 ] as const;
 
 describe("Temporal workflow compatibility", () => {
@@ -31,6 +35,8 @@ describe("Temporal workflow compatibility", () => {
       "ForwardedReceiptWorkflow",
       "ExpenseEnrichmentWorkflow",
       "MailboxScanWorkflow",
+      "MailboxOcrReceiptWorkflow",
+      "MailboxMaterializeWorkflow",
     ]);
     expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
   });
@@ -45,6 +51,18 @@ describe("Temporal workflow compatibility", () => {
 
   it("freezes the mailbox scan workflow type and its dispatch target (Phase 3D-B: TypeScript-only, no legacy Python implementation, so later tasks start it directly against TARGET_TEMPORAL_NAMESPACE/AI_WORKER_TASK_QUEUE instead of the generation-fenced routing path)", () => {
     expect(MAILBOX_SCAN_WORKFLOW_TYPE).toBe("MailboxScanWorkflow");
+    expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
+    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
+  });
+
+  it("freezes the mailbox OCR ingestion workflow type and its dispatch target (Phase 3D-C: TypeScript-only, no legacy Python implementation; always started directly, never through the generation-fenced routing path, even after `advance`)", () => {
+    expect(MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE).toBe("MailboxOcrReceiptWorkflow");
+    expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
+    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
+  });
+
+  it("freezes the mailbox materialize workflow type (Phase 3D-C Task 5 gap closure: dispatched through the ordinary job pipeline, stamped with the fixed TypeScript target)", () => {
+    expect(MAILBOX_MATERIALIZE_WORKFLOW_TYPE).toBe("MailboxMaterializeWorkflow");
     expect(TARGET_TEMPORAL_NAMESPACE).toBe("expense-tax");
     expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
   });

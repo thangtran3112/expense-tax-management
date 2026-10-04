@@ -41,6 +41,8 @@ import {
   type GmailDiscoveryClientLike,
   type GmailMessageDetail,
 } from "./discovery.js";
+import type { MaterializeGmailClient, MaterializeGmailClientProvider } from "./ingestion.js";
+import { STRUCTURED_RECEIPT_MAX_DECODED_BYTES } from "./structured-receipt.js";
 import {
   createOAuthState,
   decodeOAuthStatePayload,
@@ -169,6 +171,27 @@ function mapGoogleApiError(error: unknown): never {
   throw new GmailApiError("unknown");
 }
 
+/**
+ * Phase 3D-C Task 5 fix round 1 (review Important #3) -- decodes only
+ * enough base64url INPUT to produce at most `maxBytes + 1` decoded bytes,
+ * never the other way around (decode-then-slice, the original bug: a
+ * large `text/html` part was fully decoded into one allocation before
+ * the bound was ever applied). Every 4 base64url characters decode to
+ * exactly 3 bytes with no padding ambiguity, so slicing the *input
+ * string* to a 4-aligned prefix before ever calling `Buffer.from` is
+ * always a well-formed (if incomplete) base64url stream -- the decoded
+ * prefix's length is deterministic from the input length alone, no
+ * trial decode needed. Exported (pure, no googleapis/network
+ * dependency) so it's directly unit-testable without the "operator-
+ * gated, no real Google network" exemption the surrounding Gmail-API
+ * wrapper methods still correctly claim.
+ */
+export function decodeBase64UrlBounded(base64Url: string, maxBytes: number): Buffer {
+  const neededChars = Math.min(base64Url.length, Math.ceil((maxBytes + 2) / 3) * 4);
+  const decoded = Buffer.from(base64Url.slice(0, neededChars), "base64url");
+  return decoded.length > maxBytes ? decoded.subarray(0, maxBytes + 1) : decoded;
+}
+
 function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
   const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
 
@@ -196,6 +219,30 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
       results.push(...parseAttachmentParts(child as typeof part));
     }
     return results;
+  }
+
+  /**
+   * Depth-first search for the first `text/html` MIME part's inline
+   * `body.data` (base64url) -- never an attachment part (those have no
+   * inline `body.data`, only `body.attachmentId`, and are out of scope
+   * for structured-receipt parsing).
+   */
+  function findHtmlPartData(
+    part: { parts?: unknown[]; mimeType?: string | null; body?: { data?: string | null } } | undefined,
+  ): string | null {
+    if (!part) return null;
+    if (part.mimeType === "text/html" && part.body?.data) return part.body.data;
+    for (const child of part.parts ?? []) {
+      const found = findHtmlPartData(child as typeof part);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+
+  async function* chunksOf(buffer: Buffer, chunkSize = 64 * 1024): AsyncIterable<Buffer> {
+    for (let offset = 0; offset < buffer.length; offset += chunkSize) {
+      yield buffer.subarray(offset, offset + chunkSize);
+    }
   }
 
   return {
@@ -290,6 +337,31 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
         mapGoogleApiError(error);
       }
     },
+
+    /**
+     * Phase 3D-C Task 5 gap closure -- bounded `text/html` body fetch.
+     * Gmail's API has no partial/range fetch for a message body, so the
+     * full message still arrives over the wire in one response (same as
+     * `getMessage` above); the bound this enforces is on what gets
+     * decoded and handed onward: never more than
+     * `STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1` bytes -- fix round 1
+     * (review Important #3): `decodeBase64UrlBounded` applies that bound
+     * DURING decode (slicing the base64url input itself first), never
+     * decodes the full part before bounding it. The parser's own existing
+     * `readBoundedUtf8` bound check (structured-receipt.ts) still sees --
+     * and rejects -- an oversized body. Never logs or returns the body
+     * through any path other than this bounded AsyncIterable.
+     */
+    async getMessageHtmlBody(id) {
+      try {
+        const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+        const htmlData = findHtmlPartData(response.data.payload ?? undefined);
+        if (htmlData === null) return null;
+        return chunksOf(decodeBase64UrlBounded(htmlData, STRUCTURED_RECEIPT_MAX_DECODED_BYTES));
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
   };
 }
 
@@ -368,7 +440,7 @@ async function rotateRefreshToken(
 
 export function createGmailMailboxProvider(
   options: GmailMailboxProviderOptions,
-): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter {
+): MailboxProviderAdapter & MailboxDiscoveryProviderAdapter & MaterializeGmailClientProvider {
   const createClient = options.createOAuth2Client ?? defaultOAuth2ClientFactory(options);
   const fetchProfile = options.fetchProfile ?? defaultFetchProfile;
   const createDiscoveryClient = options.createGmailDiscoveryClient ?? createRealGmailDiscoveryClient;
@@ -424,6 +496,28 @@ export function createGmailMailboxProvider(
   return {
     async discover(input: DiscoveryInput): Promise<DiscoveryPageV1> {
       return discoveryEngine.discover(input);
+    },
+
+    /**
+     * Phase 3D-C Task 5 gap closure 2 -- the real per-connection Gmail
+     * client materializeCandidate (ingestion.ts) needs, built from the
+     * exact same authenticated-client plumbing `discover()` already uses
+     * above. `getMessageHtmlBody` is optional on `GmailDiscoveryClientLike`
+     * (every existing discovery fake predates it) but always present on
+     * `createRealGmailDiscoveryClient`'s real implementation; a test-only
+     * `createGmailDiscoveryClient` fake that omits it fails loudly here
+     * rather than materialize silently calling a missing method later.
+     */
+    async getGmailDiscoveryClient(connectionId): Promise<MaterializeGmailClient> {
+      const client = createDiscoveryClient(await loadOrCreateOAuth2Client(connectionId));
+      if (!client.getMessageHtmlBody) {
+        throw new Error(
+          "Gmail discovery client is missing getMessageHtmlBody (required for materialize)",
+        );
+      }
+      return client as GmailDiscoveryClientLike & {
+        getMessageHtmlBody: NonNullable<GmailDiscoveryClientLike["getMessageHtmlBody"]>;
+      };
     },
 
     async createAuthorizationUrl(input: OAuthStartInput): Promise<OAuthStartResult> {

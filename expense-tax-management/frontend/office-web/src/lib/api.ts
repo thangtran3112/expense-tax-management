@@ -1,4 +1,4 @@
-import { createAppApiClient, type DuplicateResolutionAction, type MailboxCandidateClassification, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
+import { createAppApiClient, type DuplicateResolutionAction, type MailboxCandidateClassification, type MailboxIngestionBucketV1, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
 import type { OfficeSession } from "./session";
 import { getAppAuthorization, type ClerkGetToken } from "./clerk";
 
@@ -750,14 +750,20 @@ export type MailboxCandidateReviewAction = "ingest" | "skip" | "not_receipt" | "
 
 export interface FetchMailboxCandidatesOptions {
   readonly classification?: MailboxCandidateClassification;
+  /** Fix round 1 (review finding #4) -- Office ingestion-status board
+   * section, independent of `classification`. */
+  readonly bucket?: MailboxIngestionBucketV1;
   readonly cursor?: string;
   readonly limit?: number;
 }
 
 /**
- * Lists a connection's candidates, one classification group at a time
- * (mockup decision: each group maintains its own cursor/"Load more" --
- * see plans/mockups/office-mailbox-review/NOTES.md).
+ * Lists a connection's candidates, one classification group (candidate
+ * review) or one ingestion bucket (ingestion status) at a time (mockup
+ * decision: each group maintains its own cursor/"Load more" -- see
+ * plans/mockups/office-mailbox-review/NOTES.md and
+ * plans/mockups/office-mailbox-ingestion/NOTES.md). `totalCount` is
+ * present only when `bucket` was requested.
  */
 export async function fetchMailboxCandidates(
   session: OfficeSession,
@@ -775,6 +781,7 @@ export async function fetchMailboxCandidates(
         path: { tenantId: session.tenantId, connectionId },
         query: {
           ...(options.classification === undefined ? {} : { classification: options.classification }),
+          ...(options.bucket === undefined ? {} : { bucket: options.bucket }),
           ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
           ...(options.limit === undefined ? {} : { limit: options.limit }),
         },

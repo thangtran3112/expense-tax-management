@@ -2850,11 +2850,20 @@ export interface paths {
                                 id: string;
                                 /** Format: date */
                                 incurredOn: string;
+                                mailboxProvenance: {
+                                    /** Format: email */
+                                    mailboxAccountEmail: string;
+                                    pendingDuplicateReview: boolean;
+                                    /** Format: date-time */
+                                    receivedAt: string;
+                                    /** Format: email */
+                                    senderAddress: string;
+                                } | null;
                                 merchant: string;
                                 personalProfileId: string | null;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                source: "manual" | "ocr" | "forwarded_email";
+                                source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                                 spendingCategoryId: string | null;
                                 /** @enum {string} */
                                 status: "draft" | "ready" | "archived";
@@ -3015,11 +3024,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -3176,11 +3194,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -3462,11 +3489,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -10755,6 +10791,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
+                    bucket?: "in_progress" | "needs_attention" | "completed";
                     classification?: "receipt" | "ambiguous" | "not_receipt";
                     cursor?: string;
                     limit?: number;
@@ -10792,12 +10829,22 @@ export interface paths {
                                 /** Format: date-time */
                                 createdAt: string;
                                 duplicateMatchId: string | null;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED" | "ATTACHMENT_CONFIRMATION_FAILED" | "MAILBOX_MATERIALIZE_FAILED") | null;
                                 evidence: string[];
                                 expenseId: string | null;
                                 /** Format: uuid */
                                 id: string;
                                 idempotencyKey: string;
+                                ingestionProgress: {
+                                    attachments: {
+                                        failed: number;
+                                        pending: number;
+                                        succeeded: number;
+                                        total: number;
+                                    };
+                                    /** @enum {string} */
+                                    phase: "materializing" | "processing_attachments";
+                                } | null;
                                 processingJobId: string | null;
                                 /** Format: date-time */
                                 receivedAt: string;
@@ -10830,6 +10877,7 @@ export interface paths {
                                 version: number;
                             }[];
                             nextCursor: string | null;
+                            totalCount?: number;
                         };
                     };
                 };
@@ -10983,12 +11031,22 @@ export interface paths {
                             /** Format: date-time */
                             createdAt: string;
                             duplicateMatchId: string | null;
-                            errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                            errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED" | "ATTACHMENT_CONFIRMATION_FAILED" | "MAILBOX_MATERIALIZE_FAILED") | null;
                             evidence: string[];
                             expenseId: string | null;
                             /** Format: uuid */
                             id: string;
                             idempotencyKey: string;
+                            ingestionProgress: {
+                                attachments: {
+                                    failed: number;
+                                    pending: number;
+                                    succeeded: number;
+                                    total: number;
+                                };
+                                /** @enum {string} */
+                                phase: "materializing" | "processing_attachments";
+                            } | null;
                             processingJobId: string | null;
                             /** Format: date-time */
                             receivedAt: string;
@@ -11141,7 +11199,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED" | "ATTACHMENT_CONFIRMATION_FAILED" | "MAILBOX_MATERIALIZE_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -11274,7 +11332,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED" | "ATTACHMENT_CONFIRMATION_FAILED" | "MAILBOX_MATERIALIZE_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -11358,7 +11416,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED" | "ATTACHMENT_CONFIRMATION_FAILED" | "MAILBOX_MATERIALIZE_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -12409,11 +12467,20 @@ export interface paths {
                                 id: string;
                                 /** Format: date */
                                 incurredOn: string;
+                                mailboxProvenance: {
+                                    /** Format: email */
+                                    mailboxAccountEmail: string;
+                                    pendingDuplicateReview: boolean;
+                                    /** Format: date-time */
+                                    receivedAt: string;
+                                    /** Format: email */
+                                    senderAddress: string;
+                                } | null;
                                 merchant: string;
                                 personalProfileId: string | null;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                source: "manual" | "ocr" | "forwarded_email";
+                                source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                                 spendingCategoryId: string | null;
                                 /** @enum {string} */
                                 status: "draft" | "ready" | "archived";
@@ -12574,11 +12641,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -12735,11 +12811,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -13021,11 +13106,20 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";

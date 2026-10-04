@@ -73,6 +73,7 @@ const EXPENSE: Expense = {
   incurredOn: "2025-03-01",
   taxYear: 2025,
   source: "manual",
+  mailboxProvenance: null,
   status: "ready",
   version: 1,
   createdAt: TIMESTAMP,

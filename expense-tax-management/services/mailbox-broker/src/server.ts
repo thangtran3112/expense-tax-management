@@ -4,6 +4,7 @@ import { brokerConfigFromEnv } from "./config.js";
 import { createVaultDatabase } from "./database/client.js";
 import { createGmailMailboxProvider } from "./google-mailbox.js";
 import { createGoogleAuthorizationUrlBuilder } from "./google-authorization-url.js";
+import { buildMaterializeDependencies } from "./ingestion.js";
 
 function requiredEnvironmentValue(key: string): string {
   const value = process.env[key]?.trim();
@@ -65,6 +66,13 @@ const buildGoogleAuthorizationUrl = createGoogleAuthorizationUrlBuilder({
   redirectUri: googleRedirectUri,
 });
 
+// Phase 3D-C Task 5 gap closure 2 -- the real materialize wiring:
+// `appClient` is the same broker-machine-identity App client every other
+// route here already uses (already implements MailboxIngestionAppClient),
+// `providerAdapter` is the same real Gmail adapter `discover()` uses,
+// now also exposing `getGmailDiscoveryClient` -- never a fake/stub.
+const materializeDependencies = buildMaterializeDependencies(appClient, providerAdapter);
+
 const app = buildApp({
   config,
   appClient,
@@ -76,6 +84,7 @@ const app = buildApp({
   // optional fields.
   discoveryAppClient: appClient,
   discoveryProviderAdapter: providerAdapter,
+  materializeDependencies,
   buildGoogleAuthorizationUrl,
   allowedRedirectOrigins: requiredCommaListEnvironmentValue("MAILBOX_ALLOWED_REDIRECT_ORIGINS"),
   ...(process.env.MAILBOX_CALLBACK_HOST?.trim()

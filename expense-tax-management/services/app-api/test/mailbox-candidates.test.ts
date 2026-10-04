@@ -23,6 +23,9 @@ import {
   createMailboxCandidatesDomain,
   type MailboxCandidatesDomain,
 } from "../src/domain/mailbox-candidates.js";
+import { createExpenseDomain } from "../src/domain/expenses.js";
+import { createProcessingJobsDomain } from "../src/domain/processing-jobs.js";
+import type { StartWorkflowInput, TemporalWorkflowStarter } from "../src/temporal/client.js";
 
 const requested = process.env.PHASE_3D_B_T5_INTEGRATION === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -172,8 +175,8 @@ describe.skipIf(!requested)(
       `);
     }
 
-    function createDomain(): MailboxCandidatesDomain {
-      return createMailboxCandidatesDomain(database!);
+    function createDomain(mailboxEnabled = true): MailboxCandidatesDomain {
+      return createMailboxCandidatesDomain(database!, { mailboxEnabled });
     }
 
     /** Fresh connection + scan run per test so fixtures never collide. */
@@ -241,6 +244,51 @@ describe.skipIf(!requested)(
         VALUES ('${randomUUID()}', '${connectionId}', '${TENANT_ID}', '${userId}', 'reviewer',
           ${revoked ? "now()" : "NULL"})
       `);
+    }
+
+    /**
+     * Phase 3D-C Task 5 gap closure 2 -- directly seeds a mailbox job row
+     * (materialize or per-attachment OCR) so tests can exercise
+     * maybeFailMailboxCandidateInTransaction (processing-jobs.ts) through
+     * the domain's own recordStatusUpdate/submitResult without needing a
+     * real Temporal worker.
+     */
+    function insertMailboxJob(
+      candidateId: string,
+      workflowType: "MailboxMaterializeWorkflow" | "MailboxOcrReceiptWorkflow",
+      status: "DISPATCHED" | "RUNNING" | "PENDING" | "SUCCEEDED" | "FAILED" = "DISPATCHED",
+    ): string {
+      const jobId = randomUUID();
+      const resultSchemaVersion =
+        workflowType === "MailboxMaterializeWorkflow" ? "mailbox-materialize-v1" : "ocr-extraction-v1";
+      const targetAggregateType = workflowType === "MailboxMaterializeWorkflow" ? "mailbox_candidate" : "NULL";
+      // Fix round 1 (review finding #1 coverage) -- processing_jobs_
+      // completion_state_check requires completed_at set (only) for a
+      // terminal status; the pre-existing DISPATCHED/RUNNING-only helper
+      // never had to satisfy this.
+      const isTerminal = status === "SUCCEEDED" || status === "FAILED";
+      runtimeSql(`
+        INSERT INTO app.processing_jobs (
+          id, tenant_id, personal_profile_id, workflow_type, workflow_id, task_queue,
+          dispatch_generation, dispatch_namespace, run_id, status,
+          ${workflowType === "MailboxMaterializeWorkflow" ? "target_aggregate_type, target_aggregate_id," : ""}
+          input_params, allowed_result_schema_version, version, created_at, updated_at, dispatched_at, completed_at
+        ) VALUES (
+          '${jobId}', '${TENANT_ID}', '${PROFILE_ID}', '${workflowType}', 'job-${jobId}',
+          'expense-tax-processing', 1, 'expense-tax', 'fake-run-${jobId}', '${status}',
+          ${workflowType === "MailboxMaterializeWorkflow" ? `'${targetAggregateType}', '${candidateId}',` : ""}
+          '{"mailboxCandidateId": "${candidateId}"}', '${resultSchemaVersion}', 2, now(), now(), now(),
+          ${isTerminal ? "now()" : "NULL"}
+        );
+      `);
+      return jobId;
+    }
+
+    function noopStarter(): TemporalWorkflowStarter {
+      return {
+        start: async () => ({ runId: "unused" }),
+        close: async () => undefined,
+      };
     }
 
     // ---------------------------------------------------------------- //
@@ -579,6 +627,552 @@ describe.skipIf(!requested)(
         action: "skip", expectedCandidateVersion: 1, requestId: randomUUID(),
       });
       expect(() => MailboxCandidateV1Schema.parse(result)).not.toThrow();
+    });
+
+    // ---------------------------------------------------------------- //
+    // Phase 3D-C Task 5 gap closure (controller ruling) -- ingest creates
+    // a MailboxMaterializeWorkflow processing job + outbox row in the
+    // SAME transaction, stamped with the fixed TypeScript target.
+    // ---------------------------------------------------------------- //
+
+    it("ingest creates exactly one MailboxMaterializeWorkflow job + outbox row, stamped with the fixed TypeScript target", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId);
+
+      const result = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+        expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+      expect(result.status).toBe("queued");
+      expect(result.processingJobId).not.toBeNull();
+
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}' AND workflow_type = 'MailboxMaterializeWorkflow'`,
+      );
+      expect(jobCount).toBe("1");
+      const jobRow = runtimeSql(
+        `SELECT task_queue, dispatch_namespace, status FROM app.processing_jobs WHERE id = '${result.processingJobId}'`,
+      );
+      expect(jobRow).toBe("expense-tax-processing|expense-tax|PENDING");
+
+      const outboxCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_job_dispatch_outbox WHERE processing_job_id = '${result.processingJobId}'`,
+      );
+      expect(outboxCount).toBe("1");
+    });
+
+    it("creates at most one materialize job for concurrent duplicate ingest requests on the same candidate+version", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId);
+
+      const attempt = () =>
+        domain.resolveCandidate({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+          action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+          expectedCandidateVersion: 1, requestId: randomUUID(),
+        });
+
+      const results = await Promise.allSettled([attempt(), attempt()]);
+      const fulfilledCount = results.filter((settled) => settled.status === "fulfilled").length;
+      expect(fulfilledCount).toBeGreaterThanOrEqual(1);
+
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}' AND workflow_type = 'MailboxMaterializeWorkflow'`,
+      );
+      expect(jobCount).toBe("1");
+    });
+
+    it("dispatchPendingJobs starts MailboxMaterializeWorkflow with the fixed TypeScript namespace/task queue", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId);
+      const result = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+        expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+
+      const calls: StartWorkflowInput[] = [];
+      const recordingStarter: TemporalWorkflowStarter = {
+        start: async (input) => {
+          calls.push(input);
+          return { runId: "fake-run-materialize-1" };
+        },
+        close: async () => undefined,
+      };
+      const processingJobsDomain = createProcessingJobsDomain(database!, recordingStarter);
+      await processingJobsDomain.dispatchPendingJobs({ limit: 10 });
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          workflowType: "MailboxMaterializeWorkflow",
+          taskQueue: "expense-tax-processing",
+          namespace: "expense-tax",
+        }),
+      );
+      const status = runtimeSql(`SELECT status FROM app.processing_jobs WHERE id = '${result.processingJobId}'`);
+      expect(status).toBe("DISPATCHED");
+    });
+
+    it("refuses ingest when the mailbox feature is disabled, before any side effect", async () => {
+      const domain = createDomain(false);
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId);
+
+      await expect(
+        domain.resolveCandidate({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+          action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+          expectedCandidateVersion: 1, requestId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
+
+      const status = runtimeSql(`SELECT status FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(status).toBe("review");
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}'`,
+      );
+      expect(jobCount).toBe("0");
+    });
+
+    it("re-enqueues a fresh materialize job when the previous one is terminal-failed", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "GOOGLE_RATE_LIMITED",
+      });
+
+      // retry clears the Gmail-transient failure back to review (existing
+      // behavior, unrelated to materialize jobs).
+      const retried = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+      expect(retried.status).toBe("review");
+
+      // Seed a prior terminal-FAILED materialize job directly -- simulates
+      // a previous ingest attempt whose MailboxMaterializeWorkflow failed.
+      const staleJobId = randomUUID();
+      runtimeSql(`
+        INSERT INTO app.processing_jobs (
+          id, tenant_id, personal_profile_id, workflow_type, workflow_id, task_queue,
+          dispatch_generation, dispatch_namespace, run_id, status, target_aggregate_type, target_aggregate_id,
+          input_params, allowed_result_schema_version, version, created_at, updated_at, dispatched_at, completed_at
+        ) VALUES (
+          '${staleJobId}', '${TENANT_ID}', '${PROFILE_ID}', 'MailboxMaterializeWorkflow', 'job-${staleJobId}',
+          'expense-tax-processing', 1, 'expense-tax', 'fake-run-stale', 'FAILED', 'mailbox_candidate', '${candidateId}',
+          '{}', 'mailbox-materialize-v1', 2, now(), now(), now(), now()
+        );
+      `);
+
+      const result = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+        expectedCandidateVersion: 2, requestId: randomUUID(),
+      });
+      expect(result.status).toBe("queued");
+      expect(result.processingJobId).not.toBe(staleJobId);
+
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}'`,
+      );
+      expect(jobCount).toBe("2");
+    });
+
+    // ---------------------------------------------------------------- //
+    // Phase 3D-C Task 5 gap closure 2 (controller ruling) -- candidate
+    // terminal failure on a MailboxMaterializeWorkflow/
+    // MailboxOcrReceiptWorkflow job reaching FAILED, through
+    // processing-jobs.ts's recordStatusUpdate/submitResult.
+    // ---------------------------------------------------------------- //
+
+    it("a materialize job's own terminal failure, with no sibling jobs, fails the candidate immediately (MAILBOX_MATERIALIZE_FAILED)", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const jobId = insertMailboxJob(candidateId, "MailboxMaterializeWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${jobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|MAILBOX_MATERIALIZE_FAILED");
+    });
+
+    it("one of several attachment-OCR jobs failing does NOT fail the candidate while a sibling is still in flight", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const failingJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow"); // sibling still DISPATCHED
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: failingJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${failingJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("queued|");
+    });
+
+    it("fails the candidate (OCR_EXTRACTION_FAILED) only once EVERY attachment-OCR job has failed", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const firstJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      const secondJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: firstJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${firstJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+      let row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("queued|"); // one sibling (secondJobId) still in flight
+
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: secondJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${secondJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+      row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|OCR_EXTRACTION_FAILED");
+    });
+
+    it("a sibling's success (candidate already processed) is never overwritten by a later sibling's failure", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const failingJobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+      insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow"); // the "succeeded" sibling
+      // Simulate the succeeded sibling having already materialized the
+      // candidate (recordConnectedMailboxEvidenceInTransaction's own
+      // success path, exercised by mailbox-ingestion.test.ts) -- directly
+      // flip status here, since that full pipeline is out of this file's
+      // own scope.
+      runtimeSql(`UPDATE app.mailbox_candidates SET status = 'processed' WHERE id = '${candidateId}'`);
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.recordStatusUpdate({
+        jobId: failingJobId,
+        request: { schemaVersion: 1, status: "FAILED", idempotencyKey: `t5g2-${failingJobId}`, expectedJobVersion: 2 },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("processed|");
+    });
+
+    it("submitResult's own FAILED path (the legacy result-submission shape) applies the same rule", async () => {
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, { status: "queued" });
+      const jobId = insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow");
+
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopStarter());
+      await processingJobsDomain.submitResult({
+        jobId,
+        request: {
+          schemaVersion: 1,
+          status: "FAILED",
+          idempotencyKey: `t5g2-submit-${jobId}`,
+          expectedJobVersion: 2,
+          resultSchemaVersion: "ocr-extraction-v1",
+          result: { error: "OCR_FAILED" },
+        },
+        actorServicePrincipal: "workflow-worker",
+        requestId: randomUUID(),
+      });
+
+      const row = runtimeSql(`SELECT status, error_code FROM app.mailbox_candidates WHERE id = '${candidateId}'`);
+      expect(row).toBe("failed|OCR_EXTRACTION_FAILED");
+    });
+
+    it("retry on a processing-caused failure (OCR_EXTRACTION_FAILED) clears to review, same as a Gmail-transient one -- migration 019 allows no other transition out of 'failed'", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "OCR_EXTRACTION_FAILED", scopePersonal: PROFILE_ID,
+      });
+
+      const result = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+
+      expect(result.status).toBe("review");
+      expect(result.errorCode).toBeNull();
+    });
+
+    it("retry on a MAILBOX_MATERIALIZE_FAILED candidate, then ingest again, re-enqueues a fresh materialize job (full two-step recovery)", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "MAILBOX_MATERIALIZE_FAILED", scopePersonal: PROFILE_ID,
+      });
+
+      const retried = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+      });
+      expect(retried.status).toBe("review");
+
+      const reingested = await domain.resolveCandidate({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+        action: "ingest", scope: { kind: "personal", profileId: PROFILE_ID },
+        expectedCandidateVersion: retried.version, requestId: randomUUID(),
+      });
+      expect(reingested.status).toBe("queued");
+      expect(reingested.processingJobId).not.toBeNull();
+
+      const jobCount = runtimeSql(
+        `SELECT count(*) FROM app.processing_jobs WHERE target_aggregate_type = 'mailbox_candidate' AND target_aggregate_id = '${candidateId}'`,
+      );
+      expect(jobCount).toBe("1"); // no prior job existed for this candidate (seeded status directly)
+    });
+
+    it("rejects retry for a candidate failed with a non-retryable error code (neither Gmail-transient nor processing-caused)", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      const candidateId = insertCandidate(connectionId, scanRunId, {
+        status: "failed", errorCode: "ENTITLEMENT_DISABLED",
+      });
+
+      await expect(
+        domain.resolveCandidate({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, candidateId,
+          action: "retry", expectedCandidateVersion: 1, requestId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+    });
+
+    // ---------------------------------------------------------------- //
+    // Phase 3D-C Task 6 fix round 1 (review findings #1, #4) -- bucket
+    // filtering/counts and the read-only ingestion-progress summary.
+    // ---------------------------------------------------------------- //
+
+    describe("ingestion-status board (fix round 1)", () => {
+      it("bucket 'in_progress' returns only scope-assigned queued candidates, with a totalCount ignoring the cursor/limit", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const assignedQueued = insertCandidate(connectionId, scanRunId, {
+          status: "queued", scopePersonal: PROFILE_ID,
+        });
+        insertCandidate(connectionId, scanRunId, { status: "queued" }); // unassigned -- never approved
+        insertCandidate(connectionId, scanRunId, { status: "processed", scopePersonal: PROFILE_ID }); // wrong bucket
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "in_progress",
+        });
+
+        expect(result.items.map((item) => item.id)).toEqual([assignedQueued]);
+        expect(result.totalCount).toBe(1);
+      });
+
+      it("bucket 'needs_attention' covers duplicate/review/failed (scope-assigned only); bucket 'completed' covers processed only", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const duplicateId = insertCandidate(connectionId, scanRunId, { status: "duplicate", scopePersonal: PROFILE_ID });
+        const reviewId = insertCandidate(connectionId, scanRunId, { status: "review", scopePersonal: PROFILE_ID });
+        const failedId = insertCandidate(connectionId, scanRunId, { status: "failed", scopePersonal: PROFILE_ID });
+        const processedId = insertCandidate(connectionId, scanRunId, { status: "processed", scopePersonal: PROFILE_ID });
+
+        const needsAttention = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "needs_attention",
+        });
+        expect(new Set(needsAttention.items.map((item) => item.id))).toEqual(
+          new Set([duplicateId, reviewId, failedId]),
+        );
+        expect(needsAttention.totalCount).toBe(3);
+
+        const completed = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "completed",
+        });
+        expect(completed.items.map((item) => item.id)).toEqual([processedId]);
+        expect(completed.totalCount).toBe(1);
+      });
+
+      it("a classification-filtered call (candidate review panel) never computes totalCount", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        insertCandidate(connectionId, scanRunId, { classification: "receipt" });
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, classification: "receipt",
+        });
+        expect(result.totalCount).toBeUndefined();
+      });
+
+      it("ingestionProgress is null for a non-queued candidate even with job rows present", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "review", scopePersonal: PROFILE_ID,
+        });
+        insertMailboxJob(candidateId, "MailboxMaterializeWorkflow", "RUNNING");
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "needs_attention",
+        });
+        const candidate = result.items.find((item) => item.id === candidateId);
+        expect(candidate?.ingestionProgress).toBeNull();
+      });
+
+      it("ingestionProgress is null for a queued candidate with no materialize job yet (plain 'Queued')", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "queued", scopePersonal: PROFILE_ID,
+        });
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "in_progress",
+        });
+        expect(result.items.find((item) => item.id === candidateId)?.ingestionProgress).toBeNull();
+      });
+
+      it("ingestionProgress is 'materializing' while the materialize job is RUNNING with no OCR job yet", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "queued", scopePersonal: PROFILE_ID,
+        });
+        insertMailboxJob(candidateId, "MailboxMaterializeWorkflow", "RUNNING");
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "in_progress",
+        });
+        const candidate = result.items.find((item) => item.id === candidateId);
+        expect(candidate?.ingestionProgress).toEqual({
+          phase: "materializing",
+          attachments: { total: 0, succeeded: 0, failed: 0, pending: 0 },
+        });
+      });
+
+      it("ingestionProgress is 'processing_attachments' once materialize SUCCEEDED and an OCR job is still pending, counting succeeded/pending OCR jobs", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "queued", scopePersonal: PROFILE_ID,
+        });
+        insertMailboxJob(candidateId, "MailboxMaterializeWorkflow", "SUCCEEDED");
+        insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow", "SUCCEEDED");
+        insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow", "DISPATCHED");
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "in_progress",
+        });
+        const candidate = result.items.find((item) => item.id === candidateId);
+        expect(candidate?.ingestionProgress).toEqual({
+          phase: "processing_attachments",
+          attachments: { total: 0, succeeded: 1, failed: 0, pending: 1 },
+        });
+      });
+
+      it("ingestionProgress is null once materialize SUCCEEDED and every OCR job is already terminal (nothing pending)", async () => {
+        const domain = createDomain();
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "queued", scopePersonal: PROFILE_ID,
+        });
+        insertMailboxJob(candidateId, "MailboxMaterializeWorkflow", "SUCCEEDED");
+        insertMailboxJob(candidateId, "MailboxOcrReceiptWorkflow", "SUCCEEDED");
+
+        const result = await domain.listCandidates({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, bucket: "in_progress",
+        });
+        expect(result.items.find((item) => item.id === candidateId)?.ingestionProgress).toBeNull();
+      });
+    });
+
+    // ---------------------------------------------------------------- //
+    // Phase 3D-C Task 6 fix round 1 (review finding #6) -- Office
+    // expense-detail "Source" block provenance, read directly off the
+    // already-persisted expense_sources/mailbox_candidates/
+    // mailbox_connections join (domain/expenses.ts's
+    // loadMailboxProvenance). Reuses this file's own real-PostgreSQL
+    // harness (mailbox connections/candidates already migrated here)
+    // rather than standing up a second Docker-gated file.
+    // ---------------------------------------------------------------- //
+
+    describe("expense-detail connected-mailbox provenance (fix round 1)", () => {
+      function insertExpenseWithMailboxSource(candidateId: string): { expenseId: string; sourceId: string } {
+        const expenseId = randomUUID();
+        const sourceId = randomUUID();
+        runtimeSql(`
+          INSERT INTO app.expenses
+            (id, tenant_id, created_by_user_id, personal_profile_id, merchant, amount, currency, incurred_on, source)
+          VALUES
+            ('${expenseId}', '${TENANT_ID}', '${OWNER_USER_ID}', '${PROFILE_ID}', 'Merchant', 10.00, 'USD', '2026-01-01', 'connected_mailbox');
+          INSERT INTO app.expense_sources
+            (id, tenant_id, personal_profile_id, expense_id, source_type, mailbox_candidate_id)
+          VALUES
+            ('${sourceId}', '${TENANT_ID}', '${PROFILE_ID}', '${expenseId}', 'connected_mailbox', '${candidateId}');
+        `);
+        return { expenseId, sourceId };
+      }
+
+      it("a connected-mailbox expense's detail read includes sender/received/mailbox-account provenance, metadata only", async () => {
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "processed", scopePersonal: PROFILE_ID,
+        });
+        const { expenseId } = insertExpenseWithMailboxSource(candidateId);
+
+        const expenseDomain = createExpenseDomain(database!);
+        const expense = await expenseDomain.getPersonal({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, profileId: PROFILE_ID, expenseId,
+        });
+
+        expect(expense.mailboxProvenance).toEqual({
+          senderAddress: "sender@shopwaveco.example",
+          receivedAt: expect.any(String),
+          mailboxAccountEmail: "owner@example.test",
+          pendingDuplicateReview: false,
+        });
+      });
+
+      it("pendingDuplicateReview is true when the referenced candidate is still status 'duplicate'", async () => {
+        const { connectionId, scanRunId } = createConnectionAndScanRun();
+        const candidateId = insertCandidate(connectionId, scanRunId, {
+          status: "duplicate", scopePersonal: PROFILE_ID,
+        });
+        const { expenseId } = insertExpenseWithMailboxSource(candidateId);
+
+        const expenseDomain = createExpenseDomain(database!);
+        const expense = await expenseDomain.getPersonal({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, profileId: PROFILE_ID, expenseId,
+        });
+
+        expect(expense.mailboxProvenance?.pendingDuplicateReview).toBe(true);
+      });
+
+      it("a manual (non-connected-mailbox) expense never carries mailboxProvenance", async () => {
+        const expenseId = randomUUID();
+        runtimeSql(`
+          INSERT INTO app.expenses
+            (id, tenant_id, created_by_user_id, personal_profile_id, merchant, amount, currency, incurred_on, source)
+          VALUES
+            ('${expenseId}', '${TENANT_ID}', '${OWNER_USER_ID}', '${PROFILE_ID}', 'Manual Merchant', 5.00, 'USD', '2026-01-01', 'manual');
+        `);
+
+        const expenseDomain = createExpenseDomain(database!);
+        const expense = await expenseDomain.getPersonal({
+          actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, profileId: PROFILE_ID, expenseId,
+        });
+
+        expect(expense.mailboxProvenance).toBeNull();
+      });
     });
   },
 );

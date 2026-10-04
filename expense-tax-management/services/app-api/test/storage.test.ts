@@ -110,6 +110,84 @@ describe("local storage adapter", () => {
     await adapter.deleteObject("tenants/t1/originals/f1/a.jpg");
   });
 
+  // ------------------------------------------------------------------ //
+  // Phase 3D-C Task 3 fix round 2 (review Important #1): stream to
+  // storage incrementally, never a single materialized Buffer for the
+  // whole body.
+  // ------------------------------------------------------------------ //
+
+  async function* manyChunks(totalBytes: number, chunkSize: number): AsyncIterable<Buffer> {
+    let remaining = totalBytes;
+    let seed = 0;
+    while (remaining > 0) {
+      const size = Math.min(chunkSize, remaining);
+      yield Buffer.alloc(size, (seed++) % 256);
+      remaining -= size;
+    }
+  }
+
+  it("writeObjectStream receives and writes many small chunks incrementally -- no single chunk anywhere near the full body size", async () => {
+    const adapter = await createAdapter();
+    const CHUNK_SIZE = 64 * 1024; // 64 KiB
+    const TOTAL_BYTES = 5 * 1024 * 1024; // 5 MiB, 80 chunks
+    const source = manyChunks(TOTAL_BYTES, CHUNK_SIZE);
+
+    const observedChunkSizes: number[] = [];
+    async function* observed(): AsyncIterable<Buffer> {
+      for await (const chunk of source) {
+        observedChunkSizes.push(chunk.byteLength);
+        yield chunk;
+      }
+    }
+
+    const result = await adapter.writeObjectStream(
+      { storageKey: "tenants/t1/staging/big.bin", contentType: "application/octet-stream", maxBytes: TOTAL_BYTES },
+      observed(),
+    );
+
+    expect(result.sizeBytes).toBe(TOTAL_BYTES);
+    // The adapter consumed many small chunks, not one pre-concatenated
+    // buffer -- the defining structural property "streamed", not
+    // "buffered then written".
+    expect(observedChunkSizes.length).toBeGreaterThan(1);
+    expect(observedChunkSizes.every((size) => size <= CHUNK_SIZE)).toBe(true);
+    expect(Math.max(...observedChunkSizes)).toBeLessThan(TOTAL_BYTES);
+
+    const stat = await adapter.statObject("tenants/t1/staging/big.bin");
+    expect(stat).toEqual({ exists: true, sizeBytes: TOTAL_BYTES });
+  });
+
+  it("writeObjectStream aborts at maxBytes without draining the rest of the source, and leaves no partial object", async () => {
+    let secondChunkRead = false;
+    async function* source(): AsyncIterable<Buffer> {
+      yield Buffer.alloc(11, 1);
+      secondChunkRead = true;
+      yield Buffer.alloc(11, 2);
+    }
+    const adapter = await createAdapter();
+    await expect(
+      adapter.writeObjectStream(
+        { storageKey: "tenants/t1/staging/oversize.bin", contentType: "application/octet-stream", maxBytes: 10 },
+        source(),
+      ),
+    ).rejects.toMatchObject({ name: "StorageWriteSizeExceededError" });
+    expect(secondChunkRead).toBe(false);
+    expect(await adapter.statObject("tenants/t1/staging/oversize.bin")).toBeNull();
+  });
+
+  it("moveObject promotes a written object to a new key without re-materializing its bytes", async () => {
+    const adapter = await createAdapter();
+    await adapter.writeObjectStream(
+      { storageKey: "from.bin", contentType: "application/octet-stream", maxBytes: 100 },
+      (async function* () {
+        yield Buffer.from("hello-move");
+      })(),
+    );
+    await adapter.moveObject("from.bin", "to.bin");
+    expect(await adapter.statObject("from.bin")).toBeNull();
+    expect((await adapter.readObject("to.bin")).toString()).toBe("hello-move");
+  });
+
   it("rejects path-traversal storage keys", async () => {
     const adapter = await createAdapter();
     await expect(

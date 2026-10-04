@@ -8,6 +8,7 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { generateKeyPair, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp, type BuildAppOptions } from "../src/app.js";
@@ -797,6 +798,255 @@ describe("mailbox-broker routes", () => {
         url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
         headers: { authorization: `Bearer ${token}` },
         payload: {},
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+  });
+
+  // ------------------------------------------------------------------ //
+  // Materialize (Phase 3D-C Task 5) -- optional wiring, same pattern as
+  // discover above: omitting materializeDependencies skips the route.
+  // ------------------------------------------------------------------ //
+  describe("POST /internal/v1/mailbox/candidates/:candidateId/materialize", () => {
+    const CANDIDATE_ID = randomUUID();
+    const CONNECTION_ID = randomUUID();
+
+    function fakeMaterializeDependencies(overrides: { attachments?: unknown[] } = {}) {
+      const appClient = {
+        loadCandidateBinding: vi.fn(async () => ({
+          candidateId: CANDIDATE_ID,
+          connectionId: CONNECTION_ID,
+          expectedCandidateVersion: 1,
+          providerMessageId: "gmail-message-1",
+          providerThreadId: null,
+        })),
+        issueUploadGrant: vi.fn(async () => ({
+          candidateId: CANDIDATE_ID,
+          connectionId: CONNECTION_ID,
+          uploadGrantId: "grant-1",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          maxBytes: 26214400 as const,
+          maxAttachments: 5 as const,
+        })),
+        uploadAttachment: vi.fn(async (input: { attachmentIndex: number }) => ({
+          candidateId: CANDIDATE_ID,
+          attachmentIndex: input.attachmentIndex,
+          fileId: `file-${input.attachmentIndex}`,
+          status: "READY" as const,
+          errorCode: null,
+          idempotencyKey: `idem-${input.attachmentIndex}`,
+        })),
+        submitStructuredResult: vi.fn(),
+        loadScanBinding: vi.fn(),
+        stageCandidateMetadata: vi.fn(),
+      };
+      const getGmailClient = vi.fn(async () => ({
+        getMessage: vi.fn(async () => ({
+          attachments: overrides.attachments ?? [
+            { attachmentId: "att-1", filename: "receipt.pdf", mimeType: "application/pdf", sizeBytes: 100 },
+          ],
+        })),
+        getAttachment: vi.fn(async () => Buffer.from("fake-bytes")),
+        getMessageHtmlBody: vi.fn(async () => null),
+      }));
+      return { appClient, getGmailClient };
+    }
+
+    async function createMaterializeTestApp(deps = fakeMaterializeDependencies()) {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+        materializeDependencies: deps,
+      });
+      apps.add(app);
+      const workerToken = (scopes: readonly string[]) =>
+        issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes });
+      const appApiToken = (scopes: readonly string[]) =>
+        issuer.mint({ subject: APP_API_SUBJECT, audience: AUDIENCE, scopes });
+      return { app, deps, workerToken, appApiToken, issuer };
+    }
+
+    it("accepts the worker principal with mailbox:materialize, uploads the attachment, and returns the opaque result", async () => {
+      const { app, deps, workerToken } = await createMaterializeTestApp();
+      const token = await workerToken(["mailbox:materialize"]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        schemaVersion: 1,
+        candidateId: CANDIDATE_ID,
+        status: "queued",
+        processingJobId: null,
+        expenseId: null,
+        sourceId: null,
+        duplicateMatchId: null,
+      });
+      expect(deps.appClient.issueUploadGrant).toHaveBeenCalledWith(
+        expect.objectContaining({ candidateId: CANDIDATE_ID, expectedCandidateVersion: 1 }),
+      );
+      expect(deps.appClient.uploadAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns review when the Gmail message has no attachments, without issuing an upload grant", async () => {
+      const deps = fakeMaterializeDependencies({ attachments: [] });
+      const { app, workerToken } = await createMaterializeTestApp(deps);
+      const token = await workerToken(["mailbox:materialize"]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ status: "review" });
+      expect(deps.appClient.issueUploadGrant).not.toHaveBeenCalled();
+    });
+
+    it("rejects the app-api principal (wrong caller)", async () => {
+      const { app, appApiToken } = await createMaterializeTestApp();
+      const token = await appApiToken(["mailbox:materialize"]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a worker token missing the mailbox:materialize scope", async () => {
+      const { app, workerToken } = await createMaterializeTestApp();
+      const token = await workerToken([]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    /**
+     * Phase 3D-C Task 5 fix round 1 (review Important #4) -- the broker's
+     * own inbound auth model (auth/clerk.ts) has exactly two callers,
+     * both service-typed (no tenant-token concept exists for internal
+     * broker routes at all, unlike App API's tenant-vs-service split);
+     * "wrong caller"/"missing scope" above are already covered. These add
+     * the remaining real-signed-fixture rejection cases: wrong audience,
+     * wrong issuer, and a different signing key (attacker-signed).
+     */
+    it("rejects a validly-signed worker token for the wrong audience", async () => {
+      const { app, issuer } = await createMaterializeTestApp();
+      // Signed by the SAME trusted issuer/key as every accepted token in
+      // this block -- only the audience claim differs.
+      const token = await issuer.mint({
+        subject: WORKER_SUBJECT,
+        audience: "wrong-audience",
+        scopes: ["mailbox:materialize"],
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a token signed by an attacker holding a different key (same claims otherwise)", async () => {
+      const { app } = await createMaterializeTestApp();
+      const attackerKeys = await generateKeyPair("RS256");
+      const now = Math.floor(Date.now() / 1_000);
+      const token = await new SignJWT({ scope: "mailbox:materialize" })
+        .setProtectedHeader({ alg: "RS256" })
+        .setIssuer("https://clerk.test")
+        .setAudience(AUDIENCE)
+        .setSubject(WORKER_SUBJECT)
+        .setJti(randomUUID())
+        .setIssuedAt(now)
+        .setExpirationTime(now + 300)
+        .sign(attackerKeys.privateKey);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a token issued by the wrong issuer (same audience/subject/scope, signed by a different issuer's key)", async () => {
+      const { app } = await createMaterializeTestApp();
+      const wrongIssuer = await createFakeClerkIssuer({ issuerUrl: "https://attacker-issuer.test" });
+      const token = await wrongIssuer.mint({
+        subject: WORKER_SUBJECT,
+        audience: AUDIENCE,
+        scopes: ["mailbox:materialize"],
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("is not registered when materializeDependencies is omitted", async () => {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+      });
+      apps.add(app);
+      const token = await issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes: ["mailbox:materialize"] });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/candidates/${CANDIDATE_ID}/materialize`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { operationId: "op-1" },
       });
 
       expect(response.statusCode).toBe(404);

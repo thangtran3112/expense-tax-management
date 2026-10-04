@@ -1,4 +1,4 @@
-import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, MailboxIngestionBucketV1, Scope } from "@expense-tax/contracts";
 
 import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxCandidates, fetchMailboxConnection, fetchMailboxScanRuns, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
@@ -121,6 +121,27 @@ export function loadMailboxCandidates(
 ) {
   return fetchMailboxCandidates(session, connectionId, getToken, organizationId, {
     classification,
+    ...(cursor ? { cursor } : {}),
+  });
+}
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #4) -- one ingestion-
+ * status board section (bucket), server-filtered by status + the
+ * "approved for ingestion at least once" scope-assigned rule
+ * (services/app-api/src/domain/mailbox-candidates.ts), with its own
+ * cursor and `totalCount` ("Showing N of M").
+ */
+export function loadMailboxIngestionCandidates(
+  session: OfficeSession,
+  connectionId: string,
+  bucket: MailboxIngestionBucketV1,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  cursor?: string,
+) {
+  return fetchMailboxCandidates(session, connectionId, getToken, organizationId, {
+    bucket,
     ...(cursor ? { cursor } : {}),
   });
 }

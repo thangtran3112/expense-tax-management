@@ -59,6 +59,34 @@ export const MailboxErrorCodeV1Schema = z.enum([
   "VERSION_CONFLICT",
   "IDEMPOTENCY_CONFLICT",
   "REVOKE_PENDING",
+  // Phase 3D-C Task 2 -- deferred by Phase 3D-C Task 1 Ruling 4 ("no new
+  // MailboxErrorCodeV1 enum values added ... deferred to whichever task
+  // first needs to throw an ingestion-specific typed error") to this,
+  // the first task that throws a typed ingestion error.
+  "ATTACHMENT_BOUND_EXCEEDED",
+  "ATTACHMENT_SIGNATURE_REJECTED",
+  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+  "STRUCTURED_RECEIPT_NOT_FOUND",
+  "STRUCTURED_RECEIPT_INCOMPLETE",
+  // Phase 3D-C Task 3 -- App-side streaming/scan/hash verification for
+  // mailbox attachment uploads (packages/contracts/src/mailbox.ts is a
+  // 3D-A Task 1 file, not under 3D-C Task 1's migration-020 concurrent
+  // review, same precedent Task 2 already used for the five codes above).
+  "ATTACHMENT_HASH_MISMATCH",
+  "MALWARE_DETECTED",
+  "OCR_EXTRACTION_FAILED",
+  // Task 3 fix round 1 (review Important #4): the persisted-bytes
+  // re-read/re-hash or the final READY row UPDATE itself failed --
+  // distinct from ATTACHMENT_HASH_MISMATCH (which is the pre-persist
+  // manifest check) so operators can tell the two failure modes apart.
+  "ATTACHMENT_CONFIRMATION_FAILED",
+  // Phase 3D-C Task 5 gap closure 2 -- a MailboxMaterializeWorkflow job
+  // (the broker refetch/upload-grant/upload-attachment/structured-submit
+  // sequence) reached terminal FAILED with no sibling attachment-OCR job
+  // ever created (e.g. the Gmail refetch itself failed) -- distinct from
+  // OCR_EXTRACTION_FAILED (an attachment-OCR job's own failure) so
+  // operators can tell which stage failed.
+  "MAILBOX_MATERIALIZE_FAILED",
 ]);
 export type MailboxErrorCodeV1 = z.infer<typeof MailboxErrorCodeV1Schema>;
 

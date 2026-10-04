@@ -7,6 +7,7 @@ import type {
   ExpenseArchiveRequest,
   ExpenseCreateRequest,
   ExpenseList,
+  ExpenseMailboxProvenanceV1,
   ExpenseTagChip,
   ExpenseUpdateRequest,
   LedgerQuery,
@@ -103,11 +104,55 @@ function toExpense(row: Selectable<ExpenseTable>, tags: ExpenseTagChip[] = []): 
     incurredOn: dateOnly(row.incurred_on as Date | string),
     taxYear: row.tax_year,
     source: row.source,
+    // Fix round 1 (review finding #6) -- set by getPersonal/getBusiness
+    // only (detail reads); list/create/update never pay for the join.
+    mailboxProvenance: null,
     status: row.status,
     version: row.version,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     tags,
+  };
+}
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #6) -- the Office
+ * expense-detail "Source" block's connected-mailbox provenance, metadata
+ * only (sender address, received date, the mailbox account it arrived
+ * through, and whether it is still pending Phase 3B duplicate review --
+ * read directly off the already-persisted mailbox_candidates.status,
+ * never a second dedup lookup). Returns null for any non-connected-
+ * mailbox expense, or the rare case the join can't resolve (candidate
+ * row since deleted -- never expected, never thrown).
+ */
+async function loadMailboxProvenance(
+  database: Kysely<AppDatabase>,
+  tenantId: string,
+  expenseId: string,
+): Promise<ExpenseMailboxProvenanceV1 | null> {
+  const row = await database
+    .selectFrom("app.expense_sources as source")
+    .innerJoin("app.mailbox_candidates as candidate", (join) =>
+      join
+        .onRef("candidate.id", "=", "source.mailbox_candidate_id")
+        .onRef("candidate.tenant_id", "=", "source.tenant_id"),
+    )
+    .innerJoin("app.mailbox_connections as connection", "connection.id", "candidate.connection_id")
+    .select([
+      "candidate.sender_address",
+      "candidate.received_at",
+      "candidate.status",
+      "connection.account_email",
+    ])
+    .where("source.tenant_id", "=", tenantId)
+    .where("source.expense_id", "=", expenseId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    senderAddress: row.sender_address,
+    receivedAt: row.received_at.toISOString(),
+    mailboxAccountEmail: row.account_email,
+    pendingDuplicateReview: row.status === "duplicate",
   };
 }
 
@@ -216,7 +261,7 @@ export async function insertExpenseInTransaction(
     request: ExpenseCreateRequest;
     requestId: string;
     scope: Scope;
-    source?: "manual" | "ocr" | "forwarded_email";
+    source?: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
     /**
      * Required: explicit mode governs initial status and enrichment job creation.
      * Callers must choose one of the three explicit modes — no default.
@@ -781,7 +826,9 @@ export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomai
         expenseId: row.id,
         scope: { kind: "personal", profileId: input.profileId },
       });
-      return toExpense(row, chips);
+      const expense = toExpense(row, chips);
+      if (expense.source !== "connected_mailbox") return expense;
+      return { ...expense, mailboxProvenance: await loadMailboxProvenance(database, input.tenantId, row.id) };
     },
     async getBusiness(input) {
       await businessRole(database, input);
@@ -795,7 +842,9 @@ export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomai
         expenseId: row.id,
         scope: { kind: "business", businessId: input.businessId },
       });
-      return toExpense(row, chips);
+      const expense = toExpense(row, chips);
+      if (expense.source !== "connected_mailbox") return expense;
+      return { ...expense, mailboxProvenance: await loadMailboxProvenance(database, input.tenantId, row.id) };
     },
     async updatePersonal(input) {
       const role = await personalRole(database, input);

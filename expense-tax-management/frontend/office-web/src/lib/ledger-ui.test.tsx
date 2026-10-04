@@ -308,6 +308,76 @@ describe("Phase 3C expense detail fixes", () => {
 });
 
 // ------------------------------------------------------------------ //
+// Phase 3D-C Task 6 fix round 1 (review finding #6) -- expense-detail
+// connected-mailbox "Source" block, metadata only.
+// ------------------------------------------------------------------ //
+
+describe("expense detail — connected-mailbox Source block (fix round 1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readOfficeSession.mockReturnValue(bizSession);
+    mockFetchSuggestions.mockResolvedValue({ items: [], nextCursor: null });
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders sender/received/scope for a cleanly-ingested connected-mailbox expense, metadata only", async () => {
+    mockFetchExpenseDetail.mockResolvedValue({
+      id: "exp-1", merchant: "Northline Hardware", incurredOn: "2026-10-02",
+      amount: "142.30", currency: "USD", status: "ready", version: 1, tags: [],
+      personalProfileId: "profile-1", businessId: null,
+      mailboxProvenance: {
+        senderAddress: "receipts@northline-hardware.example",
+        receivedAt: "2026-10-02T06:41:00.000Z",
+        mailboxAccountEmail: "owner@example.test",
+        pendingDuplicateReview: false,
+      },
+    });
+
+    render(<ExpenseDetail />);
+
+    await waitFor(() => expect(screen.getByText("Source")).toBeTruthy());
+    expect(screen.getByText("receipts@northline-hardware.example")).toBeTruthy();
+    expect(screen.getByText("Connected Gmail mailbox")).toBeTruthy();
+    expect(screen.getByText("Personal")).toBeTruthy();
+    expect(screen.getByText(/Metadata only/)).toBeTruthy();
+    expect(screen.queryByText(/Review duplicate match/)).toBeNull();
+  });
+
+  it("links to the existing /duplicates queue when the source is pending duplicate review", async () => {
+    mockFetchExpenseDetail.mockResolvedValue({
+      id: "exp-2", merchant: "Slatehouse Supply", incurredOn: "2026-10-02",
+      amount: "88.00", currency: "USD", status: "ready", version: 1, tags: [],
+      personalProfileId: "profile-1", businessId: null,
+      mailboxProvenance: {
+        senderAddress: "billing@slatehouse-supply.example",
+        receivedAt: "2026-10-02T07:04:00.000Z",
+        mailboxAccountEmail: "owner@example.test",
+        pendingDuplicateReview: true,
+      },
+    });
+
+    render(<ExpenseDetail />);
+
+    const link = await screen.findByText(/Review duplicate match/);
+    expect(link.closest("a")?.getAttribute("href")).toBe("/duplicates");
+  });
+
+  it("renders no Source block for a manually-created expense", async () => {
+    mockFetchExpenseDetail.mockResolvedValue({
+      id: "exp-3", merchant: "Office Depot", incurredOn: "2026-10-02",
+      amount: "20.00", currency: "USD", status: "ready", version: 1, tags: [],
+      mailboxProvenance: null,
+    });
+
+    render(<ExpenseDetail />);
+
+    await waitFor(() => expect(screen.getAllByText("Office Depot").length).toBeGreaterThan(0));
+    expect(screen.queryByText("Source")).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------ //
 // m-3: Tax page null-session renders unavailable state
 // ------------------------------------------------------------------ //
 

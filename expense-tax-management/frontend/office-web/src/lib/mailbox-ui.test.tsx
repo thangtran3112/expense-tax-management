@@ -22,6 +22,7 @@ const harness = vi.hoisted(() => ({
   loadOwnPersonalProfile: vi.fn(),
   loadMailboxScanRuns: vi.fn(),
   loadMailboxCandidates: vi.fn(),
+  loadMailboxIngestionCandidates: vi.fn(),
   connectMailboxGoogle: vi.fn(),
   startMailboxScan: vi.fn(),
   resolveMailboxCandidate: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock("@/lib/page-data", () => ({
   loadOwnPersonalProfile: (...args: unknown[]) => harness.loadOwnPersonalProfile(...args),
   loadMailboxScanRuns: (...args: unknown[]) => harness.loadMailboxScanRuns(...args),
   loadMailboxCandidates: (...args: unknown[]) => harness.loadMailboxCandidates(...args),
+  loadMailboxIngestionCandidates: (...args: unknown[]) => harness.loadMailboxIngestionCandidates(...args),
 }));
 vi.mock("@/lib/mailbox", async () => {
   const actual = await vi.importActual<typeof import("./mailbox")>("./mailbox");
@@ -89,6 +91,7 @@ describe("rendered Office mailbox page", () => {
     harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
     harness.loadMailboxScanRuns.mockResolvedValue([]);
     harness.loadMailboxCandidates.mockResolvedValue({ items: [], nextCursor: null });
+    harness.loadMailboxIngestionCandidates.mockResolvedValue({ items: [], nextCursor: null });
   });
 
   // ------------------------------------------------------------------ //
@@ -270,6 +273,7 @@ describe("rendered Office mailbox page — scan status polling (connected)", () 
     harness.loadAuthorizedBusinesses.mockResolvedValue([]);
     harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
     harness.loadMailboxCandidates.mockResolvedValue({ items: [], nextCursor: null });
+    harness.loadMailboxIngestionCandidates.mockResolvedValue({ items: [], nextCursor: null });
   });
 
   it("restarts polling after a manual Scan now trigger, and stops once the new run reaches a terminal status", async () => {
@@ -361,6 +365,7 @@ describe("rendered Office mailbox page — reauth_required blocks scanning only"
     harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
     harness.loadMailboxScanRuns.mockResolvedValue([scanRun("completed", "run-0")]);
     harness.loadMailboxCandidates.mockResolvedValue({ items: [], nextCursor: null });
+    harness.loadMailboxIngestionCandidates.mockResolvedValue({ items: [], nextCursor: null });
   });
 
   it("disables Scan now with an accessible explanation, and offers a Reconnect Gmail action, while candidates still load", async () => {
@@ -453,6 +458,7 @@ describe("rendered Office mailbox page — candidate detail metadata (approved g
       async (_session: unknown, _connectionId: unknown, classification: string) =>
         classification === "ambiguous" ? { items: [CANDIDATE], nextCursor: null } : { items: [], nextCursor: null },
     );
+    harness.loadMailboxIngestionCandidates.mockResolvedValue({ items: [], nextCursor: null });
   });
 
   it("renders candidate/scan-run IDs, content fingerprint, and attachment name/type/size/hash -- metadata only, never a body field", async () => {

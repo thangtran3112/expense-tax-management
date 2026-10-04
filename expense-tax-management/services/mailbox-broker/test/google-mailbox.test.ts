@@ -12,11 +12,12 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   createGmailMailboxProvider,
   createMailboxProviderAdapter,
+  decodeBase64UrlBounded,
   GMAIL_READONLY_SCOPE,
 } from "../src/google-mailbox.js";
 import { createOAuthState } from "../src/oauth-state.js";
@@ -377,5 +378,57 @@ describe.skipIf(!requested)("google-mailbox.ts createGmailMailboxProvider (live 
       expect.objectContaining({ refresh_token: "fake-refresh-token" }),
     );
     expect(page).toEqual({ scanRunId, pageSequence: 1, candidateCount: 0, retryCount: 0 });
+  });
+});
+
+/**
+ * Phase 3D-C Task 5 fix round 1 (review Important #3) -- pure, no
+ * googleapis/network dependency, so directly unit-testable without the
+ * "operator-gated, no real Google network" exemption the Gmail-API
+ * wrapper methods around it still correctly claim.
+ */
+describe("decodeBase64UrlBounded", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("decodes a small input (under budget) completely and correctly", () => {
+    const original = Buffer.from("a".repeat(100), "utf8");
+    const result = decodeBase64UrlBounded(original.toString("base64url"), 1_000);
+    expect(result.equals(original)).toBe(true);
+  });
+
+  it("never allocates/decodes beyond budget + 1 bytes, even for a huge input -- Buffer.from is called with a bounded-length string, never the full one", () => {
+    const budget = 1_000;
+    // ~10 MiB of base64url input (~7.5 MiB decoded) -- cheap to construct
+    // (no real I/O), but large enough to prove the original "decode
+    // everything, then subarray" bug would have fully decoded it.
+    const huge = "A".repeat(10 * 1024 * 1024);
+    const maxBase64CharsNeeded = Math.ceil((budget + 2) / 3) * 4;
+
+    const bufferFromSpy = vi.spyOn(Buffer, "from");
+    const result = decodeBase64UrlBounded(huge, budget);
+
+    expect(result.length).toBe(budget + 1);
+    expect(bufferFromSpy).toHaveBeenCalledTimes(1);
+    const [decodedArg] = bufferFromSpy.mock.calls[0] as [string, string];
+    expect(decodedArg.length).toBe(maxBase64CharsNeeded);
+    expect(decodedArg.length).toBeLessThan(huge.length);
+  });
+
+  it("returns exactly budget bytes when the input decodes to precisely the budget (boundary, not oversized)", () => {
+    const budget = 300;
+    const exact = Buffer.alloc(budget, 0x41);
+    const result = decodeBase64UrlBounded(exact.toString("base64url"), budget);
+    expect(result.length).toBe(budget);
+    expect(result.equals(exact)).toBe(true);
+  });
+
+  it("returns exactly budget + 1 bytes when the input is one byte over budget", () => {
+    const budget = 300;
+    const overByOne = Buffer.alloc(budget + 1, 0x42);
+    const result = decodeBase64UrlBounded(overByOne.toString("base64url"), budget);
+    expect(result.length).toBe(budget + 1);
+    expect(result.equals(overByOne)).toBe(true);
   });
 });

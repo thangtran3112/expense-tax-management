@@ -165,6 +165,12 @@ export async function registerJobRoutes(
     },
   );
 
+  // Phase 3D-C Task 5 fix round 1 (review Important #1): the mailbox
+  // materialize-input read moved to routes/mailbox-internal.ts, guarded
+  // by the mailbox-scoped "workflow-worker-mailbox" identity (scope
+  // "mailbox:materialize") instead of this file's generic "ai-worker"
+  // one -- it was never a route any other job type needed.
+
   // ---- enrichment input/result routes --------------------------------
   // Require exact configured worker M2M subject and route-specific scopes.
   // Independent guards per route: input scope != result scope.

@@ -21,11 +21,27 @@ import { expect, it } from "vitest";
 const TASK_QUEUE = "expense-tax-processing";
 const workflowsPath = fileURLToPath(new URL("../src/workflows/index.ts", import.meta.url));
 
-/** Banned per the plan's global constraint: no history ID, cursor, pre-fence
- * token, message ID, thread ID, sender, subject, or attachment metadata may
- * ever cross into Temporal history. */
+/**
+ * Banned per the plan's global constraint: no history ID, cursor,
+ * pre-fence token, message ID, thread ID, sender, subject, or attachment
+ * metadata may ever cross into Temporal history.
+ *
+ * Phase 3D-C Task 5 fix round 2 (review payload-leak regression): merged
+ * with the extraction-content/HTML-body terms the OCR/materialize combined
+ * activities' own real implementation (activities/mailbox-ingestion.ts)
+ * must never surface through ANY Temporal-visible channel -- activity
+ * input, activity result, a failure's own message, or the subsequent
+ * *_mark_failed callback's forwarded message -- for
+ * MailboxOcrReceiptWorkflow/MailboxMaterializeWorkflow. One shared
+ * pattern + helper (not a second one) deliberately: these are strictly
+ * additive terms a scan-workflow history could never legitimately contain
+ * either, so reusing forbiddenFieldsInHistory below for every workflow in
+ * this file is both correct and the smallest diff. (No separate
+ * heartbeat check: grep confirms neither activity ever calls
+ * Context.current().heartbeat(...), so that channel doesn't exist here.)
+ */
 const FORBIDDEN_FIELD_PATTERN =
-  /historyId|cursorDigest|preFenceToken|providerMessageId|providerThreadId|senderAddress|senderDomain|"subject"|attachmentManifest/i;
+  /historyId|cursorDigest|preFenceToken|providerMessageId|providerThreadId|senderAddress|senderDomain|"subject"|attachmentManifest|merchant|incurredOn|"amount"|"currency"|confidence|htmlBody|<html|<!doctype|attachmentBytes|receipt bytes|order number|orderNumber/i;
 
 async function forbiddenFieldsInHistory(
   env: TestWorkflowEnvironment,
@@ -247,6 +263,267 @@ it("MailboxScheduledScanTriggerWorkflow does nothing on skipped_overlap", async 
       }),
     );
     expect(calls.map(([name]) => name)).toEqual(["start"]);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+/**
+ * Phase 3D-C Task 5 — MailboxOcrReceiptWorkflow. Proves mark_running then
+ * the single combined mailbox_ocr_receipt activity, with ocr_mark_failed
+ * as the best-effort terminal callback on failure -- and that no OCR
+ * extraction field or byte ever appears in Temporal history (only the
+ * opaque jobId/version/message cross the boundary).
+ */
+it("MailboxOcrReceiptWorkflow marks running, runs the combined OCR activity, and returns", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-success";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running(input: unknown) {
+          calls.push(["mark_running", input]);
+          return 2;
+        },
+        async mailbox_ocr_receipt(input: unknown) {
+          calls.push(["mailbox_ocr_receipt", input]);
+          return 3;
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 4;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "11111111-1111-4111-8111-111111111111",
+      workflowType: "MailboxOcrReceiptWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      ["mark_running", { jobReference, expectedJobVersion: 2 }],
+      ["mailbox_ocr_receipt", { jobReference, expectedJobVersion: 2 }],
+    ]);
+    // Fix round 2 (payload-leak regression): checks the REAL fetched
+    // Temporal history, not just this test's own local `calls` capture --
+    // `calls` only proves what the fake activity itself logged, which is
+    // tautological given its typed signature; fetchHistory() proves what
+    // Temporal server actually persisted.
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxOcrReceiptWorkflow marks the job failed (best-effort) when the combined activity fails permanently", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-failure";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running() {
+          return 2;
+        },
+        async mailbox_ocr_receipt() {
+          const { ApplicationFailure } = await import("@temporalio/activity");
+          throw ApplicationFailure.nonRetryable("extraction failed", "MailboxOcrExtractionFailed");
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 5;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "22222222-2222-4222-8222-222222222222",
+      workflowType: "MailboxOcrReceiptWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "ocr_mark_failed",
+        {
+          jobReference,
+          expectedJobVersion: 2,
+          message: "MAILBOX_OCR_FAILED: extraction or submission error",
+        },
+      ],
+    ]);
+    // Fix round 2 (payload-leak regression): the failure path is the one
+    // most at risk of a future "helpful" regression (forwarding
+    // error.message instead of this fixed constant) -- checks the REAL
+    // fetched history, not just `calls`.
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxOcrReceiptWorkflow rejects a job reference for a different workflow type", async () => {
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-wrong-type";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running() {
+          throw new Error("must not be called");
+        },
+        async mailbox_ocr_receipt() {
+          throw new Error("must not be called");
+        },
+        async ocr_mark_failed() {
+          throw new Error("must not be called");
+        },
+      },
+    });
+    await expect(
+      worker.runUntil(() =>
+        env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+          workflowId,
+          taskQueue: TASK_QUEUE,
+          args: [{ schemaVersion: 1, jobId: "33333333-3333-4333-8333-333333333333", workflowType: "OcrReceiptWorkflow", workflowId }],
+        }),
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+/**
+ * Phase 3D-C Task 5 gap closure — MailboxMaterializeWorkflow. Receives
+ * only a `JobReferenceV1` (dispatched through the ordinary job pipeline,
+ * same as MailboxOcrReceiptWorkflow above); one combined activity
+ * resolves candidateId/calls the broker/submits the result.
+ */
+it("MailboxMaterializeWorkflow marks running, runs the combined materialize activity, and returns", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-materialize-success";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_mark_running(input: unknown) {
+          calls.push(["mailbox_mark_running", input]);
+          return 2;
+        },
+        async mailbox_materialize_job(input: unknown) {
+          calls.push(["mailbox_materialize_job", input]);
+          return 3;
+        },
+        async mailbox_mark_failed(input: unknown) {
+          calls.push(["mailbox_mark_failed", input]);
+          return 4;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "44444444-4444-4444-8444-444444444444",
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxMaterializeWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      ["mailbox_mark_running", { jobReference, expectedJobVersion: 2 }],
+      ["mailbox_materialize_job", { jobReference, expectedJobVersion: 2 }],
+    ]);
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxMaterializeWorkflow marks the job failed (best-effort) when the combined activity fails permanently", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-materialize-failure";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_mark_running() {
+          return 2;
+        },
+        async mailbox_materialize_job() {
+          const { ApplicationFailure } = await import("@temporalio/activity");
+          throw ApplicationFailure.nonRetryable("broker call failed", "MailboxMaterializeNonRetryable");
+        },
+        async mailbox_mark_failed(input: unknown) {
+          calls.push(["mailbox_mark_failed", input]);
+          return 5;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "55555555-5555-4555-8555-555555555555",
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxMaterializeWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "mailbox_mark_failed",
+        {
+          jobReference,
+          expectedJobVersion: 2,
+          message: "MAILBOX_MATERIALIZE_FAILED: broker materialize call or result submission error",
+        },
+      ],
+    ]);
+    // Fix round 2 (payload-leak regression): same rationale as the OCR
+    // failure test above -- checks the REAL fetched history.
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
   } finally {
     await env.teardown();
   }

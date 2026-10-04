@@ -81,6 +81,7 @@ const candidate = {
   expenseId: null,
   sourceId: null,
   duplicateMatchId: null,
+  ingestionProgress: null,
   version: 1,
   idempotencyKey: mailboxIdempotencyKey(ids.connectionId, "candidate", "msg-1", 1),
   errorCode: null,

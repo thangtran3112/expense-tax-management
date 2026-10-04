@@ -376,6 +376,10 @@ may include at most 5 accepted attachments, each at most existing
 `MAX_UPLOAD_BYTES` (25 MiB). Exceeding a limit creates typed review/skip outcome,
 never partial parsing.
 
+A candidate's materialization tries the structured HTML path first; only an
+absent, invalid, or over-budget structured body falls through to the attachment
+path below. A complete structured match never issues an attachment upload grant.
+
 ### Attachment path
 
 1. Broker refetches candidate by App-bound connection/message reference.
@@ -458,10 +462,17 @@ browser retained old candidate data.
 
 Review actions:
 
-- `ingest`: assign authorized scope and queue processing.
+- `ingest`: assign authorized scope and queue processing (transactionally creates
+  the materialize job/outbox row that actually performs ingestion; idempotent,
+  at most one non-terminal materialize job per candidate).
 - `skip`: retain metadata/audit, no expense.
 - `not_receipt`: terminal training/audit outcome, no mailbox modification.
-- `retry`: allowed for typed transient failure only.
+- `retry`: allowed for typed transient failure only (Gmail-transient or
+  processing-transient, e.g. a materialize/OCR failure) and is a two-step
+  recovery: `retry` clears the candidate to `review`, never directly back to
+  `queued`; a subsequent `ingest` re-enqueues a fresh materialize job. A
+  malware-blocked attachment is a dead end, not a typed transient failure, and
+  is never retryable.
 
 ## APIs
 
@@ -518,6 +529,10 @@ expenses, provenance, or audit history occurs.
 - Expired history ID HTTP 404: bounded full-sync recovery, not connection failure.
 - Entitlement disabled: typed skipped run and paused schedule.
 - Candidate conflict/version mismatch: no ingestion; return stale/conflict.
+- Malware-blocked attachment: dead end, never confirmed/retryable; the staged
+  copy is deleted immediately. A candidate fails with `MALWARE_DETECTED` only
+  once every attachment/materialize attempt for it has terminally failed and
+  none succeeded (a mixed candidate with one clean attachment still proceeds).
 - Broker/App callback uncertainty: retry same idempotency key; never duplicate
   candidate, file, job, expense, or provenance.
 - Secret write succeeds but App completion fails: broker retains attempt ID and

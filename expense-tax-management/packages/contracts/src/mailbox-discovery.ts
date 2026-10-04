@@ -66,6 +66,45 @@ export const MailboxCandidateStatusSchema = z.enum([
 ]);
 export type MailboxCandidateStatus = z.infer<typeof MailboxCandidateStatusSchema>;
 
+/**
+ * Phase 3D-C Task 6 fix round 1 -- Office ingestion-status board groups
+ * candidates by outcome, not raw status (review finding #4). A candidate
+ * only belongs to a bucket once it has been approved for ingestion at
+ * least once (scope assigned); App enforces that server-side when this
+ * is used as a list filter (domain/mailbox-candidates.ts).
+ */
+export const MailboxIngestionBucketV1Schema = z.enum(["in_progress", "needs_attention", "completed"]);
+export type MailboxIngestionBucketV1 = z.infer<typeof MailboxIngestionBucketV1Schema>;
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #1) -- a read-only,
+ * derived in-progress phase for a `queued` candidate, computed from its
+ * MailboxMaterializeWorkflow/MailboxOcrReceiptWorkflow processing_jobs
+ * rows (domain/mailbox-candidates.ts). Opaque counts/phase only -- no
+ * provider IDs or content. Null whenever the candidate is not `queued`,
+ * or is `queued` with no job activity yet (plain "Queued", no richer
+ * phase to report).
+ *
+ * `attachments.*` count OCR jobs only (one per successfully-uploaded
+ * attachment): `total` is the candidate's own attachment-manifest count
+ * (known upfront); `pending` covers PENDING/DISPATCHED/RUNNING. An
+ * attachment that never reached an OCR job at all (rejected before
+ * upload confirmation -- oversize, bad signature, hash mismatch, failed
+ * malware scan) is not separately attributable to one of these counts
+ * from existing schema (see task-6-report.md Fix round 1 Ruling 1); it
+ * shows up only as `total - succeeded - failed - pending`.
+ */
+export const MailboxIngestionProgressV1Schema = z.strictObject({
+  phase: z.enum(["materializing", "processing_attachments"]),
+  attachments: z.strictObject({
+    total: z.int().nonnegative(),
+    succeeded: z.int().nonnegative(),
+    failed: z.int().nonnegative(),
+    pending: z.int().nonnegative(),
+  }),
+});
+export type MailboxIngestionProgressV1 = z.infer<typeof MailboxIngestionProgressV1Schema>;
+
 const Sha256DigestSchema = z
   .string()
   .regex(/^[a-f0-9]{64}$/, "Digest must be a 64-char lowercase hex SHA-256");
@@ -145,6 +184,7 @@ const MailboxCandidatePublicFields = {
   expenseId: z.uuid().nullable(),
   sourceId: z.uuid().nullable(),
   duplicateMatchId: z.uuid().nullable(),
+  ingestionProgress: MailboxIngestionProgressV1Schema.nullable(),
   version: VersionSchema,
   idempotencyKey: z.string().trim().min(1).max(500),
   errorCode: MailboxErrorCodeV1Schema.nullable(),
@@ -327,6 +367,20 @@ export interface MailboxBrokerDiscoveryAppClient {
 
 export interface MailboxDiscoveryProviderAdapter {
   discover(input: DiscoveryInput): Promise<DiscoveryPageV1>;
+}
+
+/**
+ * Phase 3D-C ruling -- canonicalized here (moved from
+ * services/mailbox-broker/src/app-client.ts, where Phase 3D-B Task 4 fix
+ * round 1 deliberately declared it as a broker-local interface because "the
+ * plan's canonical contracts block never names a client method for this
+ * route"). Phase 3D-C's MailboxIngestionAppClient
+ * (./mailbox-ingestion.ts) needs to extend it directly, so it is canonical
+ * now; the broker's app-client.ts imports this instead of declaring its
+ * own copy. Shape is unchanged.
+ */
+export interface MailboxBrokerMaterializeAppClient {
+  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
 }
 
 export type { MailboxScope };
