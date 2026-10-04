@@ -62,6 +62,16 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     CREATE UNIQUE INDEX mailbox_candidates_id_tenant_unique
       ON app.mailbox_candidates (id, tenant_id)
   `.execute(database);
+  /* Fix round 1 (review Important #2) -- a second composite unique index,
+     additionally covering connection_id, so app.mailbox_ingestion_operations
+     below can FK against (candidate_id, connection_id, tenant_id) and have
+     PostgreSQL itself reject a row whose connection_id does not match the
+     referenced candidate's own connection_id (a same-tenant cross-mailbox
+     mismatch), not just a row whose candidate/tenant don't match. */
+  await sql`
+    CREATE UNIQUE INDEX mailbox_candidates_id_connection_tenant_unique
+      ON app.mailbox_candidates (id, connection_id, tenant_id)
+  `.execute(database);
 
   // ------------------------------------------------------------------ //
   // app.expense_sources connected provenance.
@@ -260,9 +270,15 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       CONSTRAINT mailbox_ingestion_operations_connection_tenant_fk
         FOREIGN KEY (connection_id, tenant_id)
         REFERENCES app.mailbox_connections(id, tenant_id) ON DELETE CASCADE,
-      CONSTRAINT mailbox_ingestion_operations_candidate_tenant_fk
-        FOREIGN KEY (candidate_id, tenant_id)
-        REFERENCES app.mailbox_candidates(id, tenant_id) ON DELETE CASCADE,
+      -- Fix round 1 (review Important #2): three-column FK, not two --
+      -- requires the candidate's OWN connection_id to equal this row's
+      -- connection_id, so a same-tenant operation can never be inserted
+      -- against a candidate that belongs to a different mailbox
+      -- connection. Backed by mailbox_candidates_id_connection_tenant_unique
+      -- above.
+      CONSTRAINT mailbox_ingestion_operations_candidate_connection_tenant_fk
+        FOREIGN KEY (candidate_id, connection_id, tenant_id)
+        REFERENCES app.mailbox_candidates(id, connection_id, tenant_id) ON DELETE CASCADE,
       CONSTRAINT mailbox_ingestion_operations_kind_check
         CHECK (operation_kind IN (
           'issue_upload_grant', 'upload_attachment', 'submit_structured_result',
@@ -295,23 +311,150 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       WHERE operation_kind = 'materialize_candidate' AND status IN ('pending', 'started')
   `.execute(database);
 
+  /* Fix round 1 (review Important #1): the original guard only checked
+     terminal immutability, which still permitted any non-terminal
+     transition at all -- pending -> completed (skipping started), a
+     same-status pending -> pending with different columns, or even
+     started -> pending (backward). Replaced with a real forward-only
+     state machine, same technique as migration 018's
+     prevent_mailbox_oauth_attempt_invalid_transition: terminal check
+     first (so it is never short-circuited by the same-status
+     allowance), then an explicit allow-list of the only two legal edges
+     documented in this migration's own header
+     (pending -> started -> completed|failed). */
   await sql`
-    CREATE OR REPLACE FUNCTION app.prevent_mailbox_ingestion_operation_terminal_update()
+    CREATE OR REPLACE FUNCTION app.prevent_mailbox_ingestion_operation_invalid_transition()
     RETURNS trigger
     LANGUAGE plpgsql
     AS $function$
     BEGIN
-      IF OLD.status IN ('completed', 'failed') AND OLD IS DISTINCT FROM NEW THEN
+      IF OLD.status IN ('completed', 'failed') THEN
         RAISE EXCEPTION 'terminal mailbox ingestion operation is immutable: %', OLD.status;
       END IF;
+
+      IF OLD.status = NEW.status THEN
+        RETURN NEW;
+      END IF;
+
+      IF NOT (
+        (OLD.status = 'pending' AND NEW.status = 'started')
+        OR (OLD.status = 'started' AND NEW.status IN ('completed', 'failed'))
+      ) THEN
+        RAISE EXCEPTION 'invalid mailbox ingestion operation status transition: % -> %', OLD.status, NEW.status;
+      END IF;
+
       RETURN NEW;
     END;
     $function$;
   `.execute(database);
   await sql`
-    CREATE TRIGGER mailbox_ingestion_operations_terminal_guard_trigger
+    CREATE TRIGGER mailbox_ingestion_operations_transition_guard_trigger
       BEFORE UPDATE ON app.mailbox_ingestion_operations
-      FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_ingestion_operation_terminal_update()
+      FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_ingestion_operation_invalid_transition()
+  `.execute(database);
+
+  /* Fix round 1 (review Important #4): response_json previously had no
+     shape constraint at all -- any JSON, of any size, including raw
+     MIME/body/HTML, could be stored. A CHECK constraint cannot express
+     this (PostgreSQL forbids subqueries, including set-returning
+     functions like jsonb_object_keys/jsonb_each, inside a CHECK), so a
+     BEFORE INSERT OR UPDATE trigger validates instead: response_json, if
+     present, must be a JSON object whose keys are drawn only from the
+     union of the four response contracts this ledger ever caches
+     (MailboxBrokerUploadGrantV1 / MailboxAttachmentUploadResultV1 /
+     MailboxMaterializationResultV1 -- packages/contracts/src/
+     mailbox-ingestion.ts), whose values are scalars only (no nested
+     object/array -- the one shape raw content could hide inside), with a
+     2000-character bound per string value and a 4096-byte bound on the
+     whole object as defense in depth against a bulk value smuggled under
+     an otherwise-legal key. */
+  await sql`
+    CREATE OR REPLACE FUNCTION app.validate_mailbox_ingestion_operation_response()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      response_key text;
+      response_value jsonb;
+    BEGIN
+      IF NEW.response_json IS NULL THEN
+        RETURN NEW;
+      END IF;
+
+      IF jsonb_typeof(NEW.response_json) <> 'object' THEN
+        RAISE EXCEPTION 'mailbox ingestion operation response_json must be a JSON object';
+      END IF;
+
+      IF octet_length(NEW.response_json::text) > 4096 THEN
+        RAISE EXCEPTION 'mailbox ingestion operation response_json exceeds the 4096-byte bound';
+      END IF;
+
+      FOR response_key, response_value IN SELECT key, value FROM jsonb_each(NEW.response_json) LOOP
+        IF NOT (response_key = ANY (ARRAY[
+          'schemaVersion', 'candidateId', 'connectionId', 'uploadGrantId', 'expiresAt',
+          'maxBytes', 'maxAttachments', 'attachmentIndex', 'fileId', 'status', 'errorCode',
+          'idempotencyKey', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId'
+        ])) THEN
+          RAISE EXCEPTION 'mailbox ingestion operation response_json carries an unexpected field: %', response_key;
+        END IF;
+
+        IF jsonb_typeof(response_value) NOT IN ('string', 'number', 'boolean', 'null') THEN
+          RAISE EXCEPTION 'mailbox ingestion operation response_json field % must be a scalar, not %', response_key, jsonb_typeof(response_value);
+        END IF;
+
+        IF jsonb_typeof(response_value) = 'string' AND char_length(response_value #>> '{}') > 2000 THEN
+          RAISE EXCEPTION 'mailbox ingestion operation response_json field % exceeds the 2000-character bound', response_key;
+        END IF;
+      END LOOP;
+
+      RETURN NEW;
+    END;
+    $function$;
+  `.execute(database);
+  await sql`
+    CREATE TRIGGER mailbox_ingestion_operations_response_shape_guard_trigger
+      BEFORE INSERT OR UPDATE ON app.mailbox_ingestion_operations
+      FOR EACH ROW EXECUTE FUNCTION app.validate_mailbox_ingestion_operation_response()
+  `.execute(database);
+
+  /* Fix round 1 (review Important #3): once a mailbox_candidates row is
+     referenced by an app.expense_sources row (connected provenance), its
+     scope and owning connection must never change underneath that
+     reference -- same "referenced row's identifying columns are
+     immutable" precedent as migration 015's
+     prevent_expense_dedup_parent_scope_update, applied here to the
+     columns that actually identify a candidate's scope/connection
+     (candidate_personal_profile_id / candidate_business_id /
+     connection_id), not migration 015's generic personal_profile_id/
+     business_id names. A column-list trigger (BEFORE UPDATE OF ...) so it
+     only runs when one of these columns is part of the UPDATE's SET
+     list, same technique as migration 015's trigger. */
+  await sql`
+    CREATE OR REPLACE FUNCTION app.prevent_mailbox_candidate_referenced_scope_update()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF OLD.tenant_id IS NOT DISTINCT FROM NEW.tenant_id
+        AND OLD.connection_id IS NOT DISTINCT FROM NEW.connection_id
+        AND OLD.candidate_personal_profile_id IS NOT DISTINCT FROM NEW.candidate_personal_profile_id
+        AND OLD.candidate_business_id IS NOT DISTINCT FROM NEW.candidate_business_id THEN
+        RETURN NEW;
+      END IF;
+
+      IF EXISTS (SELECT 1 FROM app.expense_sources WHERE mailbox_candidate_id = OLD.id) THEN
+        RAISE EXCEPTION 'referenced mailbox candidate scope/connection is immutable';
+      END IF;
+
+      RETURN NEW;
+    END;
+    $function$;
+  `.execute(database);
+  await sql`
+    CREATE TRIGGER mailbox_candidates_referenced_scope_guard_trigger
+      BEFORE UPDATE OF tenant_id, connection_id, candidate_personal_profile_id, candidate_business_id
+      ON app.mailbox_candidates
+      FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_candidate_referenced_scope_update()
   `.execute(database);
 }
 

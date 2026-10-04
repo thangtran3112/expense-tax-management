@@ -45,10 +45,16 @@ describe("mailbox ingestion migration 020 – ordering", () => {
   });
 });
 
-describe("mailbox ingestion migration 020 – app.mailbox_candidates composite unique index prerequisite", () => {
+describe("mailbox ingestion migration 020 – app.mailbox_candidates composite unique index prerequisites", () => {
   it("adds (id, tenant_id) before it is used as an FK target (same requirement migration 015 solved for expense_files/inbound_emails)", () => {
     expect(migration).toMatch(
       /CREATE UNIQUE INDEX mailbox_candidates_id_tenant_unique[\s\S]*ON app\.mailbox_candidates \(id, tenant_id\)/,
+    );
+  });
+
+  it("adds (id, connection_id, tenant_id) so the ingestion ledger's candidate FK can also bind connection_id (fix round 1, finding 2)", () => {
+    expect(migration).toMatch(
+      /CREATE UNIQUE INDEX mailbox_candidates_id_connection_tenant_unique[\s\S]*ON app\.mailbox_candidates \(id, connection_id, tenant_id\)/,
     );
   });
 });
@@ -91,6 +97,18 @@ describe("mailbox ingestion migration 020 – app.expense_sources connected prov
   });
 });
 
+describe("mailbox ingestion migration 020 – referenced candidate scope/connection immutability (fix round 1, finding 3)", () => {
+  it("adds a column-list trigger on app.mailbox_candidates guarding scope and connection once an expense_sources row references it", () => {
+    expect(migration).toMatch(/prevent_mailbox_candidate_referenced_scope_update/);
+    expect(migration).toMatch(
+      /CREATE TRIGGER mailbox_candidates_referenced_scope_guard_trigger\s*BEFORE UPDATE OF tenant_id, connection_id, candidate_personal_profile_id, candidate_business_id\s*ON app\.mailbox_candidates/,
+    );
+    expect(migration).toMatch(
+      /EXISTS \(SELECT 1 FROM app\.expense_sources WHERE mailbox_candidate_id = OLD\.id\)/,
+    );
+  });
+});
+
 describe("mailbox ingestion migration 020 – app.mailbox_ingestion_operations", () => {
   it("creates the table with composite tenant FKs to connection and candidate", () => {
     expect(migration).toContain("CREATE TABLE app.mailbox_ingestion_operations");
@@ -98,7 +116,13 @@ describe("mailbox ingestion migration 020 – app.mailbox_ingestion_operations",
       /mailbox_ingestion_operations_connection_tenant_fk[\s\S]*FOREIGN KEY \(connection_id, tenant_id\)[\s\S]*REFERENCES app\.mailbox_connections\(id, tenant_id\)/,
     );
     expect(migration).toMatch(
-      /mailbox_ingestion_operations_candidate_tenant_fk[\s\S]*FOREIGN KEY \(candidate_id, tenant_id\)[\s\S]*REFERENCES app\.mailbox_candidates\(id, tenant_id\)/,
+      /mailbox_ingestion_operations_candidate_connection_tenant_fk[\s\S]*FOREIGN KEY \(candidate_id, connection_id, tenant_id\)[\s\S]*REFERENCES app\.mailbox_candidates\(id, connection_id, tenant_id\)/,
+    );
+  });
+
+  it("binds the candidate to the SAME connection via the three-column FK, not just the same tenant (fix round 1, finding 2)", () => {
+    expect(migration).not.toMatch(
+      /mailbox_ingestion_operations_candidate_tenant_fk[\s\S]*FOREIGN KEY \(candidate_id, tenant_id\)/,
     );
   });
 
@@ -124,12 +148,31 @@ describe("mailbox ingestion migration 020 – app.mailbox_ingestion_operations",
     expect(migration).not.toMatch(/REVOKE UPDATE.*mailbox_ingestion_operations/);
   });
 
-  it("guards completed/failed rows as fully immutable (forward-only states)", () => {
-    expect(migration).toMatch(/prevent_mailbox_ingestion_operation_terminal_update/);
-    expect(migration).toMatch(/mailbox_ingestion_operations_terminal_guard_trigger/);
+  it("guards completed/failed rows as fully immutable, and permits only the documented pending -> started -> completed|failed edges (fix round 1, finding 1)", () => {
+    expect(migration).toMatch(/prevent_mailbox_ingestion_operation_invalid_transition/);
+    expect(migration).toMatch(/mailbox_ingestion_operations_transition_guard_trigger/);
+    expect(migration).toMatch(/OLD\.status IN \('completed', 'failed'\) THEN/);
     expect(migration).toMatch(
-      /OLD\.status IN \('completed', 'failed'\) AND OLD IS DISTINCT FROM NEW/,
+      /\(OLD\.status = 'pending' AND NEW\.status = 'started'\)\s*OR \(OLD\.status = 'started' AND NEW\.status IN \('completed', 'failed'\)\)/,
     );
+  });
+
+  it("does not leave the old terminal-only (not forward-only) guard in place", () => {
+    expect(migration).not.toMatch(/prevent_mailbox_ingestion_operation_terminal_update/);
+    expect(migration).not.toMatch(/mailbox_ingestion_operations_terminal_guard_trigger/);
+  });
+
+  it("constrains response_json to the documented scalar-only, allow-listed field set (fix round 1, finding 4)", () => {
+    expect(migration).toMatch(/validate_mailbox_ingestion_operation_response/);
+    expect(migration).toMatch(/mailbox_ingestion_operations_response_shape_guard_trigger/);
+    expect(migration).toMatch(/jsonb_typeof\(NEW\.response_json\) <> 'object'/);
+    expect(migration).toMatch(/jsonb_typeof\(response_value\) NOT IN \('string', 'number', 'boolean', 'null'\)/);
+    for (const key of [
+      "candidateId", "connectionId", "uploadGrantId", "fileId", "status", "errorCode",
+      "idempotencyKey", "processingJobId", "expenseId", "sourceId", "duplicateMatchId",
+    ]) {
+      expect(migration).toContain(`'${key}'`);
+    }
   });
 
   it("indexes a reconcile sweep over pending/started materialize_candidate rows", () => {
