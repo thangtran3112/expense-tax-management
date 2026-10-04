@@ -284,4 +284,165 @@ describe("app-client.ts createMailboxAppClient", () => {
     expect(binding.providerMessageId).toBe("gmail-message-1");
     expect(capturedBody).toBe("{}");
   });
+
+  // Phase 3D-C Task 2 -- MailboxIngestionAppClient methods.
+  it("issueUploadGrant posts expectedCandidateVersion/operationId and parses the grant", async () => {
+    const { createClient } = await setup();
+    const candidateId = "77777777-7777-4777-8777-777777777777";
+    let capturedBody: Record<string, unknown> | undefined;
+    const client = createClient((url, init) => {
+      expect(url.pathname).toBe(`/internal/v1/mailbox/candidates/${candidateId}/upload-grant`);
+      capturedBody = JSON.parse(init.body as string);
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          uploadGrantId: "88888888-8888-4888-8888-888888888888",
+          expiresAt: new Date().toISOString(),
+          maxBytes: 26214400,
+          maxAttachments: 5,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const grant = await client.issueUploadGrant({
+      candidateId,
+      expectedCandidateVersion: 2,
+      operationId: "op-grant-1",
+    });
+
+    expect(grant.uploadGrantId).toBe("88888888-8888-4888-8888-888888888888");
+    expect(grant.maxBytes).toBe(26214400);
+    expect(grant.maxAttachments).toBe(5);
+    expect(capturedBody).toEqual({ expectedCandidateVersion: 2, operationId: "op-grant-1" });
+  });
+
+  it("uploadAttachment streams the source to App and parses the typed result", async () => {
+    const { createClient } = await setup();
+    const candidateId = "99999999-9999-4999-8999-999999999999";
+    let capturedBytes: Buffer | undefined;
+    const client = createClient(async (url, init) => {
+      expect(url.pathname).toBe(`/internal/v1/mailbox/candidates/${candidateId}/attachments/0`);
+      const body = init.body as ReadableStream<Uint8Array>;
+      const reader = body.getReader();
+      const parts: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+      }
+      capturedBytes = Buffer.concat(parts);
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          attachmentIndex: 0,
+          fileId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          status: "READY",
+          errorCode: null,
+          idempotencyKey: "idem-upload-1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const pdfBytes = Buffer.from("%PDF-1.4\nsome tiny pdf body", "latin1");
+    async function* source(): AsyncIterable<Buffer> {
+      yield pdfBytes;
+    }
+
+    const result = await client.uploadAttachment(
+      {
+        candidateId,
+        attachmentIndex: 0,
+        uploadGrantId: "88888888-8888-4888-8888-888888888888",
+        expectedCandidateVersion: 1,
+        idempotencyKey: "idem-upload-1",
+      },
+      source(),
+    );
+
+    expect(result).toEqual({
+      candidateId,
+      attachmentIndex: 0,
+      fileId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      status: "READY",
+      errorCode: null,
+      idempotencyKey: "idem-upload-1",
+    });
+    expect(capturedBytes).toEqual(pdfBytes);
+  });
+
+  it("uploadAttachment rejects locally (never calls fetch) when attachmentIndex is the sixth attachment", async () => {
+    const { createClient } = await setup();
+    let fetchCalled = false;
+    const client = createClient(() => {
+      fetchCalled = true;
+      return new Response("{}", { status: 200 });
+    });
+
+    async function* source(): AsyncIterable<Buffer> {
+      yield Buffer.from("%PDF-1.4\nbody", "latin1");
+    }
+
+    await expect(
+      client.uploadAttachment(
+        {
+          candidateId: "99999999-9999-4999-8999-999999999999",
+          attachmentIndex: 5,
+          uploadGrantId: "grant-1",
+          expectedCandidateVersion: 1,
+          idempotencyKey: "idem-upload-2",
+        },
+        source(),
+      ),
+    ).rejects.toThrow();
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("submitStructuredResult posts the callback payload and parses the materialization result", async () => {
+    const { createClient } = await setup();
+    const candidateId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let capturedBody: Record<string, unknown> | undefined;
+    const client = createClient((url, init) => {
+      expect(url.pathname).toBe(`/internal/v1/mailbox/candidates/${candidateId}/structured-result`);
+      capturedBody = JSON.parse(init.body as string);
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          candidateId,
+          status: "processed",
+          processingJobId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          expenseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          sourceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          duplicateMatchId: null,
+          idempotencyKey: "idem-structured-1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await client.submitStructuredResult({
+      result: {
+        schemaVersion: 1,
+        candidateId,
+        connectionId: "11111111-1111-4111-8111-111111111111",
+        candidateVersion: 1,
+        merchant: "Acme",
+        amount: "42.50",
+        currency: "USD",
+        incurredOn: "2026-09-01",
+        orderNumber: "A-1",
+        notes: null,
+        evidence: ["schema_type:Order"],
+        idempotencyKey: "idem-structured-1",
+      },
+      idempotencyKey: "idem-structured-1",
+    });
+
+    expect(result.status).toBe("processed");
+    expect(result.processingJobId).toBe("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    expect(capturedBody?.idempotencyKey).toBe("idem-structured-1");
+    expect((capturedBody?.result as Record<string, unknown>)?.candidateId).toBe(candidateId);
+  });
 });

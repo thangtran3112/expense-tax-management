@@ -1,0 +1,193 @@
+/**
+ * Phase 3D-C Task 2 — bounded attachment streaming.
+ *
+ * Fully local: `source` is a hand-written AsyncIterable<Buffer> fixture,
+ * `target` is an in-memory fake recording writes/aborts. No HTTP, no
+ * Docker, no Gmail.
+ */
+import { createHash } from "node:crypto";
+
+import { describe, expect, it } from "vitest";
+
+import { AttachmentBoundError, pumpBoundedAttachment, streamAttachment } from "../src/ingestion.js";
+
+const PDF_MAGIC = Buffer.from("%PDF-1.4\nrest of a tiny pdf body", "latin1");
+const JPEG_MAGIC = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16, 1)]);
+const PNG_MAGIC = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.alloc(16, 2),
+]);
+const WEBP_MAGIC = Buffer.concat([
+  Buffer.from("RIFF", "latin1"),
+  Buffer.from([0, 0, 0, 0]),
+  Buffer.from("WEBP", "latin1"),
+  Buffer.alloc(8, 3),
+]);
+const NOT_A_FILE = Buffer.alloc(32, 0x41); // "AAAA..." -- no recognized magic
+
+async function* iterableOf(...chunks: Buffer[]): AsyncIterable<Buffer> {
+  for (const chunk of chunks) yield chunk;
+}
+
+function createFakeTarget() {
+  const writes: Buffer[] = [];
+  let aborted = false;
+  return {
+    writes,
+    get aborted() {
+      return aborted;
+    },
+    async write(chunk: Buffer) {
+      writes.push(Buffer.from(chunk));
+    },
+    async abort() {
+      aborted = true;
+    },
+  };
+}
+
+describe("pumpBoundedAttachment", () => {
+  it("streams a small PDF, sniffing its magic from the first bytes and computing SHA-256", async () => {
+    const target = createFakeTarget();
+    const result = await pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(PDF_MAGIC), target);
+
+    expect(result.mimeType).toBe("application/pdf");
+    expect(result.sizeBytes).toBe(PDF_MAGIC.length);
+    expect(result.sha256).toBe(createHash("sha256").update(PDF_MAGIC).digest("hex"));
+    expect(Buffer.concat(target.writes)).toEqual(PDF_MAGIC);
+    expect(target.aborted).toBe(false);
+  });
+
+  it("sniffs JPEG, PNG, and WEBP magic bytes", async () => {
+    const jpeg = await pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(JPEG_MAGIC), createFakeTarget());
+    expect(jpeg.mimeType).toBe("image/jpeg");
+
+    const png = await pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(PNG_MAGIC), createFakeTarget());
+    expect(png.mimeType).toBe("image/png");
+
+    const webp = await pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(WEBP_MAGIC), createFakeTarget());
+    expect(webp.mimeType).toBe("image/webp");
+  });
+
+  it("splits magic bytes across several small chunks and still sniffs correctly (true streaming, not a single read)", async () => {
+    const chunks = [PDF_MAGIC.subarray(0, 2), PDF_MAGIC.subarray(2, 4), PDF_MAGIC.subarray(4)];
+    const target = createFakeTarget();
+    const result = await pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(...chunks), target);
+    expect(result.mimeType).toBe("application/pdf");
+    expect(Buffer.concat(target.writes)).toEqual(PDF_MAGIC);
+  });
+
+  it("rejects a first chunk whose bytes match no allowed file signature, never writing to target", async () => {
+    const target = createFakeTarget();
+    await expect(
+      pumpBoundedAttachment({ attachmentIndex: 0 }, iterableOf(NOT_A_FILE), target),
+    ).rejects.toSatisfy((error: unknown) => error instanceof AttachmentBoundError && error.errorCode === "ATTACHMENT_SIGNATURE_REJECTED");
+    expect(target.writes).toHaveLength(0);
+    expect(target.aborted).toBe(true);
+  });
+
+  it("aborts once total bytes exceed the 25 MiB cutoff, never buffering the whole attachment", async () => {
+    const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+    const target = createFakeTarget();
+    async function* oversizeSource(): AsyncIterable<Buffer> {
+      yield PDF_MAGIC;
+      const chunkSize = 1024 * 1024; // 1 MiB chunks
+      let sent = PDF_MAGIC.length;
+      while (sent <= MAX_UPLOAD_BYTES) {
+        yield Buffer.alloc(chunkSize, 0x42);
+        sent += chunkSize;
+      }
+    }
+
+    await expect(
+      pumpBoundedAttachment({ attachmentIndex: 0 }, oversizeSource(), target),
+    ).rejects.toSatisfy((error: unknown) => error instanceof AttachmentBoundError && error.errorCode === "ATTACHMENT_BOUND_EXCEEDED");
+    expect(target.aborted).toBe(true);
+  });
+
+  it("rejects the sixth attachment (index 5) before reading any bytes from the source", async () => {
+    const target = createFakeTarget();
+    let sourceRead = false;
+    async function* source(): AsyncIterable<Buffer> {
+      sourceRead = true;
+      yield PDF_MAGIC;
+    }
+
+    await expect(
+      pumpBoundedAttachment({ attachmentIndex: 5 }, source(), target),
+    ).rejects.toSatisfy((error: unknown) => error instanceof AttachmentBoundError && error.errorCode === "ATTACHMENT_BOUND_EXCEEDED");
+    expect(sourceRead).toBe(false);
+    expect(target.aborted).toBe(true);
+  });
+
+  it("accepts attachment indices 0 through 4 (the five-attachment cap)", async () => {
+    for (const index of [0, 1, 2, 3, 4]) {
+      const result = await pumpBoundedAttachment({ attachmentIndex: index }, iterableOf(PDF_MAGIC), createFakeTarget());
+      expect(result.mimeType).toBe("application/pdf");
+    }
+  });
+
+  it("uses backpressure: never reads the next source chunk before target.write resolves", async () => {
+    const writeOrder: string[] = [];
+    let resolveFirstWrite: (() => void) | undefined;
+    const target = {
+      async write(chunk: Buffer) {
+        writeOrder.push(`write:${chunk.length}`);
+        if (writeOrder.length === 1) {
+          await new Promise<void>((resolve) => {
+            resolveFirstWrite = resolve;
+          });
+        }
+      },
+      async abort() {
+        writeOrder.push("abort");
+      },
+    };
+
+    let secondChunkRequested = false;
+    async function* source(): AsyncIterable<Buffer> {
+      yield PDF_MAGIC;
+      secondChunkRequested = true;
+      yield Buffer.from("tail", "latin1");
+    }
+
+    const pending = pumpBoundedAttachment({ attachmentIndex: 0 }, source(), target);
+    // Give the event loop a turn: the pump must be blocked awaiting the
+    // first write, so the source's second chunk must not be requested yet.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(secondChunkRequested).toBe(false);
+
+    resolveFirstWrite?.();
+    await pending;
+    expect(secondChunkRequested).toBe(true);
+  });
+
+  it("calls target.abort() exactly once on a bound violation and never calls write afterward", async () => {
+    const target = createFakeTarget();
+    async function* source(): AsyncIterable<Buffer> {
+      yield NOT_A_FILE;
+      yield PDF_MAGIC; // must never be reached
+    }
+
+    await expect(pumpBoundedAttachment({ attachmentIndex: 0 }, source(), target)).rejects.toThrow();
+    expect(target.aborted).toBe(true);
+    expect(target.writes).toHaveLength(0);
+  });
+});
+
+describe("streamAttachment", () => {
+  it("wraps pumpBoundedAttachment and returns a full AttachmentManifestV1", async () => {
+    const target = createFakeTarget();
+    const manifest = await streamAttachment(
+      { name: "receipt.pdf", attachmentIndex: 0 },
+      iterableOf(PDF_MAGIC),
+      target,
+    );
+    expect(manifest).toEqual({
+      name: "receipt.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: PDF_MAGIC.length,
+      sha256: createHash("sha256").update(PDF_MAGIC).digest("hex"),
+    });
+  });
+});

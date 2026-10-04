@@ -113,6 +113,11 @@ describe("mailbox contracts – connection status and error codes", () => {
       "VERSION_CONFLICT",
       "IDEMPOTENCY_CONFLICT",
       "REVOKE_PENDING",
+      "ATTACHMENT_BOUND_EXCEEDED",
+      "ATTACHMENT_SIGNATURE_REJECTED",
+      "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+      "STRUCTURED_RECEIPT_NOT_FOUND",
+      "STRUCTURED_RECEIPT_INCOMPLETE",
     ]) {
       expect(MailboxErrorCodeV1Schema.parse(code)).toBe(code);
     }

@@ -28604,7 +28604,12 @@
                                   "GOOGLE_UNAVAILABLE",
                                   "VERSION_CONFLICT",
                                   "IDEMPOTENCY_CONFLICT",
-                                  "REVOKE_PENDING"
+                                  "REVOKE_PENDING",
+                                  "ATTACHMENT_BOUND_EXCEEDED",
+                                  "ATTACHMENT_SIGNATURE_REJECTED",
+                                  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                  "STRUCTURED_RECEIPT_NOT_FOUND",
+                                  "STRUCTURED_RECEIPT_INCOMPLETE"
                                 ],
                                 "type": "string"
                               },
@@ -29233,7 +29238,12 @@
                             "GOOGLE_UNAVAILABLE",
                             "VERSION_CONFLICT",
                             "IDEMPOTENCY_CONFLICT",
-                            "REVOKE_PENDING"
+                            "REVOKE_PENDING",
+                            "ATTACHMENT_BOUND_EXCEEDED",
+                            "ATTACHMENT_SIGNATURE_REJECTED",
+                            "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                            "STRUCTURED_RECEIPT_NOT_FOUND",
+                            "STRUCTURED_RECEIPT_INCOMPLETE"
                           ],
                           "type": "string"
                         },
@@ -29723,7 +29733,12 @@
                                   "GOOGLE_UNAVAILABLE",
                                   "VERSION_CONFLICT",
                                   "IDEMPOTENCY_CONFLICT",
-                                  "REVOKE_PENDING"
+                                  "REVOKE_PENDING",
+                                  "ATTACHMENT_BOUND_EXCEEDED",
+                                  "ATTACHMENT_SIGNATURE_REJECTED",
+                                  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                  "STRUCTURED_RECEIPT_NOT_FOUND",
+                                  "STRUCTURED_RECEIPT_INCOMPLETE"
                                 ],
                                 "type": "string"
                               },
@@ -30146,7 +30161,12 @@
                                 "GOOGLE_UNAVAILABLE",
                                 "VERSION_CONFLICT",
                                 "IDEMPOTENCY_CONFLICT",
-                                "REVOKE_PENDING"
+                                "REVOKE_PENDING",
+                                "ATTACHMENT_BOUND_EXCEEDED",
+                                "ATTACHMENT_SIGNATURE_REJECTED",
+                                "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                "STRUCTURED_RECEIPT_NOT_FOUND",
+                                "STRUCTURED_RECEIPT_INCOMPLETE"
                               ],
                               "type": "string"
                             },
@@ -30452,7 +30472,12 @@
                                 "GOOGLE_UNAVAILABLE",
                                 "VERSION_CONFLICT",
                                 "IDEMPOTENCY_CONFLICT",
-                                "REVOKE_PENDING"
+                                "REVOKE_PENDING",
+                                "ATTACHMENT_BOUND_EXCEEDED",
+                                "ATTACHMENT_SIGNATURE_REJECTED",
+                                "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+                                "STRUCTURED_RECEIPT_NOT_FOUND",
+                                "STRUCTURED_RECEIPT_INCOMPLETE"
                               ],
                               "type": "string"
                             },

@@ -24,16 +24,22 @@ import type {
   AdvanceTokenGenerationInput,
   AdvanceTokenGenerationResult,
   ConnectedAccount,
+  MailboxAttachmentUploadResultV1,
+  MailboxBrokerAttachmentUploadV1,
   MailboxBrokerCandidateBindingV1,
   MailboxBrokerConnectionAppClient,
-  MailboxBrokerDiscoveryAppClient,
-  MailboxBrokerMaterializeAppClient,
   MailboxBrokerScanBindingV1,
+  MailboxBrokerUploadGrantRequestV1,
+  MailboxBrokerUploadGrantV1,
   MailboxCandidateMetadataStagingResultV1,
   MailboxCandidateMetadataStagingV1,
   MailboxConnectionV1,
+  MailboxIngestionAppClient,
+  MailboxMaterializationResultV1,
+  MailboxStructuredReceiptCallbackV1,
   TokenOperationLeaseV1,
 } from "@expense-tax/contracts";
+import { MAX_CANDIDATE_ATTACHMENTS, MailboxErrorCodeV1Schema, MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
 import { z } from "zod";
 
 import {
@@ -43,6 +49,7 @@ import {
   type TokenProvider,
 } from "./auth/machine-token.js";
 import type { MachineCredentialConfig } from "./config.js";
+import { AttachmentBoundError, pumpBoundedAttachment } from "./ingestion.js";
 
 export type MailboxAppClientErrorCode =
   | "authentication_failed"
@@ -137,6 +144,42 @@ const CandidateBrokerBindingResponseSchema = z.strictObject({
   providerThreadId: z.string().nullable(),
 });
 
+// Phase 3D-C Task 2 -- mirrors the (future App-side) ingestion routes'
+// exact response shapes, per the canonical MailboxIngestionAppClient
+// contract (@expense-tax/contracts/mailbox-ingestion.ts).
+const UploadGrantResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+  connectionId: z.uuid(),
+  uploadGrantId: z.string().trim().min(1),
+  expiresAt: z.string(),
+  // MAX_UPLOAD_BYTES is a computed expression (`25 * 1024 * 1024`), so TS
+  // widens its const binding to `number`; cast back to the exact literal
+  // MailboxBrokerUploadGrantV1.maxBytes requires (MAX_CANDIDATE_ATTACHMENTS
+  // needs no cast -- it's declared as a literal token).
+  maxBytes: z.literal(MAX_UPLOAD_BYTES as 26214400),
+  maxAttachments: z.literal(MAX_CANDIDATE_ATTACHMENTS),
+});
+
+const AttachmentUploadResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+  attachmentIndex: z.number().int(),
+  fileId: z.string().trim().min(1),
+  status: z.enum(["READY", "REVIEW", "FAILED"]),
+  errorCode: MailboxErrorCodeV1Schema.nullable(),
+  idempotencyKey: z.string().trim().min(1),
+});
+
+const MaterializationResultResponseSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  candidateId: z.uuid(),
+  status: z.enum(["queued", "processed", "duplicate", "review", "failed"]),
+  processingJobId: z.uuid().nullable(),
+  expenseId: z.uuid().nullable(),
+  sourceId: z.uuid().nullable(),
+  duplicateMatchId: z.uuid().nullable(),
+  idempotencyKey: z.string().trim().min(1),
+});
+
 const CandidatePagesResponseSchema = z.strictObject({
   schemaVersion: z.literal(1),
   scanRunId: z.uuid(),
@@ -221,10 +264,37 @@ function errorCodeForStatus(status: number, bodyCode: string | undefined): Mailb
   }
 }
 
+/**
+ * Phase 3D-C Task 2 -- backs `pumpBoundedAttachment`'s push-based
+ * `StreamTarget` with a platform `TransformStream`, whose writer's
+ * `write()` genuinely respects the readable side's consumption
+ * (backpressure), so a slow App API response naturally slows the
+ * broker's own read from `source` -- no custom buffering/queueing code
+ * needed (ladder step 4: native platform feature).
+ */
+function createHttpUploadTarget(): {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly write: (chunk: Buffer) => Promise<void>;
+  readonly abort: () => Promise<void>;
+  readonly close: () => Promise<void>;
+} {
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  return {
+    readable,
+    write: (chunk) => writer.write(chunk),
+    abort: () => writer.abort(new Error("attachment stream aborted")).catch(() => undefined),
+    // Closing signals EOF to the readable side (the fetch body) -- a
+    // consumer's read() would otherwise hang forever waiting for more
+    // data or a close that never comes.
+    close: () => writer.close(),
+  };
+}
+
 export function createMailboxAppClient(
   config: MailboxAppClientConfig,
   options: MailboxAppClientOptions = {},
-): MailboxBrokerConnectionAppClient & MailboxBrokerDiscoveryAppClient & MailboxBrokerMaterializeAppClient {
+): MailboxBrokerConnectionAppClient & MailboxIngestionAppClient {
   const fetchImplementation = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const tokenProvider =
@@ -449,6 +519,116 @@ export function createMailboxAppClient(
           nextPreFenceHistoryId: input.nextPreFenceHistoryId,
           nextHistoryPageToken: input.nextHistoryPageToken,
           messages: input.messages,
+          idempotencyKey: input.idempotencyKey,
+        },
+      });
+    },
+
+    // Phase 3D-C Task 2 -- MailboxIngestionAppClient. Scope reuse ruling:
+    // these three routes are guarded under the broker's existing
+    // "mailbox:write" scope (already minted above), not a new scope --
+    // no new Clerk scope is provisioned anywhere in this phase's tasks,
+    // and nothing here needs a narrower grant than the write scope the
+    // discovery-staging routes already use.
+    async issueUploadGrant(input: MailboxBrokerUploadGrantRequestV1): Promise<MailboxBrokerUploadGrantV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/candidates/${input.candidateId}/upload-grant`,
+        method: "POST",
+        responseSchema: UploadGrantResponseSchema,
+        body: {
+          expectedCandidateVersion: input.expectedCandidateVersion,
+          operationId: input.operationId,
+        },
+      });
+    },
+
+    async uploadAttachment(
+      input: MailboxBrokerAttachmentUploadV1,
+      source: AsyncIterable<Buffer>,
+    ): Promise<MailboxAttachmentUploadResultV1> {
+      // Checked synchronously, before any I/O: pumpBoundedAttachment's
+      // own check happens inside an async function, so by the time its
+      // rejection could be observed here, fetchImplementation would
+      // already have been called -- this mirrors that same bound so a
+      // known-bad attachmentIndex never reaches the network at all.
+      if (input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS) {
+        throw new AttachmentBoundError(
+          "ATTACHMENT_BOUND_EXCEEDED",
+          `attachment index ${input.attachmentIndex} exceeds the ${MAX_CANDIDATE_ATTACHMENTS}-attachment cap`,
+        );
+      }
+      const target = createHttpUploadTarget();
+      // pumpBoundedAttachment enforces the five-attachment/25-MiB bounds
+      // and sniffs the real file type as bytes are streamed into
+      // target.readable, which is passed directly as the fetch body --
+      // a bound violation aborts target.readable, which fails the fetch
+      // itself; Promise.allSettled lets the bound error (not a generic
+      // network-failure error) win when both reject.
+      const pumpPromise = pumpBoundedAttachment({ attachmentIndex: input.attachmentIndex }, source, target).then(
+        async (result) => {
+          await target.close();
+          return result;
+        },
+      );
+
+      const signal = AbortSignal.timeout(timeoutMs);
+      const token = await withAbort(tokenProvider(), signal);
+      const fetchPromise = fetchImplementation(
+        `${config.baseUrl}/internal/v1/mailbox/candidates/${input.candidateId}/attachments/${input.attachmentIndex}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/octet-stream",
+            "x-mailbox-upload-grant-id": input.uploadGrantId,
+            "x-mailbox-expected-candidate-version": String(input.expectedCandidateVersion),
+            "x-mailbox-idempotency-key": input.idempotencyKey,
+          },
+          body: target.readable,
+          duplex: "half",
+          redirect: "error",
+          signal,
+        } as RequestInit,
+      );
+
+      const [pumpSettled, fetchSettled] = await Promise.allSettled([pumpPromise, fetchPromise]);
+      if (pumpSettled.status === "rejected") throw pumpSettled.reason;
+      if (fetchSettled.status === "rejected") {
+        throw new MailboxAppClientError(signal.aborted ? "timeout" : "unavailable");
+      }
+
+      const response = fetchSettled.value;
+      if (!response.ok) {
+        let bodyCode: string | undefined;
+        try {
+          const body = await withAbort(response.json(), signal);
+          bodyCode = ErrorBodySchema.parse(body).error?.code;
+        } catch {
+          bodyCode = undefined;
+        } finally {
+          await discardResponseBody(response, signal);
+        }
+        throw new MailboxAppClientError(errorCodeForStatus(response.status, bodyCode), response.status);
+      }
+
+      try {
+        const body = await withAbort(response.json(), signal);
+        return AttachmentUploadResponseSchema.parse(body);
+      } catch {
+        await discardResponseBody(response, signal);
+        throw new MailboxAppClientError(signal.aborted ? "timeout" : "invalid_response", response.status);
+      }
+    },
+
+    async submitStructuredResult(
+      input: MailboxStructuredReceiptCallbackV1,
+    ): Promise<MailboxMaterializationResultV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/candidates/${input.result.candidateId}/structured-result`,
+        method: "POST",
+        responseSchema: MaterializationResultResponseSchema,
+        body: {
+          result: input.result,
           idempotencyKey: input.idempotencyKey,
         },
       });

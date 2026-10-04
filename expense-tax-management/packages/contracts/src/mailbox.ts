@@ -59,6 +59,15 @@ export const MailboxErrorCodeV1Schema = z.enum([
   "VERSION_CONFLICT",
   "IDEMPOTENCY_CONFLICT",
   "REVOKE_PENDING",
+  // Phase 3D-C Task 2 -- deferred by Phase 3D-C Task 1 Ruling 4 ("no new
+  // MailboxErrorCodeV1 enum values added ... deferred to whichever task
+  // first needs to throw an ingestion-specific typed error") to this,
+  // the first task that throws a typed ingestion error.
+  "ATTACHMENT_BOUND_EXCEEDED",
+  "ATTACHMENT_SIGNATURE_REJECTED",
+  "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
+  "STRUCTURED_RECEIPT_NOT_FOUND",
+  "STRUCTURED_RECEIPT_INCOMPLETE",
 ]);
 export type MailboxErrorCodeV1 = z.infer<typeof MailboxErrorCodeV1Schema>;
 
