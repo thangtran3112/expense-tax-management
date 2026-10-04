@@ -120,6 +120,23 @@ describe("pumpBoundedAttachment", () => {
     expect(target.aborted).toBe(true);
   });
 
+  it("rejects a negative or non-integer attachment index before reading any bytes from the source", async () => {
+    for (const badIndex of [-1, 1.5, Number.NaN]) {
+      const target = createFakeTarget();
+      let sourceRead = false;
+      async function* source(): AsyncIterable<Buffer> {
+        sourceRead = true;
+        yield PDF_MAGIC;
+      }
+
+      await expect(
+        pumpBoundedAttachment({ attachmentIndex: badIndex }, source(), target),
+      ).rejects.toSatisfy((error: unknown) => error instanceof AttachmentBoundError && error.errorCode === "ATTACHMENT_BOUND_EXCEEDED");
+      expect(sourceRead).toBe(false);
+      expect(target.aborted).toBe(true);
+    }
+  });
+
   it("accepts attachment indices 0 through 4 (the five-attachment cap)", async () => {
     for (const index of [0, 1, 2, 3, 4]) {
       const result = await pumpBoundedAttachment({ attachmentIndex: index }, iterableOf(PDF_MAGIC), createFakeTarget());

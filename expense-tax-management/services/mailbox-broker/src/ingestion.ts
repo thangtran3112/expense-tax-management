@@ -106,11 +106,14 @@ export async function pumpBoundedAttachment(
   source: AsyncIterable<Buffer>,
   target: StreamTarget,
 ): Promise<AttachmentPumpResult> {
-  if (input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS) {
+  // Fix round 1 (review Minor) -- a negative or non-integer index is
+  // just as out of bounds as a too-large one; reject it the same way,
+  // before ever touching `source`.
+  if (!Number.isInteger(input.attachmentIndex) || input.attachmentIndex < 0 || input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS) {
     await target.abort();
     throw new AttachmentBoundError(
       "ATTACHMENT_BOUND_EXCEEDED",
-      `attachment index ${input.attachmentIndex} exceeds the ${MAX_CANDIDATE_ATTACHMENTS}-attachment cap`,
+      `attachment index ${input.attachmentIndex} is not a valid 0-based index below the ${MAX_CANDIDATE_ATTACHMENTS}-attachment cap`,
     );
   }
 

@@ -30,7 +30,14 @@
  *   string-in/data-out function; it never calls `fetch`, `eval`, `Function`,
  *   or any DOM API.
  */
-import { mailboxIdempotencyKey, type MailboxErrorCodeV1, type StructuredReceiptResultV1 } from "@expense-tax/contracts";
+import {
+  CurrencySchema,
+  DateOnlySchema,
+  DecimalMoneySchema,
+  mailboxIdempotencyKey,
+  type MailboxErrorCodeV1,
+  type StructuredReceiptResultV1,
+} from "@expense-tax/contracts";
 
 export const STRUCTURED_RECEIPT_MAX_DECODED_BYTES = 1024 * 1024; // 1 MiB
 export const STRUCTURED_RECEIPT_MAX_NODES = 20_000;
@@ -328,20 +335,49 @@ function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= "0" && ch <= "9";
 }
 
+/**
+ * Fix round 1 (review Important #2) -- strict RFC 8259 JSON number
+ * grammar: `number = [ "-" ] int [ frac ] [ exp ]`, `int = "0" / (digit1-9
+ * *DIGIT)`. The previous version used `while(isDigit)` loops that accept
+ * zero repetitions, so a bare "-", "1.", "01", or "1e" with no following
+ * digit(s) all silently matched a truncated slice that `Number()` then
+ * turned into `NaN` -- which `extractReceiptFields` would otherwise trust
+ * as a real amount. Every branch below throws (treated as malformed JSON
+ * in this block, same as any other syntax error) rather than accepting a
+ * truncated literal.
+ */
 function parseNumber(state: JsonParseState): number {
   const start = state.pos;
   if (state.text[state.pos] === "-") state.pos += 1;
-  while (isDigit(state.text[state.pos])) state.pos += 1;
+
+  if (state.text[state.pos] === "0") {
+    state.pos += 1;
+  } else if (isDigit(state.text[state.pos])) {
+    while (isDigit(state.text[state.pos])) state.pos += 1;
+  } else {
+    throw new Error("invalid number literal");
+  }
+
   if (state.text[state.pos] === ".") {
     state.pos += 1;
+    if (!isDigit(state.text[state.pos])) throw new Error("invalid number literal: empty fraction");
     while (isDigit(state.text[state.pos])) state.pos += 1;
   }
+
   if (state.text[state.pos] === "e" || state.text[state.pos] === "E") {
     state.pos += 1;
     if (state.text[state.pos] === "+" || state.text[state.pos] === "-") state.pos += 1;
+    if (!isDigit(state.text[state.pos])) throw new Error("invalid number literal: empty exponent");
     while (isDigit(state.text[state.pos])) state.pos += 1;
   }
-  return Number(state.text.slice(start, state.pos));
+
+  const value = Number(state.text.slice(start, state.pos));
+  // A grammatically valid but astronomically large exponent (e.g.
+  // "1e400") is still valid JSON that JS represents as Infinity --
+  // reject it the same way as a malformed literal, never let it reach
+  // callers as a non-finite "number".
+  if (!Number.isFinite(value)) throw new Error("number literal out of range");
+  return value;
 }
 
 function parseBoolean(state: JsonParseState): boolean {
@@ -412,6 +448,49 @@ function getNestedName(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Fix round 1 (review Important #2) -- reuses the repo's own canonical
+ * money/currency/date schemas (`@expense-tax/contracts`, `expenses.ts`)
+ * rather than inventing a parallel validation rule: `DecimalMoneySchema`
+ * (positive, max-2-decimal-place decimal string), `CurrencySchema`
+ * (3-letter ISO 4217 code), `DateOnlySchema` (strict `YYYY-MM-DD`). A
+ * value that fails validation returns `null` -- the field is treated as
+ * absent (never a trusted-looking but wrong "NaN"/"Infinity"/garbage
+ * string), falling the whole node back to incomplete/not-found.
+ */
+function normalizeAmount(raw: unknown): string | null {
+  let candidate: string;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) return null;
+    candidate = String(raw);
+  } else if (typeof raw === "string" && raw.trim().length > 0) {
+    candidate = raw.trim();
+  } else {
+    return null;
+  }
+  const result = DecimalMoneySchema.safeParse(candidate);
+  return result.success ? result.data : null;
+}
+
+function normalizeCurrency(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const result = CurrencySchema.safeParse(raw.trim());
+  return result.success ? result.data : null;
+}
+
+function normalizeDateOnly(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const direct = DateOnlySchema.safeParse(trimmed);
+  if (direct.success) return direct.data;
+  // JSON-LD commonly carries a full ISO datetime (e.g.
+  // "2026-09-01T10:00:00Z") where a bare date is expected; accept that
+  // shape specifically by validating just its date portion, rather than
+  // loosening DateOnlySchema itself.
+  const fromDatetime = DateOnlySchema.safeParse(trimmed.slice(0, 10));
+  return fromDatetime.success ? fromDatetime.data : null;
+}
+
 interface ExtractedReceiptFields {
   readonly merchant: string;
   readonly amount: string;
@@ -424,10 +503,9 @@ interface ExtractedReceiptFields {
 function extractReceiptFields(node: Record<string, unknown>, typeLabel: string): ExtractedReceiptFields | null {
   const merchant = getNestedName(node["seller"]) ?? getNestedName(node["merchant"]) ?? getNestedName(node["provider"]);
   const priceSpec = isRecord(node["priceSpecification"]) ? node["priceSpecification"] : null;
-  const amountRaw = node["totalPrice"] ?? node["price"] ?? priceSpec?.["price"];
-  const amount = typeof amountRaw === "number" ? String(amountRaw) : getString(amountRaw);
-  const currency = getString(node["priceCurrency"]) ?? (priceSpec ? getString(priceSpec["priceCurrency"]) : null);
-  const incurredOn = getString(node["orderDate"]) ?? getString(node["datePublished"]) ?? getString(node["dateCreated"]);
+  const amount = normalizeAmount(node["totalPrice"] ?? node["price"] ?? priceSpec?.["price"]);
+  const currency = normalizeCurrency(node["priceCurrency"] ?? (priceSpec ? priceSpec["priceCurrency"] : undefined));
+  const incurredOn = normalizeDateOnly(node["orderDate"] ?? node["datePublished"] ?? node["dateCreated"]);
   const orderNumber = getNestedName(node["orderNumber"]);
 
   if (merchant === null || amount === null || currency === null || incurredOn === null) return null;

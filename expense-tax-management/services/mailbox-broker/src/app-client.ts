@@ -283,7 +283,23 @@ function createHttpUploadTarget(): {
   return {
     readable,
     write: (chunk) => writer.write(chunk),
-    abort: () => writer.abort(new Error("attachment stream aborted")).catch(() => undefined),
+    // Fix round 1 (review Important #1) -- `readable.cancel()` is the
+    // one operation proven (by direct experiment) to unblock a pending
+    // `writer.write()` in every reachable state, including when no
+    // consumer ever attached a reader at all; it also settles promptly
+    // even if the stream is already locked (rejecting fast with "stream
+    // is locked" rather than hanging), so it is safe to await.
+    // `writer.abort()` is attempted too for good hygiene, but NOT
+    // awaited: if an external consumer locked a reader and then simply
+    // stops reading without ever releasing it, `abort()` itself can
+    // hang indefinitely, and cleanup must never block on that.
+    abort: () => {
+      void writer.abort(new Error("attachment stream aborted")).catch(() => undefined);
+      return readable.cancel(new Error("attachment stream aborted")).then(
+        () => undefined,
+        () => undefined,
+      );
+    },
     // Closing signals EOF to the readable side (the fetch body) -- a
     // consumer's read() would otherwise hang forever waiting for more
     // data or a close that never comes.
@@ -549,74 +565,130 @@ export function createMailboxAppClient(
       // Checked synchronously, before any I/O: pumpBoundedAttachment's
       // own check happens inside an async function, so by the time its
       // rejection could be observed here, fetchImplementation would
-      // already have been called -- this mirrors that same bound so a
-      // known-bad attachmentIndex never reaches the network at all.
-      if (input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS) {
+      // already have been called -- this mirrors that same bound (incl.
+      // fix round 1's negative/non-integer rejection) so a known-bad
+      // attachmentIndex never reaches the network at all.
+      if (
+        !Number.isInteger(input.attachmentIndex) ||
+        input.attachmentIndex < 0 ||
+        input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS
+      ) {
         throw new AttachmentBoundError(
           "ATTACHMENT_BOUND_EXCEEDED",
-          `attachment index ${input.attachmentIndex} exceeds the ${MAX_CANDIDATE_ATTACHMENTS}-attachment cap`,
+          `attachment index ${input.attachmentIndex} is not a valid 0-based index below the ${MAX_CANDIDATE_ATTACHMENTS}-attachment cap`,
         );
       }
+
       const target = createHttpUploadTarget();
+      let closed = false;
+
       // pumpBoundedAttachment enforces the five-attachment/25-MiB bounds
       // and sniffs the real file type as bytes are streamed into
-      // target.readable, which is passed directly as the fetch body --
-      // a bound violation aborts target.readable, which fails the fetch
-      // itself; Promise.allSettled lets the bound error (not a generic
-      // network-failure error) win when both reject.
+      // target.readable, which is passed directly as the fetch body.
+      // Fix round 1 (review Important #1): a bare `.then`/`.catch` is
+      // attached immediately so an abandoned pump (see the race below)
+      // never surfaces as a Node "unhandled rejection" even though this
+      // method may stop awaiting it.
       const pumpPromise = pumpBoundedAttachment({ attachmentIndex: input.attachmentIndex }, source, target).then(
         async (result) => {
+          closed = true;
           await target.close();
           return result;
         },
       );
+      pumpPromise.catch(() => undefined);
 
       const signal = AbortSignal.timeout(timeoutMs);
-      const token = await withAbort(tokenProvider(), signal);
-      const fetchPromise = fetchImplementation(
-        `${config.baseUrl}/internal/v1/mailbox/candidates/${input.candidateId}/attachments/${input.attachmentIndex}`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/octet-stream",
-            "x-mailbox-upload-grant-id": input.uploadGrantId,
-            "x-mailbox-expected-candidate-version": String(input.expectedCandidateVersion),
-            "x-mailbox-idempotency-key": input.idempotencyKey,
-          },
-          body: target.readable,
-          duplex: "half",
-          redirect: "error",
-          signal,
-        } as RequestInit,
-      );
+      try {
+        const token = await withAbort(tokenProvider(), signal);
+        const fetchPromise = fetchImplementation(
+          `${config.baseUrl}/internal/v1/mailbox/candidates/${input.candidateId}/attachments/${input.attachmentIndex}`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/octet-stream",
+              "x-mailbox-upload-grant-id": input.uploadGrantId,
+              "x-mailbox-expected-candidate-version": String(input.expectedCandidateVersion),
+              "x-mailbox-idempotency-key": input.idempotencyKey,
+            },
+            body: target.readable,
+            duplex: "half",
+            redirect: "error",
+            signal,
+          } as RequestInit,
+        );
+        fetchPromise.catch(() => undefined);
 
-      const [pumpSettled, fetchSettled] = await Promise.allSettled([pumpPromise, fetchPromise]);
-      if (pumpSettled.status === "rejected") throw pumpSettled.reason;
-      if (fetchSettled.status === "rejected") {
-        throw new MailboxAppClientError(signal.aborted ? "timeout" : "unavailable");
-      }
+        // Fix round 1 (review Important #1) -- race, don't
+        // unconditionally wait for both: a response that never consumes
+        // target.readable (or a token/fetch failure before the pump
+        // even starts) would otherwise leave pumpPromise's pending
+        // write blocked forever, hanging this call. Whichever settles
+        // first decides the outcome; the other side is abandoned/
+        // aborted rather than waited on.
+        type RaceOutcome =
+          | { readonly kind: "pump"; readonly ok: true }
+          | { readonly kind: "pump"; readonly ok: false; readonly error: unknown }
+          | { readonly kind: "fetch"; readonly ok: true; readonly response: Response }
+          | { readonly kind: "fetch"; readonly ok: false; readonly error: unknown };
 
-      const response = fetchSettled.value;
-      if (!response.ok) {
-        let bodyCode: string | undefined;
+        const first = await Promise.race<RaceOutcome>([
+          pumpPromise.then(
+            (): RaceOutcome => ({ kind: "pump", ok: true }),
+            (error: unknown): RaceOutcome => ({ kind: "pump", ok: false, error }),
+          ),
+          fetchPromise.then(
+            (response): RaceOutcome => ({ kind: "fetch", ok: true, response }),
+            (error: unknown): RaceOutcome => ({ kind: "fetch", ok: false, error }),
+          ),
+        ]);
+
+        let response: Response;
+        if (first.kind === "pump") {
+          if (!first.ok) throw first.error;
+          // Pump finished (closed the target) before fetch responded --
+          // fetch is now unblocked and should settle promptly.
+          try {
+            response = await fetchPromise;
+          } catch {
+            throw new MailboxAppClientError(signal.aborted ? "timeout" : "unavailable");
+          }
+        } else {
+          // Fetch already produced a definitive result (success or
+          // failure) -- never wait on a pump that may never get a
+          // reader to unblock it.
+          if (!closed) void target.abort();
+          if (!first.ok) throw new MailboxAppClientError(signal.aborted ? "timeout" : "unavailable");
+          response = first.response;
+        }
+
+        if (!response.ok) {
+          let bodyCode: string | undefined;
+          try {
+            const body = await withAbort(response.json(), signal);
+            bodyCode = ErrorBodySchema.parse(body).error?.code;
+          } catch {
+            bodyCode = undefined;
+          } finally {
+            await discardResponseBody(response, signal);
+          }
+          throw new MailboxAppClientError(errorCodeForStatus(response.status, bodyCode), response.status);
+        }
+
         try {
           const body = await withAbort(response.json(), signal);
-          bodyCode = ErrorBodySchema.parse(body).error?.code;
+          return AttachmentUploadResponseSchema.parse(body);
         } catch {
-          bodyCode = undefined;
-        } finally {
           await discardResponseBody(response, signal);
+          throw new MailboxAppClientError(signal.aborted ? "timeout" : "invalid_response", response.status);
         }
-        throw new MailboxAppClientError(errorCodeForStatus(response.status, bodyCode), response.status);
-      }
-
-      try {
-        const body = await withAbort(response.json(), signal);
-        return AttachmentUploadResponseSchema.parse(body);
-      } catch {
-        await discardResponseBody(response, signal);
-        throw new MailboxAppClientError(signal.aborted ? "timeout" : "invalid_response", response.status);
+      } finally {
+        // Fix round 1 (review Important #1) -- every exit path (token
+        // failure, fetch failure, a non-consuming response, or a
+        // successful parse) ends up here; abort/cancel the stream
+        // unless the pump already closed it normally.
+        if (!closed) void target.abort();
       }
     },
 

@@ -400,6 +400,151 @@ describe("app-client.ts createMailboxAppClient", () => {
     expect(fetchCalled).toBe(false);
   });
 
+  it("uploadAttachment rejects locally (never calls fetch) for a negative or non-integer attachmentIndex", async () => {
+    const { createClient } = await setup();
+    let fetchCalled = false;
+    const client = createClient(() => {
+      fetchCalled = true;
+      return new Response("{}", { status: 200 });
+    });
+
+    async function* source(): AsyncIterable<Buffer> {
+      yield Buffer.from("%PDF-1.4\nbody", "latin1");
+    }
+
+    for (const badIndex of [-1, 1.5, Number.NaN]) {
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: badIndex,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-3",
+          },
+          source(),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(fetchCalled).toBe(false);
+  });
+
+  // Phase 3D-C Task 2 fix round 1 (review Important #1) -- every exit
+  // path must abort/cancel the upload stream so a pending writer.write()
+  // (or, with no reader ever attached, writer.abort() alone -- see
+  // createHttpUploadTarget's own comment) can never hang this call
+  // forever. Each test below has a bounded 2s vitest timeout: the OLD
+  // (pre-fix) implementation would hang past it.
+  it(
+    "uploadAttachment rejects promptly (no hang) when token acquisition fails",
+    async () => {
+      const issuer = await createFakeClerkIssuer();
+      const audience = "mch_appServiceAudience";
+      let fetchCalled = false;
+      const client = createMailboxAppClient(
+        {
+          baseUrl: APP_BASE_URL,
+          issuerUrl: issuer.issuerUrl,
+          jwksUrl: issuer.jwksUrl,
+          credentials: { audience, machineSecretKey: "ak_test_broker_secret", subject: "mailbox-broker-app" },
+        },
+        {
+          fetch: vi.fn(async () => {
+            fetchCalled = true;
+            return new Response("{}", { status: 200 });
+          }) as unknown as typeof fetch,
+          tokenProvider: async () => {
+            throw new Error("token acquisition failed");
+          },
+        },
+      );
+
+      let sourceConsumed = false;
+      async function* source(): AsyncIterable<Buffer> {
+        yield Buffer.from("%PDF-1.4\nbody padding to clear the twelve byte magic header", "latin1");
+        sourceConsumed = true;
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-4",
+          },
+          source(),
+        ),
+      ).rejects.toThrow();
+      expect(fetchCalled).toBe(false);
+      void sourceConsumed;
+    },
+    2000,
+  );
+
+  it(
+    "uploadAttachment rejects promptly (no hang) when fetchImplementation itself rejects",
+    async () => {
+      const { createClient } = await setup();
+      const client = createClient(() => {
+        throw new Error("network failure");
+      });
+
+      async function* source(): AsyncIterable<Buffer> {
+        yield Buffer.from("%PDF-1.4\nbody padding to clear the twelve byte magic header", "latin1");
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-5",
+          },
+          source(),
+        ),
+      ).rejects.toThrow();
+    },
+    2000,
+  );
+
+  it(
+    "uploadAttachment resolves promptly (no hang) when the HTTP handler never reads the request body",
+    async () => {
+      const { createClient } = await setup();
+      const client = createClient(() => {
+        // Deliberately never touches `init.body` -- an immediate
+        // response, exactly the non-consuming-receiver scenario review
+        // Important #1 named.
+        return new Response(JSON.stringify({ error: { code: "INVALID_REQUEST" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      async function* source(): AsyncIterable<Buffer> {
+        yield Buffer.from("%PDF-1.4\nbody padding to clear the twelve byte magic header", "latin1");
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-6",
+          },
+          source(),
+        ),
+      ).rejects.toSatisfy((error: unknown) => error instanceof MailboxAppClientError && error.code === "invalid_request");
+    },
+    2000,
+  );
+
   it("submitStructuredResult posts the callback payload and parses the materialization result", async () => {
     const { createClient } = await setup();
     const candidateId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
