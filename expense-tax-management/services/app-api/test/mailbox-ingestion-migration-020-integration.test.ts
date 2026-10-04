@@ -241,6 +241,7 @@ describe.skipIf(!requested)(
       id: string;
       connectionId: string;
       candidateId: string;
+      operationKind?: string;
       operationKey?: string;
       idempotencyKey?: string;
       responseJson?: string;
@@ -252,7 +253,7 @@ describe.skipIf(!requested)(
            idempotency_key, normalized_request_hash, response_json)
         VALUES
           ('${opts.id}', '${TENANT_ID}', '${opts.connectionId}', '${opts.candidateId}',
-           'materialize_candidate', '${opts.operationKey ?? `op-${opts.id}`}',
+           '${opts.operationKind ?? "materialize_candidate"}', '${opts.operationKey ?? `op-${opts.id}`}',
            '${opts.idempotencyKey ?? `idem-${opts.id}`}', '${"e".repeat(64)}', ${response});
       `;
     }
@@ -406,8 +407,8 @@ describe.skipIf(!requested)(
       });
     });
 
-    describe("finding 4 — response_json is constrained to allow-listed scalar fields", () => {
-      it("accepts a response shaped like MailboxMaterializationResultV1", () => {
+    describe("finding 4 — response_json is constrained per operation_kind with strict scalar formats (fix round 2)", () => {
+      it("accepts a response shaped like MailboxMaterializationResultV1 (materialize_candidate)", () => {
         const candidateId = randomUUID();
         runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
 
@@ -426,29 +427,37 @@ describe.skipIf(!requested)(
                 sourceId: null,
                 duplicateMatchId: null,
                 idempotencyKey: "idem-1",
-              }).replaceAll("'", "''"),
+              }),
             }),
           ),
         ).not.toThrow();
       });
 
-      it("rejects an unexpected field (e.g. raw HTML smuggled in)", () => {
+      it("accepts a response shaped like MailboxAttachmentUploadResultV1 (upload_attachment)", () => {
         const candidateId = randomUUID();
         runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
 
-        const result = runtimeSqlExpectError(
-          insertOperationSql({
-            id: randomUUID(),
-            connectionId: CONNECTION_A_ID,
-            candidateId,
-            responseJson: JSON.stringify({ rawHtml: "<html>not allowed</html>" }),
-          }),
-        );
-        expect(result).toContain("STDERR:");
-        expect(result).toMatch(/mailbox ingestion operation response_json carries an unexpected field: rawHtml/);
+        expect(() =>
+          runtimeSqlOk(
+            insertOperationSql({
+              id: randomUUID(),
+              connectionId: CONNECTION_A_ID,
+              candidateId,
+              operationKind: "upload_attachment",
+              responseJson: JSON.stringify({
+                candidateId,
+                attachmentIndex: 0,
+                fileId: "file-token-1",
+                status: "READY",
+                errorCode: null,
+                idempotencyKey: "idem-1",
+              }),
+            }),
+          ),
+        ).not.toThrow();
       });
 
-      it("rejects a nested object/array value under an otherwise-allowed key", () => {
+      it("rejects a field not valid for the row's own operation_kind (e.g. raw HTML smuggled in under an unknown key)", () => {
         const candidateId = randomUUID();
         runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
 
@@ -457,14 +466,16 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId,
-            responseJson: JSON.stringify({ candidateId: { nested: "x" } }),
+            responseJson: JSON.stringify({ rawHtml: "not allowed" }),
           }),
         );
         expect(result).toContain("STDERR:");
-        expect(result).toMatch(/must be a scalar, not object/);
+        expect(result).toMatch(
+          /mailbox ingestion operation response_json carries a field not valid for operation_kind materialize_candidate: rawHtml/,
+        );
       });
 
-      it("rejects an oversized string value under an otherwise-allowed key", () => {
+      it("rejects a key that belongs to a DIFFERENT operation_kind's shape (e.g. uploadGrantId under materialize_candidate)", () => {
         const candidateId = randomUUID();
         runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
 
@@ -473,11 +484,152 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId,
-            responseJson: JSON.stringify({ errorCode: "x".repeat(2001) }),
+            responseJson: JSON.stringify({ uploadGrantId: "grant-token-1" }),
           }),
         );
         expect(result).toContain("STDERR:");
-        expect(result).toMatch(/exceeds the 2000-character bound/);
+        expect(result).toMatch(/carries a field not valid for operation_kind materialize_candidate: uploadGrantId/);
+      });
+
+      it("rejects content-bearing HTML under candidateId (not a UUID)", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({ candidateId: "<div>not a uuid</div>" }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field candidateId must be a UUID/);
+      });
+
+      it("rejects content-bearing HTML under errorCode (upload_attachment) -- the exact loophole this round closes", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            operationKind: "upload_attachment",
+            responseJson: JSON.stringify({ errorCode: "not a real code, just <b>raw</b> content" }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field errorCode must match the canonical error-code token pattern/);
+      });
+
+      it("accepts a real canonical errorCode token (upload_attachment)", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        expect(() =>
+          runtimeSqlOk(
+            insertOperationSql({
+              id: randomUUID(),
+              connectionId: CONNECTION_A_ID,
+              candidateId,
+              operationKind: "upload_attachment",
+              responseJson: JSON.stringify({
+                candidateId,
+                attachmentIndex: 1,
+                fileId: "file-token-2",
+                status: "FAILED",
+                errorCode: "ATTACHMENT_BOUND_EXCEEDED",
+                idempotencyKey: "idem-2",
+              }),
+            }),
+          ),
+        ).not.toThrow();
+      });
+
+      it("rejects a status value that belongs to the OTHER shape's enum (e.g. 'queued' under upload_attachment, 'READY' under materialize_candidate)", () => {
+        const candidateIdA = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateIdA, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+        const resultA = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId: candidateIdA,
+            operationKind: "upload_attachment",
+            responseJson: JSON.stringify({
+              candidateId: candidateIdA,
+              attachmentIndex: 0,
+              fileId: "file-token-3",
+              status: "queued",
+              errorCode: null,
+              idempotencyKey: "idem-3",
+            }),
+          }),
+        );
+        expect(resultA).toContain("STDERR:");
+        expect(resultA).toMatch(/status is not a valid upload_attachment status: queued/);
+
+        const candidateIdB = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateIdB, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+        const resultB = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId: candidateIdB,
+            responseJson: JSON.stringify({ candidateId: candidateIdB, status: "READY" }),
+          }),
+        );
+        expect(resultB).toContain("STDERR:");
+        expect(resultB).toMatch(/status is not a valid materialization status: READY/);
+      });
+
+      it("rejects a whitespace-containing value under an opaque-token key (fileId) -- a multi-line body can never match", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            operationKind: "upload_attachment",
+            responseJson: JSON.stringify({
+              candidateId,
+              attachmentIndex: 0,
+              fileId: "raw body line one\nraw body line two",
+              status: "READY",
+              errorCode: null,
+              idempotencyKey: "idem-4",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field fileId must be a bounded, whitespace-free token/);
+      });
+
+      it("rejects attachmentIndex out of the documented 0-4 range", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            operationKind: "upload_attachment",
+            responseJson: JSON.stringify({
+              candidateId,
+              attachmentIndex: 5,
+              fileId: "file-token-5",
+              status: "READY",
+              errorCode: null,
+              idempotencyKey: "idem-5",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field attachmentIndex must be an integer between 0 and 4/);
       });
 
       it("rejects a top-level JSON array", () => {

@@ -162,17 +162,42 @@ describe("mailbox ingestion migration 020 – app.mailbox_ingestion_operations",
     expect(migration).not.toMatch(/mailbox_ingestion_operations_terminal_guard_trigger/);
   });
 
-  it("constrains response_json to the documented scalar-only, allow-listed field set (fix round 1, finding 4)", () => {
+  it("constrains response_json per operation_kind with strict field formats, not just scalar-ness (fix round 2)", () => {
     expect(migration).toMatch(/validate_mailbox_ingestion_operation_response/);
     expect(migration).toMatch(/mailbox_ingestion_operations_response_shape_guard_trigger/);
     expect(migration).toMatch(/jsonb_typeof\(NEW\.response_json\) <> 'object'/);
-    expect(migration).toMatch(/jsonb_typeof\(response_value\) NOT IN \('string', 'number', 'boolean', 'null'\)/);
+    expect(migration).toMatch(/allowed_keys := CASE NEW\.operation_kind/);
     for (const key of [
       "candidateId", "connectionId", "uploadGrantId", "fileId", "status", "errorCode",
       "idempotencyKey", "processingJobId", "expenseId", "sourceId", "duplicateMatchId",
     ]) {
       expect(migration).toContain(`'${key}'`);
     }
+  });
+
+  it("validates candidate/connection/expense-family ids as lowercase UUIDs, not bare scalars (fix round 2)", () => {
+    expect(migration).toMatch(
+      /'candidateId', 'connectionId', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId' THEN[\s\S]*\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$/,
+    );
+  });
+
+  it("validates errorCode against the canonical error-code TOKEN PATTERN, not the hardcoded enum (avoids drift from packages/contracts/src/mailbox.ts)", () => {
+    expect(migration).toMatch(/WHEN 'errorCode' THEN[\s\S]*\^\[A-Z\]\[A-Z0-9_\]\{1,63\}\$/);
+  });
+
+  it("validates status against the exact set for the row's own operation_kind, not the union of both shapes", () => {
+    expect(migration).toMatch(/IF NEW\.operation_kind = 'upload_attachment' THEN[\s\S]*'READY', 'REVIEW', 'FAILED'/);
+    expect(migration).toMatch(/'queued', 'processed', 'duplicate', 'review', 'failed'/);
+  });
+
+  it("validates uploadGrantId/fileId/idempotencyKey as bounded whitespace-free tokens (a multi-line HTML/MIME body can never match)", () => {
+    expect(migration).toMatch(
+      /'uploadGrantId', 'fileId', 'idempotencyKey' THEN[\s\S]*char_length\(response_value #>> '\{\}'\) > 500[\s\S]*\^\[\\x21-\\x7e\]\+\$/,
+    );
+  });
+
+  it("splits the 500-char bound from the charset regex for opaque tokens (PostgreSQL's regex engine caps repetition counts at 255, so a single {1,500} pattern would throw at runtime)", () => {
+    expect(migration).not.toMatch(/\\x21-\\x7e\]\{1,500\}/);
   });
 
   it("indexes a reconcile sweep over pending/started materialize_candidate rows", () => {

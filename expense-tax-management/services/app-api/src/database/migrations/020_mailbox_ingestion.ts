@@ -353,21 +353,45 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       FOR EACH ROW EXECUTE FUNCTION app.prevent_mailbox_ingestion_operation_invalid_transition()
   `.execute(database);
 
-  /* Fix round 1 (review Important #4): response_json previously had no
-     shape constraint at all -- any JSON, of any size, including raw
-     MIME/body/HTML, could be stored. A CHECK constraint cannot express
-     this (PostgreSQL forbids subqueries, including set-returning
-     functions like jsonb_object_keys/jsonb_each, inside a CHECK), so a
-     BEFORE INSERT OR UPDATE trigger validates instead: response_json, if
-     present, must be a JSON object whose keys are drawn only from the
-     union of the four response contracts this ledger ever caches
-     (MailboxBrokerUploadGrantV1 / MailboxAttachmentUploadResultV1 /
-     MailboxMaterializationResultV1 -- packages/contracts/src/
-     mailbox-ingestion.ts), whose values are scalars only (no nested
-     object/array -- the one shape raw content could hide inside), with a
-     2000-character bound per string value and a 4096-byte bound on the
-     whole object as defense in depth against a bulk value smuggled under
-     an otherwise-legal key. */
+  /* Fix round 1 (review Important #4) + fix round 2 (re-review: an
+     allow-listed key with a bare scalar-type check still let raw body/
+     HTML ride inside a string value under e.g. errorCode). response_json,
+     if present, must be a JSON object; every key must belong to the
+     EXACT set the row's own operation_kind returns (not the union of all
+     four response shapes -- a 'status' value legal for upload_attachment
+     is not legal for materialize_candidate's own status set, so the key
+     set AND certain formats are now conditioned on operation_kind); and
+     every present value must match a field-specific strict format, not
+     just "some scalar":
+       - candidateId/connectionId/processingJobId/expenseId/sourceId/
+         duplicateMatchId: lowercase UUID (these are always real
+         app.*.id values).
+       - uploadGrantId/fileId/idempotencyKey: a bounded (<=500 char),
+         whitespace-free, printable-ASCII token -- same OpaqueTokenSchema
+         format as packages/contracts/src/mailbox-ingestion.ts, so a
+         multi-line HTML/MIME body (which always contains whitespace)
+         can never satisfy it.
+       - errorCode: the canonical error-code TOKEN PATTERN (a short
+         uppercase/underscore identifier, e.g. 'ATTACHMENT_BOUND_EXCEEDED')
+         -- a pattern, not the hardcoded literal enum, so this trigger
+         never needs editing when packages/contracts/src/mailbox.ts's
+         MailboxErrorCodeV1 catalog grows; the contracts-side
+         MailboxErrorCodeV1Schema enforces exact membership on write.
+       - status: the exact enum for this row's operation_kind (upload_attachment:
+         READY/REVIEW/FAILED; submit_structured_result/materialize_candidate:
+         queued/processed/duplicate/review/failed).
+       - expiresAt: an ISO-8601 timestamp.
+       - schemaVersion/maxBytes/maxAttachments/attachmentIndex: the exact
+         literal/bounded-integer values the real contracts require.
+     Per the review: "Enforce in the DB (CHECK/trigger with explicit
+     per-kind key sets and regex formats) AND in domain code via a strict
+     Zod contract on write" -- packages/contracts/src/mailbox-ingestion.ts
+     now exports MailboxBrokerUploadGrantV1Schema/
+     MailboxAttachmentUploadResultV1Schema/MailboxMaterializationResultV1Schema
+     (Zod, not plain interfaces) as that write-side contract, with formats
+     mirroring this trigger's regexes exactly; wiring them into an actual
+     write path is Task 3/4's job (no domain write code exists yet --
+     Task 1 owns only contracts and migration 020). */
   await sql`
     CREATE OR REPLACE FUNCTION app.validate_mailbox_ingestion_operation_response()
     RETURNS trigger
@@ -376,6 +400,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     DECLARE
       response_key text;
       response_value jsonb;
+      response_text text;
+      allowed_keys text[];
     BEGIN
       IF NEW.response_json IS NULL THEN
         RETURN NEW;
@@ -389,22 +415,91 @@ export async function up(database: Kysely<unknown>): Promise<void> {
         RAISE EXCEPTION 'mailbox ingestion operation response_json exceeds the 4096-byte bound';
       END IF;
 
+      allowed_keys := CASE NEW.operation_kind
+        WHEN 'issue_upload_grant' THEN
+          ARRAY['candidateId', 'connectionId', 'uploadGrantId', 'expiresAt', 'maxBytes', 'maxAttachments']
+        WHEN 'upload_attachment' THEN
+          ARRAY['candidateId', 'attachmentIndex', 'fileId', 'status', 'errorCode', 'idempotencyKey']
+        WHEN 'submit_structured_result' THEN
+          ARRAY['schemaVersion', 'candidateId', 'status', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId', 'idempotencyKey']
+        WHEN 'materialize_candidate' THEN
+          ARRAY['schemaVersion', 'candidateId', 'status', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId', 'idempotencyKey']
+        ELSE ARRAY[]::text[]
+      END;
+
       FOR response_key, response_value IN SELECT key, value FROM jsonb_each(NEW.response_json) LOOP
-        IF NOT (response_key = ANY (ARRAY[
-          'schemaVersion', 'candidateId', 'connectionId', 'uploadGrantId', 'expiresAt',
-          'maxBytes', 'maxAttachments', 'attachmentIndex', 'fileId', 'status', 'errorCode',
-          'idempotencyKey', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId'
-        ])) THEN
-          RAISE EXCEPTION 'mailbox ingestion operation response_json carries an unexpected field: %', response_key;
+        IF NOT (response_key = ANY (allowed_keys)) THEN
+          RAISE EXCEPTION 'mailbox ingestion operation response_json carries a field not valid for operation_kind %: %', NEW.operation_kind, response_key;
         END IF;
 
-        IF jsonb_typeof(response_value) NOT IN ('string', 'number', 'boolean', 'null') THEN
-          RAISE EXCEPTION 'mailbox ingestion operation response_json field % must be a scalar, not %', response_key, jsonb_typeof(response_value);
+        IF response_value = 'null'::jsonb THEN
+          CONTINUE;
         END IF;
 
-        IF jsonb_typeof(response_value) = 'string' AND char_length(response_value #>> '{}') > 2000 THEN
-          RAISE EXCEPTION 'mailbox ingestion operation response_json field % exceeds the 2000-character bound', response_key;
-        END IF;
+        CASE response_key
+          WHEN 'candidateId', 'connectionId', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId' THEN
+            IF jsonb_typeof(response_value) <> 'string'
+              OR (response_value #>> '{}') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field % must be a UUID', response_key;
+            END IF;
+          WHEN 'uploadGrantId', 'fileId', 'idempotencyKey' THEN
+            -- Length and charset are checked separately: PostgreSQL's
+            -- regex engine caps repetition counts at 255 (RE_DUP_MAX), so
+            -- a single pattern with {1,500} throws "invalid repetition
+            -- count(s)" -- char_length() carries the 500-char bound, the
+            -- unbounded-repetition regex carries the whitespace-free
+            -- printable-ASCII charset.
+            IF jsonb_typeof(response_value) <> 'string'
+              OR char_length(response_value #>> '{}') < 1
+              OR char_length(response_value #>> '{}') > 500
+              OR (response_value #>> '{}') !~ '^[\x21-\x7e]+$' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field % must be a bounded, whitespace-free token', response_key;
+            END IF;
+          WHEN 'errorCode' THEN
+            IF jsonb_typeof(response_value) <> 'string'
+              OR (response_value #>> '{}') !~ '^[A-Z][A-Z0-9_]{1,63}$' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field errorCode must match the canonical error-code token pattern';
+            END IF;
+          WHEN 'expiresAt' THEN
+            IF jsonb_typeof(response_value) <> 'string'
+              OR (response_value #>> '{}') !~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field expiresAt must be an ISO-8601 timestamp';
+            END IF;
+          WHEN 'status' THEN
+            IF jsonb_typeof(response_value) <> 'string' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field status must be a string';
+            END IF;
+            response_text := response_value #>> '{}';
+            IF NEW.operation_kind = 'upload_attachment' THEN
+              IF NOT (response_text = ANY (ARRAY['READY', 'REVIEW', 'FAILED'])) THEN
+                RAISE EXCEPTION 'mailbox ingestion operation response_json field status is not a valid upload_attachment status: %', response_text;
+              END IF;
+            ELSE
+              IF NOT (response_text = ANY (ARRAY['queued', 'processed', 'duplicate', 'review', 'failed'])) THEN
+                RAISE EXCEPTION 'mailbox ingestion operation response_json field status is not a valid materialization status: %', response_text;
+              END IF;
+            END IF;
+          WHEN 'schemaVersion' THEN
+            IF jsonb_typeof(response_value) <> 'number' OR (response_value #>> '{}') <> '1' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field schemaVersion must be the literal 1';
+            END IF;
+          WHEN 'maxBytes' THEN
+            IF jsonb_typeof(response_value) <> 'number' OR (response_value #>> '{}') <> '26214400' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field maxBytes must be the literal 26214400';
+            END IF;
+          WHEN 'maxAttachments' THEN
+            IF jsonb_typeof(response_value) <> 'number' OR (response_value #>> '{}') <> '5' THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field maxAttachments must be the literal 5';
+            END IF;
+          WHEN 'attachmentIndex' THEN
+            IF jsonb_typeof(response_value) <> 'number'
+              OR (response_value #>> '{}') !~ '^[0-9]+$'
+              OR (response_value #>> '{}')::int NOT BETWEEN 0 AND 4 THEN
+              RAISE EXCEPTION 'mailbox ingestion operation response_json field attachmentIndex must be an integer between 0 and 4';
+            END IF;
+          ELSE
+            RAISE EXCEPTION 'mailbox ingestion operation response_json field % has no validator', response_key;
+        END CASE;
       END LOOP;
 
       RETURN NEW;
