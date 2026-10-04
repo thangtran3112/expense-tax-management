@@ -18,15 +18,19 @@
  * it receives the raw request stream and Fastify does not buffer or
  * size-check it at all; `done(null, payload)` hands that same stream
  * straight through as `request.body`, so the handler passes it to
- * `receiveAttachment` exactly as received -- zero bytes are buffered in
- * this process before domain/storage/bounded-stream.ts's own
- * MAX_UPLOAD_BYTES enforcement (which hashes incrementally while reading)
- * ever runs. Breaking out of (or throwing from) the `for await` loop that
- * consumes an AsyncIterable over a Node Readable stream -- which is
- * exactly what a bound violation does -- triggers the stream's own
- * automatic destroy() via the async-iterator-return protocol, so an
- * oversize upload's connection is torn down rather than drained to
- * completion.
+ * `receiveAttachment` exactly as received.
+ *
+ * Fix round 2 (review Important #1) -- the domain/storage layer this
+ * feeds (domain/files.ts's writeMailboxAttachment ->
+ * storage/types.ts's StorageAdapter.writeObjectStream) now streams those
+ * same chunks straight into storage, hashing and counting bytes as they
+ * flow and aborting at MAX_UPLOAD_BYTES -- zero bytes are buffered as one
+ * in-memory Buffer anywhere in this path. Breaking out of (or throwing
+ * from) the `for await` loop that consumes an AsyncIterable over a Node
+ * Readable stream -- which is exactly what a bound violation does --
+ * triggers the stream's own automatic destroy() via the
+ * async-iterator-return protocol, so an oversize upload's connection is
+ * torn down rather than drained to completion.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";

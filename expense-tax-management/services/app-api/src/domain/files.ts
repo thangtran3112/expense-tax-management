@@ -20,10 +20,9 @@ import type { AppDatabase } from "../database/types.js";
 import type { MalwareScanner } from "../inbound/security.js";
 import { attachmentMagicMatches } from "../inbound/security.js";
 import {
-  BoundedStreamSizeExceededError,
-  readBoundedStream,
-} from "../storage/bounded-stream.js";
-import type { StorageAdapter } from "../storage/types.js";
+  StorageWriteSizeExceededError,
+  type StorageAdapter,
+} from "../storage/types.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
 import {
@@ -56,15 +55,21 @@ function sniffContentType(bytes: Buffer): SniffedContentType | null {
 /**
  * Phase 3D-C Task 3 -- App-side malware scan adapter for mailbox staged
  * attachments. `scanStream` is the optional fast path (not implemented
- * here: writeMailboxAttachment already holds the full bounded buffer in
- * memory by the time it scans, so there is no streaming benefit to chase
- * for a 25 MiB cap); `scanStagedObject` is the required fallback the brief
- * names: stage bytes to a dedicated staging object (never the file's own
- * final storage key), read back bounded to MAX_UPLOAD_BYTES, call the
+ * here); `scanStagedObject` is the required fallback the brief names:
+ * read the staged object back bounded to MAX_UPLOAD_BYTES, call the
  * existing deterministic malware engine (PatternMalwareScanner in
  * production and in tests -- it is already local/EICAR-pattern-based, so
- * "never call external scanners in tests" is satisfied by construction),
- * then delete the staging object on either outcome.
+ * "never call external scanners in tests" is satisfied by construction).
+ *
+ * Fix round 2 -- deletes the staging object only when INFECTED. A clean
+ * result leaves it in place: writeMailboxAttachment now streams the
+ * attachment directly into the staging key (review Important #1, no
+ * full-body buffer anywhere in this path) and, on a clean scan, promotes
+ * that SAME already-verified object to its final key via a pure
+ * storage.moveObject (no second full read/write) -- which requires the
+ * staged bytes to still exist. Deleting unconditionally (the brief's
+ * original, pre-streaming wording) would delete the only copy of a
+ * clean attachment before it could ever be promoted.
  */
 export interface MailboxStagingScanner {
   scanStream?(
@@ -84,24 +89,23 @@ export function createMailboxStagingScanner(
   return {
     async scanStagedObject({ storageKey, sizeBytes, contentType }) {
       void contentType;
-      try {
-        if (sizeBytes > MAX_UPLOAD_BYTES) {
-          return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
-        }
-        const bytes = await storage.readObject(storageKey);
-        if (bytes.byteLength > MAX_UPLOAD_BYTES) {
-          return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
-        }
-        const result = await engine.scan(bytes);
-        return result.clean
-          ? { clean: true, code: null }
-          : { clean: false, code: "MALWARE_DETECTED" };
-      } finally {
-        // Always deletes the staging object -- clean or infected -- per
-        // the brief: this method stages a scan-only copy, never the
-        // file's persisted artifact.
+      if (sizeBytes > MAX_UPLOAD_BYTES) {
         await storage.deleteObject(storageKey);
+        return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
       }
+      const bytes = await storage.readObject(storageKey);
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        await storage.deleteObject(storageKey);
+        return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
+      }
+      const result = await engine.scan(bytes);
+      if (!result.clean) {
+        // Blocked = dead end (owner ruling): delete the only copy of an
+        // infected attachment immediately, never leave it staged.
+        await storage.deleteObject(storageKey);
+        return { clean: false, code: "MALWARE_DETECTED" };
+      }
+      return { clean: true, code: null };
     },
   };
 }
@@ -630,76 +634,85 @@ export function createFilesDomain(
         };
       };
 
-      let bounded;
-      try {
-        bounded = await readBoundedStream(source, MAX_UPLOAD_BYTES);
-      } catch (error) {
-        if (error instanceof BoundedStreamSizeExceededError) {
-          return fail("ATTACHMENT_BOUND_EXCEEDED");
-        }
-        throw error;
-      }
-
-      const sniffed = sniffContentType(bounded.data);
-      if (!sniffed) return fail("ATTACHMENT_SIGNATURE_REJECTED");
-      if (bounded.sha256Hex !== manifestEntry.sha256) {
-        return fail("ATTACHMENT_HASH_MISMATCH");
-      }
-
-      await database
-        .updateTable("app.expense_files")
-        .set({
-          content_type: sniffed,
-          size_bytes: bounded.sizeBytes,
-          sha256_hex: bounded.sha256Hex,
-          updated_at: new Date(),
-        })
-        .where("id", "=", fileId)
-        .execute();
-
-      // Scanner stages its OWN copy at a dedicated key (never the file's
-      // final storage_key) and always deletes it, clean or infected.
+      // Fix round 2 (review Important #1 + #3): the ENTIRE post-row
+      // sequence -- stream-to-staging, sniff, hash-verify, scan, promote,
+      // persisted-size check, READY confirmation -- runs inside one try
+      // block. Any failure anywhere in it (typed or not: a storage
+      // network error, an unexpected scanner exception, a DB blip) falls
+      // through to the single catch below, which compensates by deleting
+      // both possible object locations and marking the row FAILED --
+      // never a stranded PENDING row, never an orphaned object, for any
+      // failure after the row was created.
       const stagingKey = `${storageKey}.scan-staging`;
-      await storage.writeObject({
-        storageKey: stagingKey,
-        data: bounded.data,
-        contentType: sniffed,
-      });
-      const scan = await deps.mailboxScanner.scanStagedObject({
-        storageKey: stagingKey,
-        sizeBytes: bounded.sizeBytes,
-        contentType: sniffed,
-      });
-      if (!scan.clean) {
-        // Blocked = dead end, dismiss only (owner ruling): never confirmed,
-        // the bytes above were only ever written to the deleted staging
-        // key, never to the file's own storage_key.
-        return fail((scan.code as MailboxErrorCodeV1 | null) ?? "ATTACHMENT_SIGNATURE_REJECTED");
-      }
-
-      // Scan passed and hash already verified (against the candidate's own
-      // manifest) above. Write, then re-read the bytes actually persisted
-      // and re-hash them -- never trust the in-memory buffer alone to
-      // match what storage actually wrote -- and only confirm READY once
-      // both the persisted-byte hash and the row UPDATE's own effect are
-      // verified. Any failure in this block (write, read-back, hash
-      // mismatch, or a no-op UPDATE) deletes the just-written object and
-      // returns FAILED: never a confirmed row pointing at missing/corrupt
-      // bytes, never an orphaned object behind a non-READY row.
       try {
-        await storage.writeObject({
-          storageKey,
-          data: bounded.data,
+        // Streams the request body straight into bounded, incrementally-
+        // hashed storage -- no Buffer.concat, no full-body buffer anywhere
+        // in this path. Magic-byte sniffing uses only the first bytes
+        // already captured while streaming (headerBytes), never a
+        // separate read-back of the whole object.
+        let streamed;
+        try {
+          streamed = await storage.writeObjectStream(
+            { storageKey: stagingKey, contentType: "application/octet-stream", maxBytes: MAX_UPLOAD_BYTES },
+            source,
+          );
+        } catch (error) {
+          if (error instanceof StorageWriteSizeExceededError) {
+            return fail("ATTACHMENT_BOUND_EXCEEDED");
+          }
+          throw error;
+        }
+
+        const sniffed = sniffContentType(streamed.headerBytes);
+        if (!sniffed) {
+          await storage.deleteObject(stagingKey).catch(() => {});
+          return fail("ATTACHMENT_SIGNATURE_REJECTED");
+        }
+        if (streamed.sha256Hex !== manifestEntry.sha256) {
+          await storage.deleteObject(stagingKey).catch(() => {});
+          return fail("ATTACHMENT_HASH_MISMATCH");
+        }
+
+        await database
+          .updateTable("app.expense_files")
+          .set({
+            content_type: sniffed,
+            size_bytes: streamed.sizeBytes,
+            sha256_hex: streamed.sha256Hex,
+            updated_at: new Date(),
+          })
+          .where("id", "=", fileId)
+          .execute();
+
+        // Scanner reads back its OWN staged copy (bounded to
+        // MAX_UPLOAD_BYTES -- the only point in this path a full-size
+        // buffer is briefly materialized, which the actual malware-scan
+        // operation requires) and always deletes that staging key,
+        // clean or infected.
+        const scan = await deps.mailboxScanner.scanStagedObject({
+          storageKey: stagingKey,
+          sizeBytes: streamed.sizeBytes,
           contentType: sniffed,
         });
-        const persisted = await storage.readObject(storageKey);
-        const persistedHash = createHash("sha256").update(persisted).digest("hex");
-        if (
-          persisted.byteLength !== bounded.sizeBytes ||
-          persistedHash !== bounded.sha256Hex
-        ) {
-          throw new Error("persisted object bytes do not match the computed hash");
+        if (!scan.clean) {
+          // Blocked = dead end, dismiss only (owner ruling): never
+          // confirmed. The bytes were only ever written to the (now
+          // deleted) staging key, never promoted to storage_key.
+          return fail((scan.code as MailboxErrorCodeV1 | null) ?? "ATTACHMENT_SIGNATURE_REJECTED");
         }
+
+        // Scan passed and the hash was already verified against the
+        // candidate's own manifest above. Promote the already-verified
+        // staged object to its final key via a pure move (no re-read of
+        // the full buffer -- the bytes are unchanged from what was
+        // already hashed while streaming); a persisted-size check (not a
+        // full re-hash) confirms the move actually landed before READY.
+        await storage.moveObject(stagingKey, storageKey);
+        const finalStat = await storage.statObject(storageKey);
+        if (!finalStat || finalStat.sizeBytes !== streamed.sizeBytes) {
+          throw new Error("final object size does not match the streamed size");
+        }
+
         const updateResult = await database
           .updateTable("app.expense_files")
           .set({ status: "READY", updated_at: new Date(), version: created.version + 1 })
@@ -709,19 +722,20 @@ export function createFilesDomain(
         if (updateResult.numUpdatedRows !== 1n) {
           throw new Error("expense_files row was not PENDING when confirming READY");
         }
+
+        return {
+          candidateId: input.candidateId,
+          attachmentIndex: input.attachmentIndex,
+          fileId,
+          status: "READY",
+          errorCode: null,
+          idempotencyKey: input.requestId,
+        };
       } catch {
+        await storage.deleteObject(stagingKey).catch(() => {});
         await storage.deleteObject(storageKey).catch(() => {});
         return fail("ATTACHMENT_CONFIRMATION_FAILED");
       }
-
-      return {
-        candidateId: input.candidateId,
-        attachmentIndex: input.attachmentIndex,
-        fileId,
-        status: "READY",
-        errorCode: null,
-        idempotencyKey: input.requestId,
-      };
     },
 
     async readReadyContent(fileId) {

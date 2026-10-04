@@ -1,8 +1,12 @@
 /**
- * Phase 3D-C Task 3 — storage/bounded-stream.ts (always-run, no Docker) and
- * domain/mailbox-ingestion.ts + domain/files.ts's writeMailboxAttachment
- * (real-PostgreSQL coverage, gated on PHASE_3D_C_T3_INTEGRATION=1, same
- * ephemeral-database/port-5433 pattern as mailbox-candidates.test.ts).
+ * Phase 3D-C Task 3 — domain/mailbox-ingestion.ts + domain/files.ts's
+ * writeMailboxAttachment (real-PostgreSQL coverage, gated on
+ * PHASE_3D_C_T3_INTEGRATION=1, same ephemeral-database/port-5433 pattern
+ * as mailbox-candidates.test.ts). storage/bounded-stream.ts's own former
+ * unit tests moved to test/storage.test.ts's
+ * writeObjectStream/moveObject coverage (fix round 2: the in-memory
+ * bounded-reader utility was replaced by true incremental streaming to
+ * storage; it is no longer used anywhere and was deleted).
  *
  * No Google/Clerk network access anywhere; the malware scanner under test
  * is PatternMalwareScanner (already local/EICAR-pattern-based) via
@@ -33,64 +37,29 @@ import { runMigrations } from "../src/database/migrate.js";
 import {
   createFilesDomain,
   createMailboxStagingScanner,
+  type MailboxStagingScanner,
 } from "../src/domain/files.js";
+import { hashNormalizedRequest } from "../src/domain/idempotency.js";
 import {
   createMailboxIngestionDomain,
   recordConnectedMailboxEvidenceInTransaction,
   type MailboxIngestionDomain,
 } from "../src/domain/mailbox-ingestion.js";
+import { createProcessingJobsDomain } from "../src/domain/processing-jobs.js";
 import type { PlansDomain } from "../src/domain/plans.js";
 import { registerErrorHandlers } from "../src/errors.js";
 import { PatternMalwareScanner } from "../src/inbound/security.js";
 import { registerAuthPlugin } from "../src/plugins/auth.js";
 import { registerMailboxIngestionRoutes } from "../src/routes/mailbox-ingestion.js";
-import {
-  BoundedStreamSizeExceededError,
-  readBoundedStream,
-} from "../src/storage/bounded-stream.js";
 import { createStorageAdapter } from "../src/storage/factory.js";
 import type { StorageAdapter } from "../src/storage/types.js";
 import type { TemporalWorkflowStarter } from "../src/temporal/client.js";
 
 type FastifyApp = ReturnType<typeof Fastify>;
 
-// -------------------------------------------------------------------- //
-// storage/bounded-stream.ts -- pure function, always runs.
-// -------------------------------------------------------------------- //
-
 async function* chunks(parts: readonly Buffer[]): AsyncIterable<Buffer> {
   for (const part of parts) yield part;
 }
-
-describe("storage/bounded-stream.ts", () => {
-  it("hashes and sizes an in-bound stream across multiple chunks", async () => {
-    const parts = [Buffer.from("hello "), Buffer.from("mailbox "), Buffer.from("world")];
-    const result = await readBoundedStream(chunks(parts), 1_000);
-    const expected = Buffer.concat(parts);
-    expect(result.data.equals(expected)).toBe(true);
-    expect(result.sizeBytes).toBe(expected.byteLength);
-    expect(result.sha256Hex).toMatch(/^[a-f0-9]{64}$/);
-  });
-
-  it("passes at exactly the byte cap", async () => {
-    const exact = Buffer.alloc(10, 1);
-    const result = await readBoundedStream(chunks([exact]), 10);
-    expect(result.sizeBytes).toBe(10);
-  });
-
-  it("throws BoundedStreamSizeExceededError the instant the cap is exceeded, without draining the rest of the source", async () => {
-    let secondChunkRead = false;
-    async function* source(): AsyncIterable<Buffer> {
-      yield Buffer.alloc(11, 1);
-      secondChunkRead = true;
-      yield Buffer.alloc(11, 2);
-    }
-    await expect(readBoundedStream(source(), 10)).rejects.toBeInstanceOf(
-      BoundedStreamSizeExceededError,
-    );
-    expect(secondChunkRead).toBe(false);
-  });
-});
 
 // -------------------------------------------------------------------- //
 // routes/mailbox-ingestion.ts -- fix round 1 (review Important #1): the
@@ -249,20 +218,6 @@ function adminSql(sqlText: string, db = "postgres"): string {
 
 function runtimeSql(sqlText: string): string {
   return dockerPsql(databaseName, "expense_app_runtime", runtimePassword, sqlText);
-}
-
-function fakeTemporalStarter(): TemporalWorkflowStarter & {
-  readonly calls: { workflowType: string; workflowId: string; taskQueue: string; namespace?: string; args: unknown }[];
-} {
-  const calls: { workflowType: string; workflowId: string; taskQueue: string; namespace?: string; args: unknown }[] = [];
-  return {
-    calls,
-    async start(input) {
-      calls.push({ ...input });
-      return { runId: `run-${randomUUID()}` };
-    },
-    async close() {},
-  };
 }
 
 function pngBytes(): Buffer {
@@ -426,17 +381,21 @@ describe.skipIf(!requested)(
       } as unknown as PlansDomain;
     }
 
-    function createDomain(options: { readonly entitled?: boolean } = {}) {
-      const scanner = createMailboxStagingScanner(storage, PatternMalwareScanner);
-      const filesDomain = createFilesDomain(database!, storage, { mailboxScanner: scanner });
-      const temporalStarter = fakeTemporalStarter();
+    function createDomain(options: {
+      readonly entitled?: boolean;
+      readonly storageOverride?: StorageAdapter;
+      readonly scannerOverride?: MailboxStagingScanner;
+    } = {}) {
+      const scanner = options.scannerOverride ?? createMailboxStagingScanner(storage, PatternMalwareScanner);
+      const filesDomain = createFilesDomain(database!, options.storageOverride ?? storage, {
+        mailboxScanner: scanner,
+      });
       const plansDomain = fakePlansDomain(options.entitled ?? true);
       const domain = createMailboxIngestionDomain(database!, {
         filesDomain,
-        temporalStarter,
         plansDomain,
       });
-      return { domain, temporalStarter, filesDomain };
+      return { domain, filesDomain };
     }
 
     it("issues an upload grant for a queued candidate with the exact literal caps, and replays on the same operationId", async () => {
@@ -465,12 +424,12 @@ describe.skipIf(!requested)(
       ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
     });
 
-    it("streams a clean attachment to READY only after hash verification and malware scan pass, creates and directly dispatches the mailbox OCR job, and never puts raw bytes in the Temporal args", async () => {
+    it("streams a clean attachment to READY only after hash verification and malware scan pass, and creates a PENDING mailbox OCR job for the existing retrying dispatcher to pick up", async () => {
       const bytes = pngBytes();
       const { candidateId, connectionId } = seedQueuedCandidate({
         attachmentSha256: [sha256Hex(bytes)],
       });
-      const { domain, temporalStarter } = createDomain();
+      const { domain } = createDomain();
       const grant = await domain.issueUploadGrant({
         candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
       });
@@ -485,32 +444,30 @@ describe.skipIf(!requested)(
       expect(result.status).toBe("READY");
       expect(result.errorCode).toBeNull();
 
-      const candidateRow = await database!
-        .selectFrom("app.mailbox_candidates").selectAll()
-        .where("id", "=", candidateId).executeTakeFirstOrThrow();
-      expect(candidateRow.processing_job_id).not.toBeNull();
-      expect(candidateRow.status).toBe("queued");
-
       const job = await database!
         .selectFrom("app.processing_jobs").selectAll()
-        .where("id", "=", candidateRow.processing_job_id as string).executeTakeFirstOrThrow();
+        .where("source_file_id", "=", result.fileId).executeTakeFirstOrThrow();
       expect(job.workflow_type).toBe("MailboxOcrReceiptWorkflow");
-      expect(job.status).toBe("DISPATCHED");
-      expect(job.source_file_id).toBe(result.fileId);
+      // Fix round 2 (review new Important #6): never dispatched directly
+      // inline -- stays PENDING for dispatchPendingJobs (the existing,
+      // already-retrying dispatcher every other job type relies on) to
+      // pick up, with the FIXED TypeScript-worker target already stamped.
+      expect(job.status).toBe("PENDING");
+      expect(job.task_queue).toBe("expense-tax-processing");
+      expect(job.dispatch_namespace).toBe("expense-tax");
       expect(job.requested_by_user_id).toBe(OWNER_USER_ID);
 
-      expect(temporalStarter.calls).toHaveLength(1);
-      const call = temporalStarter.calls[0]!;
-      expect(call.workflowType).toBe("MailboxOcrReceiptWorkflow");
-      expect(call.namespace).toBe("expense-tax");
-      expect(call.taskQueue).toBe("expense-tax-processing");
-      // Structural "no Buffer argument crosses worker/Temporal": the whole
-      // args payload must round-trip through JSON (a Buffer would not)
-      // and carry only opaque job/workflow identifiers.
-      const serialized = JSON.parse(JSON.stringify(call.args));
-      expect(serialized).toEqual([
-        { schemaVersion: 1, jobId: job.id, workflowType: "MailboxOcrReceiptWorkflow", workflowId: job.workflow_id },
-      ]);
+      const outbox = await database!
+        .selectFrom("app.processing_job_dispatch_outbox").selectAll()
+        .where("processing_job_id", "=", job.id).executeTakeFirstOrThrow();
+      expect(outbox.status).toBe("PENDING");
+      // Structural "no Buffer argument crosses worker/Temporal": the
+      // stored job_reference must round-trip through JSON (a Buffer
+      // would not) and carry only opaque job/workflow identifiers.
+      const jobReference = outbox.job_reference as Record<string, unknown>;
+      expect(JSON.parse(JSON.stringify(jobReference))).toEqual({
+        schemaVersion: 1, jobId: job.id, workflowType: "MailboxOcrReceiptWorkflow", workflowId: job.workflow_id,
+      });
 
       const fileRow = await database!
         .selectFrom("app.expense_files").selectAll()
@@ -523,7 +480,7 @@ describe.skipIf(!requested)(
     it("rejects an attachment whose stored-bytes hash does not match the candidate's own attachment-manifest entry, and never creates a job", async () => {
       const bytes = pngBytes();
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: ["f".repeat(64)] });
-      const { domain, temporalStarter } = createDomain();
+      const { domain } = createDomain();
       const grant = await domain.issueUploadGrant({
         candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
       });
@@ -537,17 +494,16 @@ describe.skipIf(!requested)(
       );
       expect(result.status).toBe("FAILED");
       expect(result.errorCode).toBe("ATTACHMENT_HASH_MISMATCH");
-      expect(temporalStarter.calls).toHaveLength(0);
 
       const fileRow = await database!
         .selectFrom("app.expense_files").selectAll()
         .where("id", "=", result.fileId).executeTakeFirstOrThrow();
       expect(fileRow.status).toBe("FAILED");
 
-      const candidateRow = await database!
-        .selectFrom("app.mailbox_candidates").selectAll()
-        .where("id", "=", candidateId).executeTakeFirstOrThrow();
-      expect(candidateRow.processing_job_id).toBeNull();
+      const jobs = await database!
+        .selectFrom("app.processing_jobs").select("id")
+        .where("source_file_id", "=", result.fileId).execute();
+      expect(jobs).toHaveLength(0);
     });
 
     it("rejects an infected attachment (EICAR), deletes its scan-staging object, and never confirms it as READY (blocked = dead end)", async () => {
@@ -556,7 +512,7 @@ describe.skipIf(!requested)(
         Buffer.from(EICAR, "ascii"),
       ]);
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(infected)] });
-      const { domain, temporalStarter } = createDomain();
+      const { domain } = createDomain();
       const grant = await domain.issueUploadGrant({
         candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
       });
@@ -570,7 +526,6 @@ describe.skipIf(!requested)(
       );
       expect(result.status).toBe("FAILED");
       expect(result.errorCode).toBe("MALWARE_DETECTED");
-      expect(temporalStarter.calls).toHaveLength(0);
 
       const fileRow = await database!
         .selectFrom("app.expense_files").selectAll()
@@ -590,7 +545,7 @@ describe.skipIf(!requested)(
     it("rejects an attachment exceeding the 25 MiB cap before ever reading past the bound, and never confirms it", async () => {
       const oversize = Buffer.alloc(MAX_UPLOAD_BYTES + 1, 7);
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(oversize)] });
-      const { domain, temporalStarter } = createDomain();
+      const { domain } = createDomain();
       const grant = await domain.issueUploadGrant({
         candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
       });
@@ -604,19 +559,19 @@ describe.skipIf(!requested)(
       );
       expect(result.status).toBe("FAILED");
       expect(result.errorCode).toBe("ATTACHMENT_BOUND_EXCEEDED");
-      expect(temporalStarter.calls).toHaveLength(0);
     }, 20_000);
 
-    it("accepts exactly 5 attachments (0-4) and rejects attachmentIndex 5 as out of range", async () => {
+    it("accepts exactly 5 attachments (0-4), one grant per attachment (fix round 2: a grant is single-use), and rejects attachmentIndex 5 as out of range", async () => {
       const bytesFor = (n: number) => Buffer.concat([pngBytes(), Buffer.from(`-${n}`)]);
       const fiveHashes = [0, 1, 2, 3, 4].map((n) => sha256Hex(bytesFor(n)));
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: fiveHashes });
       const { domain } = createDomain();
-      const grant = await domain.issueUploadGrant({
-        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
-      });
+      const fileIds: string[] = [];
 
       for (const index of [0, 1, 2, 3, 4]) {
+        const grant = await domain.issueUploadGrant({
+          candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+        });
         const result = await domain.receiveAttachment(
           {
             candidateId, attachmentIndex: index, uploadGrantId: grant.uploadGrantId,
@@ -625,12 +580,24 @@ describe.skipIf(!requested)(
           chunks([bytesFor(index)]),
         );
         expect(result.status).toBe("READY");
+        fileIds.push(result.fileId);
       }
+      // One OCR job per attachment (fix round 2, review Important #4),
+      // not one per candidate.
+      const jobs = await database!
+        .selectFrom("app.processing_jobs").select(["id", "source_file_id"])
+        .where("source_file_id", "in", fileIds)
+        .execute();
+      expect(jobs).toHaveLength(5);
+      expect(new Set(jobs.map((job) => job.source_file_id)).size).toBe(5);
 
+      const lastGrant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
       await expect(
         domain.receiveAttachment(
           {
-            candidateId, attachmentIndex: 5, uploadGrantId: grant.uploadGrantId,
+            candidateId, attachmentIndex: 5, uploadGrantId: lastGrant.uploadGrantId,
             expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
           },
           chunks([pngBytes()]),
@@ -693,7 +660,87 @@ describe.skipIf(!requested)(
     // Fix round 1 (task-3-review.md)
     // ------------------------------------------------------------ //
 
-    it("review #2: rejects re-use of the same upload grant/attachment slot with a different idempotency key -- the slot is single-use, not a replay", async () => {
+    it("round2 #3 (zero orphans): an unexpected exception anywhere after the PENDING row is created compensates fully -- no stuck PENDING row, no staging object, no final object", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      // A scanner that THROWS (not a typed clean:false result) -- the
+      // unexpected-exception class review Important #3 names explicitly,
+      // distinct from round 1's already-fixed typed-mismatch case.
+      const throwingScanner: MailboxStagingScanner = {
+        async scanStagedObject() {
+          throw new Error("scan engine crashed unexpectedly");
+        },
+      };
+      const { domain } = createDomain({ scannerOverride: throwingScanner });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([bytes]),
+      );
+      expect(result.status).toBe("FAILED");
+
+      const fileRow = await database!
+        .selectFrom("app.expense_files").selectAll()
+        .where("id", "=", result.fileId).executeTakeFirstOrThrow();
+      expect(fileRow.status).toBe("FAILED");
+      expect(await storage.statObject(`${fileRow.storage_key}.scan-staging`)).toBeNull();
+      expect(await storage.statObject(fileRow.storage_key)).toBeNull();
+
+      // The ledger claim itself completed (with a FAILED result), not
+      // stuck at 'started'.
+      const operation = await database!
+        .selectFrom("app.mailbox_ingestion_operations").selectAll()
+        .where("candidate_id", "=", candidateId)
+        .where("operation_kind", "=", "upload_attachment")
+        .executeTakeFirstOrThrow();
+      expect(operation.status).toBe("completed");
+    });
+
+    it("round2 #1 (true streaming): writeMailboxAttachment feeds the storage adapter many small chunks, never one Buffer holding the whole body", async () => {
+      const chunkCount = 40;
+      const parts = Array.from({ length: chunkCount }, (_unused, index) =>
+        index === 0 ? pngBytes() : Buffer.alloc(1024, index % 256),
+      );
+      const wholeBody = Buffer.concat(parts);
+      const observedChunkSizes: number[] = [];
+      const spyingStorage: StorageAdapter = {
+        ...storage,
+        async writeObjectStream(input, source) {
+          async function* observed(): AsyncIterable<Buffer> {
+            for await (const chunk of source) {
+              observedChunkSizes.push(chunk.byteLength);
+              yield chunk;
+            }
+          }
+          return storage.writeObjectStream(input, observed());
+        },
+      };
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(wholeBody)] });
+      const { domain } = createDomain({ storageOverride: spyingStorage });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks(parts),
+      );
+      expect(result.status).toBe("READY");
+      expect(observedChunkSizes.length).toBeGreaterThan(1);
+      expect(observedChunkSizes).toEqual(parts.map((part) => part.byteLength));
+      expect(Math.max(...observedChunkSizes)).toBeLessThan(wholeBody.byteLength);
+    });
+
+    it("round2 #2: a grant is single-use overall -- rejects re-use for the SAME attachmentIndex with a different key, and for a DIFFERENT attachmentIndex entirely", async () => {
       const bytes = pngBytes();
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
       const { domain } = createDomain();
@@ -710,9 +757,7 @@ describe.skipIf(!requested)(
       );
       expect(first.status).toBe("READY");
 
-      // Same grant, same candidate, same attachmentIndex, a DIFFERENT
-      // idempotencyKey -- this must be rejected outright, not replayed,
-      // and must not re-run the stream/scan/job side effects.
+      // Same grant, same index, a DIFFERENT idempotencyKey.
       await expect(
         domain.receiveAttachment(
           {
@@ -723,8 +768,22 @@ describe.skipIf(!requested)(
         ),
       ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
 
-      // Exactly one expense_files row for this attachment slot -- no
-      // second file/job was created by the rejected re-use attempt.
+      // Fix round 2 (review Important #2, explicitly NOT addressed in
+      // round 1): the SAME grant used for a DIFFERENT attachmentIndex --
+      // a grant is consumed once, for whichever index first used it, not
+      // reusable across the candidate's other attachment slots.
+      await expect(
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 1, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: "third-key",
+          },
+          chunks([bytes]),
+        ),
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+      // Exactly one job was ever created -- neither rejected re-use
+      // attempt ran the stream/scan/job side effects.
       const jobCount = await database!
         .selectFrom("app.processing_jobs")
         .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -770,25 +829,21 @@ describe.skipIf(!requested)(
     it("review #4: deletes the persisted object and never confirms READY when the bytes actually persisted don't match the computed hash", async () => {
       const bytes = pngBytes();
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
-      const scanner = createMailboxStagingScanner(storage, PatternMalwareScanner);
-      // Corrupting storage double: every write succeeds, but readObject
-      // for the file's own FINAL storage key (never the scan-staging key)
-      // returns different bytes than were written -- simulating silent
-      // storage corruption between write and read-back.
+      // Corrupting storage double: writeObjectStream succeeds (streams
+      // genuinely incrementally, delegating to the real adapter), but a
+      // post-move statObject for the file's own FINAL storage key (never
+      // the scan-staging key) reports a size that disagrees with what was
+      // actually streamed -- simulating silent storage corruption between
+      // the move and the persisted-size check.
       const corruptingStorage: StorageAdapter = {
         ...storage,
-        async readObject(storageKey: string) {
-          if (storageKey.endsWith(".scan-staging")) return storage.readObject(storageKey);
-          return Buffer.from("corrupted-on-persist");
+        async statObject(storageKey: string) {
+          if (storageKey.endsWith(".scan-staging")) return storage.statObject(storageKey);
+          const real = await storage.statObject(storageKey);
+          return real ? { exists: true, sizeBytes: real.sizeBytes + 1 } : real;
         },
       };
-      const filesDomain = createFilesDomain(database!, corruptingStorage, {
-        mailboxScanner: scanner,
-      });
-      const temporalStarter = fakeTemporalStarter();
-      const domain = createMailboxIngestionDomain(database!, {
-        filesDomain, temporalStarter, plansDomain: fakePlansDomain(true),
-      });
+      const { domain } = createDomain({ storageOverride: corruptingStorage });
       const grant = await domain.issueUploadGrant({
         candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
       });
@@ -809,31 +864,30 @@ describe.skipIf(!requested)(
       expect(fileRow.status).toBe("FAILED");
       // Orphan check: the (corrupting, but still real) storage backend's
       // own object for this key must be gone -- compensating delete ran.
-      const finalStat = await storage.statObject(fileRow.storage_key);
-      expect(finalStat).toBeNull();
-      expect(temporalStarter.calls).toHaveLength(0);
+      expect(await storage.statObject(fileRow.storage_key)).toBeNull();
     });
 
-    it("review #5: two concurrent attachment completions for the same candidate never create two processing_jobs rows", async () => {
+    it("round2 #4: two concurrent attachment uploads for the SAME candidate each get their OWN OCR job -- one per attachment, not one per candidate", async () => {
       const bytesFor = (n: number) => Buffer.concat([pngBytes(), Buffer.from(`-dup-${n}`)]);
       const hashes = [0, 1].map((n) => sha256Hex(bytesFor(n)));
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: hashes });
       const { domain } = createDomain();
-      const grant = await domain.issueUploadGrant({
-        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
-      });
+      const [grantA, grantB] = await Promise.all([
+        domain.issueUploadGrant({ candidateId, expectedCandidateVersion: 1, operationId: randomUUID() }),
+        domain.issueUploadGrant({ candidateId, expectedCandidateVersion: 1, operationId: randomUUID() }),
+      ]);
 
       const [resultA, resultB] = await Promise.all([
         domain.receiveAttachment(
           {
-            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            candidateId, attachmentIndex: 0, uploadGrantId: grantA.uploadGrantId,
             expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
           },
           chunks([bytesFor(0)]),
         ),
         domain.receiveAttachment(
           {
-            candidateId, attachmentIndex: 1, uploadGrantId: grant.uploadGrantId,
+            candidateId, attachmentIndex: 1, uploadGrantId: grantB.uploadGrantId,
             expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
           },
           chunks([bytesFor(1)]),
@@ -842,20 +896,68 @@ describe.skipIf(!requested)(
       expect(resultA.status).toBe("READY");
       expect(resultB.status).toBe("READY");
 
-      const jobCount = await database!
-        .selectFrom("app.processing_jobs")
-        .select(({ fn }) => fn.countAll<string>().as("count"))
+      const jobs = await database!
+        .selectFrom("app.processing_jobs").select(["id", "source_file_id"])
         .where("source_file_id", "in", [resultA.fileId, resultB.fileId])
-        .executeTakeFirstOrThrow();
-      expect(Number(jobCount.count)).toBe(1);
-
-      const candidateRow = await database!
-        .selectFrom("app.mailbox_candidates").selectAll()
-        .where("id", "=", candidateId).executeTakeFirstOrThrow();
-      expect(candidateRow.processing_job_id).not.toBeNull();
+        .execute();
+      expect(jobs).toHaveLength(2);
+      expect(new Set(jobs.map((job) => job.source_file_id))).toEqual(
+        new Set([resultA.fileId, resultB.fileId]),
+      );
     });
 
-    it("review #6: two concurrent calls with the exact same idempotency key never both run side effects -- one succeeds, the other is rejected or replays the same result", async () => {
+    it("round2 #5: a stale 'started' claim (its owning attempt crashed before completing) is recoverable by a same-key retry -- never permanently stuck", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const idempotencyKey = randomUUID();
+      const requestHash = hashNormalizedRequest({
+        candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId, expectedCandidateVersion: 1,
+      });
+      const connectionId = (
+        await database!.selectFrom("app.mailbox_candidates").select("connection_id")
+          .where("id", "=", candidateId).executeTakeFirstOrThrow()
+      ).connection_id;
+
+      // Simulate a crashed prior attempt: a 'started' claim whose
+      // updated_at is long past the lease window, with no live process
+      // ever going to complete it.
+      runtimeSql(`
+        INSERT INTO app.mailbox_ingestion_operations (
+          id, tenant_id, connection_id, candidate_id, operation_kind, operation_key,
+          idempotency_key, normalized_request_hash, response_json, status, version,
+          created_at, updated_at
+        ) VALUES (
+          '${randomUUID()}', '${TENANT_ID}', '${connectionId}', '${candidateId}',
+          'upload_attachment', 'upload-attachment:${candidateId}:${grant.uploadGrantId}',
+          '${idempotencyKey}', '${requestHash}', NULL, 'started', 1,
+          now() - interval '10 minutes', now() - interval '10 minutes'
+        );
+      `);
+
+      // Same exact key -- recovers the stale lease and completes normally,
+      // instead of throwing CONFLICT forever.
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey,
+        },
+        chunks([bytes]),
+      );
+      expect(result.status).toBe("READY");
+
+      const operation = await database!
+        .selectFrom("app.mailbox_ingestion_operations").selectAll()
+        .where("candidate_id", "=", candidateId)
+        .where("operation_kind", "=", "upload_attachment")
+        .executeTakeFirstOrThrow();
+      expect(operation.status).toBe("completed");
+    });
+
+    it("review #6: two concurrent calls with the exact same idempotency key (within the lease window) never both run side effects -- one succeeds, the other is rejected", async () => {
       const bytes = pngBytes();
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
       const { domain } = createDomain();
@@ -897,6 +999,61 @@ describe.skipIf(!requested)(
         .where("operation_kind", "=", "upload_attachment")
         .executeTakeFirstOrThrow();
       expect(Number(claimCount.count)).toBe(1);
+    });
+
+    it("round2 #6: a Temporal dispatch failure is retried (and eventually succeeds) by the existing dispatchPendingJobs mechanism, not stranded", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([bytes]),
+      );
+      expect(result.status).toBe("READY");
+      const jobBefore = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("source_file_id", "=", result.fileId).executeTakeFirstOrThrow();
+      expect(jobBefore.status).toBe("PENDING");
+
+      // First dispatch attempt fails (e.g. Temporal briefly unreachable).
+      let shouldFail = true;
+      const flakyStarter: TemporalWorkflowStarter = {
+        async start() {
+          if (shouldFail) throw new Error("temporal unreachable");
+          return { runId: `run-${randomUUID()}` };
+        },
+        async close() {},
+      };
+      const processingJobsDomain = createProcessingJobsDomain(database!, flakyStarter);
+      const firstAttempt = await processingJobsDomain.dispatchPendingJobs({});
+      expect(firstAttempt.dispatchedCount).toBe(0);
+
+      const jobAfterFailure = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("id", "=", jobBefore.id).executeTakeFirstOrThrow();
+      expect(jobAfterFailure.status).toBe("PENDING");
+      const outboxAfterFailure = await database!
+        .selectFrom("app.processing_job_dispatch_outbox").selectAll()
+        .where("processing_job_id", "=", jobBefore.id).executeTakeFirstOrThrow();
+      expect(outboxAfterFailure.status).toBe("PENDING");
+      expect(outboxAfterFailure.attempts).toBeGreaterThanOrEqual(1);
+      expect(outboxAfterFailure.last_error).toBeTruthy();
+
+      // Retry succeeds -- same mechanism every other job type already
+      // relies on, no mailbox-specific dispatch path needed.
+      shouldFail = false;
+      const secondAttempt = await processingJobsDomain.dispatchPendingJobs({});
+      expect(secondAttempt.dispatchedCount).toBeGreaterThanOrEqual(1);
+      const jobAfterRetry = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("id", "=", jobBefore.id).executeTakeFirstOrThrow();
+      expect(jobAfterRetry.status).toBe("DISPATCHED");
     });
 
     // ------------------------------------------------------------ //

@@ -567,7 +567,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const mailboxIngestionDomain =
     options.mailboxIngestionDomain ??
     (options.config.mailboxEnabled
-      ? createMailboxIngestionDomain(database, { filesDomain, temporalStarter, plansDomain })
+      ? createMailboxIngestionDomain(database, { filesDomain, plansDomain })
       : createDisabledMailboxIngestionDomain());
   app.register(registerMailboxIngestionRoutes, {
     mailboxIngestionDomain,

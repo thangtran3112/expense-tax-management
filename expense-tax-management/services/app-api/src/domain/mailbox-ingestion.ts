@@ -57,7 +57,6 @@ import { type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 
 import type { AppDatabase } from "../database/types.js";
-import type { TemporalWorkflowStarter } from "../temporal/client.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
 import {
@@ -122,6 +121,16 @@ type ConnectionRow = Selectable<AppDatabase["app.mailbox_connections"]>;
 type IngestionOperationRow = Selectable<AppDatabase["app.mailbox_ingestion_operations"]>;
 
 const UPLOAD_GRANT_TTL_MS = 15 * 60 * 1_000;
+
+/**
+ * Fix round 2 (review Important #5) -- how long a 'started' ledger claim
+ * is trusted to still be genuinely in flight before a same-key retry is
+ * allowed to re-claim it. Generous relative to a 25 MiB upload over any
+ * reasonable network: long enough that a live, still-uploading attempt is
+ * never preempted; short enough that a crashed attempt's claim recovers
+ * within one operator-visible interval rather than being stuck forever.
+ */
+const CLAIM_LEASE_MS = 2 * 60 * 1_000;
 
 /**
  * Fix round 1 (review Important #3) -- the fixed modeKey ("ocr_mode_fast")
@@ -438,53 +447,65 @@ export function createMailboxIngestionDomain(
   database: Kysely<AppDatabase>,
   deps: {
     readonly filesDomain: FilesDomain;
-    readonly temporalStarter: TemporalWorkflowStarter;
     readonly plansDomain: PlansDomain;
   },
 ): MailboxIngestionDomain {
   /**
-   * Fix round 1 (review Important #5) -- re-reads and FOR-UPDATE-locks the
-   * candidate row itself inside the caller's own transaction before
-   * deciding whether to create a job: the caller (receiveAttachment's
-   * finalize phase) already holds this same lock for the whole claim, so
-   * two concurrent attachment completions for the SAME candidate serialize
-   * here instead of each separately reading a stale `processing_job_id`
-   * and both creating a job. Also where the fixed modeKey's entitlement
-   * gate (review Important #3) is enforced, before any job row exists.
+   * Fix round 2 (review Important #4 + new Important #6).
    *
-   * Inlined job-row + dispatch-outbox insert (not processing-jobs.ts's
-   * createJobInTransaction -- see the import comment above for why), same
-   * shape as enrichment-jobs.ts's own createEnrichmentJobInTransaction.
-   * Unlike that function, the stamped task_queue/dispatch_namespace are
-   * the FIXED TypeScript-worker target (TARGET_TEMPORAL_NAMESPACE /
-   * AI_WORKER_TASK_QUEUE), not whatever app.temporal_dispatch_routing
-   * currently says -- this workflow type has no Python implementation and
-   * never will (Task 1 ruling), so it is dispatched directly below
-   * regardless of the generation-routing table's current state.
-   * readDispatchRoutingForShare is still called (fence + a valid >=1
-   * generation number for the NOT NULL/CHECK-constrained column), its
-   * namespace/task_queue return values are simply not used.
+   * One job PER ATTACHMENT, not one per candidate: keyed by
+   * source_file_id (each attachment's own fileId is unique, minted once
+   * by files.ts's writeMailboxAttachment), not by
+   * mailbox_candidates.processing_job_id -- that single nullable column
+   * can no longer express "which of several jobs". It is still written,
+   * but only later, by recordConnectedMailboxEvidenceInTransaction, as
+   * "the job that actually materialized this candidate" (descriptive,
+   * first-writer-wins), never as a creation-time uniqueness gate.
+   * Idempotent on retry: looks up an existing job for this exact fileId
+   * first and returns it unchanged rather than inserting a second one.
    *
-   * Returns the claimed job's id/workflowId for the caller to dispatch
-   * AFTER this transaction commits (a Temporal network call must never run
-   * inside a transaction holding a row lock), or null if a job already
-   * existed (another concurrent completion won the race, or this is a
-   * re-run with no new attachment).
+   * Dispatch (review new Important #6): this only ever inserts PENDING
+   * job + PENDING outbox rows -- exactly createEnrichmentJobInTransaction's
+   * own shape -- and never calls the Temporal client directly. The
+   * stamped task_queue/dispatch_namespace are the FIXED TypeScript-worker
+   * target (TARGET_TEMPORAL_NAMESPACE/AI_WORKER_TASK_QUEUE), not whatever
+   * app.temporal_dispatch_routing currently says (this workflow type has
+   * no Python implementation and never will: Task 1 ruling) -- but
+   * dispatchPendingJobs (processing-jobs.ts), which every other job type
+   * already relies on and which already retries on failure (attempts/
+   * last_error), reads task_queue/dispatch_namespace from the ROW, not
+   * from the live routing table, so reusing it here requires no special
+   * casing and gets retry-on-dispatch-failure for free instead of the
+   * one-shot post-commit call round 1 had. readDispatchRoutingForShare is
+   * still called (fence + a valid >=1 generation number for the NOT
+   * NULL/CHECK-constrained column), its own namespace/task_queue return
+   * values are simply not used for the stamped columns.
+   *
+   * Returns null when the tenant's connected_mailbox_scan entitlement is
+   * disabled (skip job creation; the finalize transaction still commits
+   * the ledger completion) -- never throws for this case, since throwing
+   * would roll back the finalize transaction and strand the ledger claim.
    */
-  async function claimMailboxOcrJobInTransaction(
+  async function createMailboxOcrJobInTransaction(
     transaction: Transaction<AppDatabase>,
     candidateId: string,
     fileId: string,
     requestId: string,
   ): Promise<{ readonly jobId: string; readonly workflowId: string } | null> {
+    const existingJob = await transaction
+      .selectFrom("app.processing_jobs")
+      .select(["id", "workflow_id"])
+      .where("source_file_id", "=", fileId)
+      .where("workflow_type", "=", MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE)
+      .executeTakeFirst();
+    if (existingJob) return { jobId: existingJob.id, workflowId: existingJob.workflow_id };
+
     const locked = await transaction
       .selectFrom("app.mailbox_candidates")
       .selectAll()
       .where("id", "=", candidateId)
       .forUpdate()
       .executeTakeFirstOrThrow();
-    if (locked.processing_job_id !== null) return null;
-
     const connection = await transaction
       .selectFrom("app.mailbox_connections")
       .selectAll()
@@ -494,11 +515,7 @@ export function createMailboxIngestionDomain(
     // already refuses the whole upload up front when the entitlement is
     // disabled (before any side effect, so no ledger claim is ever left
     // stuck). This is a defense-in-depth re-check for the narrow window
-    // between that claim and this finalize step -- deliberately returns
-    // null (skip job creation, leave processing_job_id unset for a later
-    // retry) rather than throwing, since throwing here would roll back
-    // the finalize transaction and permanently strand the ledger claim in
-    // 'started' with no legal forward transition left to retry it.
+    // between that claim and this finalize step.
     const entitlements = await deps.plansDomain.resolveEffectiveEntitlements({
       tenantId: locked.tenant_id,
       actorUserId: connection.owner_user_id,
@@ -558,7 +575,7 @@ export function createMailboxIngestionDomain(
           jobId,
           workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
           workflowId,
-        }),
+        } satisfies JobReferenceV1),
         status: "PENDING",
         attempts: 0,
         last_error: null,
@@ -577,60 +594,8 @@ export function createMailboxIngestionDomain(
       resourceId: jobId,
       requestId,
     });
-    await transaction
-      .updateTable("app.mailbox_candidates")
-      .set({ processing_job_id: jobId, updated_at: now })
-      .where("id", "=", locked.id)
-      .where("processing_job_id", "is", null)
-      .execute();
 
     return { jobId, workflowId };
-  }
-
-  /**
-   * Network dispatch, called only AFTER the transaction that claimed the
-   * job (above) has committed -- never while holding the candidate's row
-   * lock. Same "create row, then start workflow directly, then mark
-   * DISPATCHED" shape as temporal/mailbox-schedules.ts's dispatchIfStarted.
-   */
-  async function dispatchClaimedMailboxOcrJob(claimed: {
-    readonly jobId: string;
-    readonly workflowId: string;
-  }): Promise<void> {
-    const jobReference: JobReferenceV1 = {
-      schemaVersion: 1,
-      jobId: claimed.jobId,
-      workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-      workflowId: claimed.workflowId,
-    };
-    const started = await deps.temporalStarter.start({
-      workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-      workflowId: claimed.workflowId,
-      taskQueue: AI_WORKER_TASK_QUEUE,
-      namespace: TARGET_TEMPORAL_NAMESPACE,
-      args: [jobReference],
-    });
-    const dispatchedAt = new Date();
-    await database.transaction().execute(async (transaction) => {
-      await transaction
-        .updateTable("app.processing_job_dispatch_outbox")
-        .set({ status: "DISPATCHED", dispatched_at: dispatchedAt })
-        .where("processing_job_id", "=", claimed.jobId)
-        .where("status", "=", "PENDING")
-        .execute();
-      await transaction
-        .updateTable("app.processing_jobs")
-        .set((eb) => ({
-          status: "DISPATCHED",
-          run_id: started.runId,
-          dispatched_at: dispatchedAt,
-          updated_at: dispatchedAt,
-          version: eb("version", "+", 1),
-        }))
-        .where("id", "=", claimed.jobId)
-        .where("status", "=", "PENDING")
-        .execute();
-    });
   }
 
   return {
@@ -707,7 +672,19 @@ export function createMailboxIngestionDomain(
     },
 
     async receiveAttachment(input, source) {
-      const operationKey = `upload-attachment:${input.candidateId}:${input.attachmentIndex}`;
+      // Fix round 2 (review Important #2): keyed by the uploadGrantId
+      // itself, not (candidateId, attachmentIndex) -- a grant is consumed
+      // exactly once, by whichever attachmentIndex first uses it
+      // successfully; a second call referencing the SAME grant for the
+      // SAME or a DIFFERENT attachmentIndex finds the identical
+      // operationKey and is rejected below as a re-use (its
+      // normalized_request_hash -- which embeds attachmentIndex -- will
+      // never match a prior claim's for a different index, and the
+      // idempotency_key already differs for a different index in
+      // practice). The grant is still looked up/validated by
+      // uploadGrantId further down, scoped to this operationKey's own
+      // candidate.
+      const operationKey = `upload-attachment:${input.candidateId}:${input.uploadGrantId}`;
       const requestHash = hashNormalizedRequest({
         candidateId: input.candidateId,
         attachmentIndex: input.attachmentIndex,
@@ -715,12 +692,8 @@ export function createMailboxIngestionDomain(
         expectedCandidateVersion: input.expectedCandidateVersion,
       });
 
-      // Phase 1 ("claim"): one transaction, candidate FOR UPDATE. Binds
-      // the grant single-use to this exact (candidateId, attachmentIndex)
-      // pair -- any later call for the SAME pair with a DIFFERENT
-      // idempotencyKey is rejected outright, not replayed and not allowed
-      // to re-run side effects (review Important #2) -- and claims the
-      // ledger slot (status 'started') before any side effect runs
+      // Phase 1 ("claim"): one transaction, candidate FOR UPDATE. Claims
+      // the ledger slot (status 'started') before any side effect runs
       // (review Important #6).
       const claim:
         | { readonly kind: "replay"; readonly result: MailboxAttachmentUploadResultV1 }
@@ -745,9 +718,10 @@ export function createMailboxIngestionDomain(
               existingOperation.idempotency_key !== input.idempotencyKey ||
               existingOperation.normalized_request_hash !== requestHash
             ) {
-              // Same upload-grant/attachment slot re-used with a different
-              // idempotency key or payload -- reject. Grants/slots are
-              // single-use: this is not a replay.
+              // Same upload grant re-used (for the same or a different
+              // attachmentIndex) with a different idempotency key or
+              // payload -- reject. Grants are single-use: this is not a
+              // replay.
               throw DomainError.idempotencyConflict();
             }
             if (existingOperation.status === "completed") {
@@ -756,10 +730,26 @@ export function createMailboxIngestionDomain(
                 result: existingOperation.response_json as unknown as MailboxAttachmentUploadResultV1,
               };
             }
-            // status === "started": an attempt with the exact same key is
-            // (or was) already in flight -- never race a second concurrent
-            // execution of the same side effects.
-            throw DomainError.conflict();
+            // Fix round 2 (review Important #5): a 'started' claim with
+            // the exact same key is either genuinely in flight (reject,
+            // caller retries shortly) or stale -- its owning attempt
+            // crashed/died before ever reaching phase 3's completion
+            // UPDATE, and nothing will ever complete it otherwise. A
+            // claim older than CLAIM_LEASE_MS is treated as stale: its
+            // lease is re-claimed (bump updated_at; the forward-only
+            // transition trigger explicitly allows a same-status
+            // started -> started UPDATE) and this call proceeds through
+            // phases 2/3 itself, same as a fresh claim.
+            const staleForMs = Date.now() - existingOperation.updated_at.getTime();
+            if (staleForMs < CLAIM_LEASE_MS) {
+              throw DomainError.conflict();
+            }
+            await transaction
+              .updateTable("app.mailbox_ingestion_operations")
+              .set({ updated_at: new Date() })
+              .where("id", "=", existingOperation.id)
+              .execute();
+            return { kind: "claimed" as const, tenantId: candidate.tenant_id };
           }
 
           if (candidate.version !== input.expectedCandidateVersion) {
@@ -824,8 +814,9 @@ export function createMailboxIngestionDomain(
 
       // Phase 2: the slow stream/bound/hash/scan/storage work, outside any
       // row lock (review Important #1: routes/mailbox-ingestion.ts streams
-      // the raw request body straight into `source`, never buffering it
-      // first).
+      // the raw request body straight into `source`, and files.ts streams
+      // it straight into storage -- never buffering the full body in
+      // memory anywhere in this path).
       const result = await deps.filesDomain.writeMailboxAttachment(
         {
           candidateId: input.candidateId,
@@ -838,12 +829,13 @@ export function createMailboxIngestionDomain(
         source,
       );
 
-      // Phase 3 ("finalize"): one more transaction, candidate FOR UPDATE
-      // again -- completes the ledger claim and, only if READY, claims
-      // the mailbox OCR job while still holding the lock (review
-      // Important #5: two concurrent attachment completions for the same
-      // candidate can no longer both observe a null processing_job_id).
-      let claimedJob: { readonly jobId: string; readonly workflowId: string } | null = null;
+      // Phase 3 ("finalize"): completes the ledger claim and, only if
+      // READY, creates the mailbox OCR job (PENDING job + PENDING outbox
+      // row -- dispatchPendingJobs, the existing retrying dispatcher
+      // every other job type already relies on, picks it up; review new
+      // Important #6). Both happen in the same transaction: a dispatch
+      // failure later is the generic dispatcher's own, already-solved
+      // problem, not a reason to ever roll back the ledger completion.
       await database.transaction().execute(async (transaction) => {
         const updated = await transaction
           .updateTable("app.mailbox_ingestion_operations")
@@ -861,7 +853,7 @@ export function createMailboxIngestionDomain(
         if (updated.numUpdatedRows !== 1n) return;
 
         if (result.status === "READY") {
-          claimedJob = await claimMailboxOcrJobInTransaction(
+          await createMailboxOcrJobInTransaction(
             transaction,
             input.candidateId,
             result.fileId,
@@ -869,8 +861,6 @@ export function createMailboxIngestionDomain(
           );
         }
       });
-
-      if (claimedJob) await dispatchClaimedMailboxOcrJob(claimedJob);
 
       return result;
     },

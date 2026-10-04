@@ -213,8 +213,14 @@ export async function applyMailboxOcrExtraction(
     .forUpdate()
     .executeTakeFirst();
   if (!candidate) throw DomainError.validation();
+  // Fix round 2 (review Important #4): a candidate may now have one
+  // mailbox OCR job PER ATTACHMENT (not a single candidate-wide job), so
+  // `candidate.processing_job_id` no longer identifies "the" job -- the
+  // only invariant left to check is first-writer-wins materialization:
+  // once a DIFFERENT job has already materialized this candidate
+  // (status flipped away from 'queued'), every other job's own
+  // extraction is rejected here, never double-materializing.
   if (candidate.status !== "queued") throw DomainError.conflict();
-  if (candidate.processing_job_id !== job.id) throw DomainError.validation();
 
   const connection = await transaction
     .selectFrom("app.mailbox_connections")
