@@ -45,15 +45,22 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  AI_WORKER_TASK_QUEUE,
+  MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+  TARGET_TEMPORAL_NAMESPACE,
+  type JobReferenceV1,
   type MailboxCandidateClassification,
   type MailboxCandidateStatus,
   type MailboxCandidateV1,
   type MailboxErrorCodeV1,
   type MailboxScope,
+  type ProcessingJobStatus,
 } from "@expense-tax/contracts";
-import { type Kysely, type Selectable } from "kysely";
+import { type Kysely, type Selectable, type Transaction } from "kysely";
 
 import type { AppDatabase } from "../database/types.js";
+import { readDispatchRoutingForShare } from "./dispatch-routing.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
 import { requireScopeRole } from "./files.js";
@@ -61,6 +68,116 @@ import { hashNormalizedRequest, toJsonValue } from "./idempotency.js";
 
 type ConnectionRow = Selectable<AppDatabase["app.mailbox_connections"]>;
 type CandidateRow = Selectable<AppDatabase["app.mailbox_candidates"]>;
+
+/** Phase 3D-C Task 5 gap closure (controller ruling, progress.md): a
+ * processing_jobs row is "in flight" for the one-non-terminal-job-per-
+ * candidate guard below until it reaches either terminal status. */
+const TERMINAL_JOB_STATUSES = new Set<ProcessingJobStatus>(["SUCCEEDED", "FAILED"]);
+/** Same target-aggregate convention as every other job type here (e.g.
+ * applyOcrExtraction's "expense"); this job's target is the candidate
+ * itself, not an expense -- it never materializes one directly. */
+const MATERIALIZE_TARGET_AGGREGATE_TYPE = "mailbox_candidate";
+
+/**
+ * Controller ruling (progress.md): resolving a candidate as `ingest`
+ * creates, in the SAME transaction, a processing job for
+ * MailboxMaterializeWorkflow -- stamped with the fixed TypeScript target
+ * (TARGET_TEMPORAL_NAMESPACE/AI_WORKER_TASK_QUEUE) while recording the
+ * current dispatch_generation, exactly mirroring Task 3's own
+ * createMailboxOcrJobInTransaction (domain/mailbox-ingestion.ts) -- plus
+ * its dispatch outbox row, so the existing dispatchPendingJobs path starts
+ * and retries it. Not reusing processing-jobs.ts's createJobInTransaction:
+ * that helper always stamps the LIVE app.temporal_dispatch_routing
+ * namespace/queue, never a caller-fixed override, which this workflow type
+ * requires (no Python implementation, ever).
+ *
+ * Idempotent: looks up the most recent MailboxMaterializeWorkflow job
+ * targeting this candidate; if one exists and is NOT yet terminal
+ * (PENDING/DISPATCHED/RUNNING), reuses it instead of enqueueing a
+ * duplicate -- "at most one non-terminal materialize job per candidate".
+ * A terminal-FAILED prior job is superseded by a fresh one (this is what
+ * lets a later `ingest` call -- after a `retry` review action clears a
+ * materialize failure back to `review` -- re-enqueue).
+ */
+async function ensureMaterializeJobInTransaction(
+  transaction: Transaction<AppDatabase>,
+  candidate: CandidateRow,
+): Promise<string> {
+  const existing = await transaction
+    .selectFrom("app.processing_jobs")
+    .select(["id", "status"])
+    .where("target_aggregate_type", "=", MATERIALIZE_TARGET_AGGREGATE_TYPE)
+    .where("target_aggregate_id", "=", candidate.id)
+    .where("workflow_type", "=", MAILBOX_MATERIALIZE_WORKFLOW_TYPE)
+    .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  if (existing && !TERMINAL_JOB_STATUSES.has(existing.status)) {
+    return existing.id;
+  }
+
+  const jobId = randomUUID();
+  const workflowId = `job-${jobId}`;
+  const now = new Date();
+  // Fence (Task 7 Stage A): still reads the live routing row FOR SHARE so
+  // a concurrent operator `advance` is blocked until this transaction
+  // commits, and so dispatch_generation is a valid, current value for the
+  // NOT NULL/CHECK-constrained column -- but the stamped task_queue/
+  // dispatch_namespace are the FIXED TypeScript-worker target, never the
+  // live row's own values (same ruling as Task 3's own mailbox OCR job).
+  const dispatchTarget = await readDispatchRoutingForShare(transaction);
+  await transaction
+    .insertInto("app.processing_jobs")
+    .values({
+      id: jobId,
+      tenant_id: candidate.tenant_id,
+      personal_profile_id: candidate.candidate_personal_profile_id,
+      business_id: candidate.candidate_business_id,
+      workflow_type: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+      workflow_id: workflowId,
+      task_queue: AI_WORKER_TASK_QUEUE,
+      dispatch_generation: dispatchTarget.generation,
+      dispatch_namespace: TARGET_TEMPORAL_NAMESPACE,
+      run_id: null,
+      status: "PENDING",
+      target_aggregate_type: MATERIALIZE_TARGET_AGGREGATE_TYPE,
+      target_aggregate_id: candidate.id,
+      expected_aggregate_version: null,
+      requested_by_user_id: null,
+      source_file_id: null,
+      input_params: toJsonValue({
+        mailboxCandidateId: candidate.id,
+        mailboxConnectionId: candidate.connection_id,
+      }),
+      allowed_result_schema_version: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+      result: null,
+      error_message: null,
+      version: 1,
+      created_at: now,
+      updated_at: now,
+      dispatched_at: null,
+      completed_at: null,
+    })
+    .execute();
+  await transaction
+    .insertInto("app.processing_job_dispatch_outbox")
+    .values({
+      id: randomUUID(),
+      processing_job_id: jobId,
+      job_reference: toJsonValue({
+        schemaVersion: 1,
+        jobId,
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        workflowId,
+      } satisfies JobReferenceV1),
+      status: "PENDING",
+      attempts: 0,
+      last_error: null,
+      created_at: now,
+      dispatched_at: null,
+    })
+    .execute();
+  return jobId;
+}
 
 /**
  * Fully terminal for every review action, including `retry`. `failed` is
@@ -240,7 +357,10 @@ export interface MailboxCandidatesDomain {
   resolveCandidate(input: ResolveCandidateInput): Promise<MailboxCandidateV1>;
 }
 
-export function createMailboxCandidatesDomain(database: Kysely<AppDatabase>): MailboxCandidatesDomain {
+export function createMailboxCandidatesDomain(
+  database: Kysely<AppDatabase>,
+  deps: { readonly mailboxEnabled: boolean },
+): MailboxCandidatesDomain {
   return {
     async listCandidates(input) {
       await authorizeCandidateAccess(database, input);
@@ -279,6 +399,12 @@ export function createMailboxCandidatesDomain(database: Kysely<AppDatabase>): Ma
       await authorizeCandidateAccess(database, input);
 
       if (input.action === "ingest") {
+        // Controller ruling (progress.md): ingest creates a
+        // MailboxMaterializeWorkflow job below -- refuse the whole action
+        // before any side effect when the mailbox feature is off, same
+        // "feature off, not misconfigured" convention as app.ts's own
+        // route-level FEATURE_DISABLED gates.
+        if (!deps.mailboxEnabled) throw DomainError.featureDisabled();
         if (!input.scope) throw DomainError.validation();
         // Spec: "Assigning/reassigning requires current membership to
         // target scope" -- checked fresh at action time, independent of
@@ -348,6 +474,7 @@ export function createMailboxCandidatesDomain(database: Kysely<AppDatabase>): Ma
           business: candidate.candidate_business_id,
         };
         let errorCodeUpdate: MailboxErrorCodeV1 | null = candidate.error_code as MailboxErrorCodeV1 | null;
+        let materializeJobId: string | null = candidate.processing_job_id;
 
         if (input.action === "ingest") {
           const scope = input.scope as MailboxScope;
@@ -356,6 +483,13 @@ export function createMailboxCandidatesDomain(database: Kysely<AppDatabase>): Ma
             scope.kind === "personal"
               ? { personal: scope.profileId, business: null }
               : { personal: null, business: scope.businessId };
+          // Controller ruling: at most one non-terminal materialize job
+          // per candidate; a terminal-FAILED prior job is superseded.
+          materializeJobId = await ensureMaterializeJobInTransaction(transaction, {
+            ...candidate,
+            candidate_personal_profile_id: scopeUpdate.personal,
+            candidate_business_id: scopeUpdate.business,
+          });
         } else if (input.action === "skip" || input.action === "not_receipt") {
           nextStatus = "skipped";
         } else {
@@ -376,6 +510,7 @@ export function createMailboxCandidatesDomain(database: Kysely<AppDatabase>): Ma
             candidate_personal_profile_id: scopeUpdate.personal,
             candidate_business_id: scopeUpdate.business,
             error_code: errorCodeUpdate,
+            processing_job_id: materializeJobId,
             version: candidate.version + 1,
             updated_at: now,
           })

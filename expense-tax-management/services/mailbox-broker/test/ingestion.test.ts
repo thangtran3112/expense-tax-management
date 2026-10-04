@@ -219,10 +219,27 @@ describe("materializeCandidate", () => {
   const CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
   const CONNECTION_ID = "22222222-2222-4222-8222-222222222222";
 
+  const VALID_ORDER_HTML = `<html><body><script type="application/ld+json">${JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Order",
+    merchant: { "@type": "Organization", name: "Acme Hardware" },
+    orderNumber: "A-1001",
+    orderDate: "2026-09-01",
+    priceCurrency: "USD",
+    totalPrice: 42.5,
+  })}</script></body></html>`;
+
+  async function* htmlChunks(html: string): AsyncIterable<Buffer> {
+    yield Buffer.from(html, "utf8");
+  }
+
   function fakeDeps(
     overrides: {
       attachments?: readonly { attachmentId: string; filename: string; mimeType: string; sizeBytes: number }[];
       uploadStatus?: "READY" | "REVIEW" | "FAILED";
+      /** null (default): no html part. A string: served as the message's `text/html` body. */
+      htmlBody?: string | null;
+      submitStructuredResultImpl?: (...args: unknown[]) => unknown;
     } = {},
   ): MaterializeCandidateDependencies & {
     appClient: { [K in keyof MaterializeCandidateDependencies["appClient"]]: ReturnType<typeof vi.fn> };
@@ -251,7 +268,18 @@ describe("materializeCandidate", () => {
         errorCode: null,
         idempotencyKey: `idem-${input.attachmentIndex}`,
       })),
-      submitStructuredResult: vi.fn(),
+      submitStructuredResult:
+        overrides.submitStructuredResultImpl ??
+        vi.fn(async () => ({
+          schemaVersion: 1,
+          candidateId: CANDIDATE_ID,
+          status: "processed",
+          processingJobId: null,
+          expenseId: "33333333-3333-4333-8333-333333333333",
+          sourceId: "44444444-4444-4444-8444-444444444444",
+          duplicateMatchId: null,
+          idempotencyKey: "idem-structured-1",
+        })),
       loadScanBinding: vi.fn(),
       stageCandidateMetadata: vi.fn(),
     } as unknown as MaterializeCandidateDependencies["appClient"] & {
@@ -264,6 +292,11 @@ describe("materializeCandidate", () => {
         ],
       })),
       getAttachment: vi.fn(async () => Buffer.from("fake-attachment-bytes")),
+      getMessageHtmlBody: vi.fn(async () =>
+        overrides.htmlBody !== null && overrides.htmlBody !== undefined
+          ? htmlChunks(overrides.htmlBody)
+          : null,
+      ),
     }));
     return { appClient, getGmailClient };
   }
@@ -334,5 +367,94 @@ describe("materializeCandidate", () => {
     await materializeCandidate(deps, { connectionId: "ignored", candidateId: CANDIDATE_ID, operationId: "op-1" });
 
     expect(deps.appClient.uploadAttachment).toHaveBeenCalledTimes(5);
+  });
+
+  // ---------------------------------------------------------------- //
+  // Phase 3D-C Task 5 gap closure -- structured-HTML path tried first.
+  // ---------------------------------------------------------------- //
+
+  it("a valid JSON-LD body submits directly to App and never issues an upload grant", async () => {
+    const deps = fakeDeps({ htmlBody: VALID_ORDER_HTML });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.submitStructuredResult).toHaveBeenCalledWith(
+      expect.objectContaining({ result: expect.objectContaining({ merchant: "Acme Hardware" }) }),
+    );
+    expect(deps.appClient.issueUploadGrant).not.toHaveBeenCalled();
+    expect(deps.appClient.uploadAttachment).not.toHaveBeenCalled();
+    expect(result.status).toBe("processed");
+  });
+
+  it("falls back to the attachment path when the html body has no structured receipt", async () => {
+    const deps = fakeDeps({ htmlBody: "<html><body>just a newsletter, no receipt here</body></html>" });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.submitStructuredResult).not.toHaveBeenCalled();
+    expect(deps.appClient.issueUploadGrant).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("queued");
+  });
+
+  it("falls back to the attachment path when the html body exceeds the parser's decode budget", async () => {
+    const oversizeHtml = `<html><body>${"a".repeat(2 * 1024 * 1024)}</body></html>`;
+    const deps = fakeDeps({ htmlBody: oversizeHtml });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.submitStructuredResult).not.toHaveBeenCalled();
+    expect(deps.appClient.issueUploadGrant).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("queued");
+  });
+
+  it("falls back to the attachment path when the message has no html part at all", async () => {
+    const deps = fakeDeps({ htmlBody: null });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.submitStructuredResult).not.toHaveBeenCalled();
+    expect(deps.appClient.issueUploadGrant).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("queued");
+  });
+
+  it("never lets html body bytes reach the App payload -- only normalized fields and bounded evidence codes", async () => {
+    let captured: unknown;
+    const deps = fakeDeps({
+      htmlBody: VALID_ORDER_HTML,
+      submitStructuredResultImpl: vi.fn(async (input: unknown) => {
+        captured = input;
+        return {
+          schemaVersion: 1,
+          candidateId: CANDIDATE_ID,
+          status: "processed",
+          processingJobId: null,
+          expenseId: null,
+          sourceId: null,
+          duplicateMatchId: null,
+          idempotencyKey: "idem-structured-1",
+        };
+      }),
+    });
+
+    await materializeCandidate(deps, { connectionId: "ignored", candidateId: CANDIDATE_ID, operationId: "op-1" });
+
+    expect(JSON.stringify(captured)).not.toContain("<html>");
+    expect(JSON.stringify(captured)).not.toContain("<script");
   });
 });

@@ -158,55 +158,82 @@ describe("mailbox_ocr_receipt", () => {
   });
 });
 
-describe("mailbox_materialize_candidate", () => {
-  it("forwards candidateId/operationId and returns the opaque materialization result", async () => {
-    const materializeCandidate = vi.fn().mockResolvedValue({
-      schemaVersion: 1,
-      candidateId: "11111111-1111-4111-8111-111111111111",
-      status: "queued",
-      processingJobId: null,
-      expenseId: null,
-      sourceId: null,
-      duplicateMatchId: null,
-      idempotencyKey: "idem-1",
-    });
+describe("mailbox_materialize_job", () => {
+  const JOB_REFERENCE = {
+    schemaVersion: 1 as const,
+    jobId: "11111111-1111-4111-8111-111111111111",
+    workflowType: "MailboxMaterializeWorkflow" as const,
+    workflowId: "job-11111111-1111-4111-8111-111111111111",
+  };
+  const CANDIDATE_ID = "22222222-2222-4222-8222-222222222222";
+  const MATERIALIZATION_RESULT = {
+    schemaVersion: 1,
+    candidateId: CANDIDATE_ID,
+    status: "queued",
+    processingJobId: null,
+    expenseId: null,
+    sourceId: null,
+    duplicateMatchId: null,
+    idempotencyKey: "idem-1",
+  };
+
+  it("resolves candidateId, calls the broker by opaque jobId-as-operationId, and submits the opaque result", async () => {
+    const getMaterializeInput = vi.fn().mockResolvedValue({ candidateId: CANDIDATE_ID });
+    const submitResult = vi.fn().mockResolvedValue({ version: 3 });
+    const materializeCandidate = vi.fn().mockResolvedValue(MATERIALIZATION_RESULT);
     const activities = createMailboxMaterializeActivities({
+      appApi: { getMaterializeInput, submitResult } as unknown as AppApiClient,
       mailboxClient: { materializeCandidate } as unknown as MailboxAppApiClient,
     });
 
-    const result = await activities.mailbox_materialize_candidate({
-      candidateId: "11111111-1111-4111-8111-111111111111",
-      operationId: "op-1",
+    const result = await activities.mailbox_materialize_job({
+      jobReference: JOB_REFERENCE,
+      expectedJobVersion: 2,
     });
 
+    expect(result).toBe(3);
+    expect(getMaterializeInput).toHaveBeenCalledWith(JOB_REFERENCE.jobId);
     expect(materializeCandidate).toHaveBeenCalledWith({
-      candidateId: "11111111-1111-4111-8111-111111111111",
-      operationId: "op-1",
+      candidateId: CANDIDATE_ID,
+      operationId: JOB_REFERENCE.jobId,
     });
-    expect(result.status).toBe("queued");
+    expect(submitResult).toHaveBeenCalledWith(JOB_REFERENCE.jobId, {
+      schemaVersion: 1,
+      status: "SUCCEEDED",
+      idempotencyKey: `${JOB_REFERENCE.jobId}:materialize:result:succeeded`,
+      expectedJobVersion: 2,
+      resultSchemaVersion: "mailbox-materialize-v1",
+      result: MATERIALIZATION_RESULT,
+    });
   });
 
-  it("maps a transient MailboxClientError to a retryable ApplicationFailure", async () => {
+  it("maps a transient MailboxClientError from the broker call to a retryable ApplicationFailure, never calling submitResult", async () => {
+    const getMaterializeInput = vi.fn().mockResolvedValue({ candidateId: CANDIDATE_ID });
+    const submitResult = vi.fn();
     const materializeCandidate = vi.fn().mockRejectedValue(new MailboxClientError("unavailable"));
     const activities = createMailboxMaterializeActivities({
+      appApi: { getMaterializeInput, submitResult } as unknown as AppApiClient,
       mailboxClient: { materializeCandidate } as unknown as MailboxAppApiClient,
     });
 
     const error = await activities
-      .mailbox_materialize_candidate({ candidateId: "c-1", operationId: "op-1" })
+      .mailbox_materialize_job({ jobReference: JOB_REFERENCE, expectedJobVersion: 2 })
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApplicationFailure);
     expect((error as ApplicationFailure).nonRetryable).toBe(false);
+    expect(submitResult).not.toHaveBeenCalled();
   });
 
-  it("maps a permanent MailboxClientError to a non-retryable ApplicationFailure", async () => {
+  it("maps a permanent MailboxClientError from the broker call to a non-retryable ApplicationFailure", async () => {
+    const getMaterializeInput = vi.fn().mockResolvedValue({ candidateId: CANDIDATE_ID });
     const materializeCandidate = vi.fn().mockRejectedValue(new MailboxClientError("authorization_failed"));
     const activities = createMailboxMaterializeActivities({
+      appApi: { getMaterializeInput, submitResult: vi.fn() } as unknown as AppApiClient,
       mailboxClient: { materializeCandidate } as unknown as MailboxAppApiClient,
     });
 
     const error = await activities
-      .mailbox_materialize_candidate({ candidateId: "c-1", operationId: "op-1" })
+      .mailbox_materialize_job({ jobReference: JOB_REFERENCE, expectedJobVersion: 2 })
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApplicationFailure);
     expect((error as ApplicationFailure).nonRetryable).toBe(true);

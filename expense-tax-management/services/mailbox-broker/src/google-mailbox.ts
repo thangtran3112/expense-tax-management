@@ -41,6 +41,7 @@ import {
   type GmailDiscoveryClientLike,
   type GmailMessageDetail,
 } from "./discovery.js";
+import { STRUCTURED_RECEIPT_MAX_DECODED_BYTES } from "./structured-receipt.js";
 import {
   createOAuthState,
   decodeOAuthStatePayload,
@@ -198,6 +199,30 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
     return results;
   }
 
+  /**
+   * Depth-first search for the first `text/html` MIME part's inline
+   * `body.data` (base64url) -- never an attachment part (those have no
+   * inline `body.data`, only `body.attachmentId`, and are out of scope
+   * for structured-receipt parsing).
+   */
+  function findHtmlPartData(
+    part: { parts?: unknown[]; mimeType?: string | null; body?: { data?: string | null } } | undefined,
+  ): string | null {
+    if (!part) return null;
+    if (part.mimeType === "text/html" && part.body?.data) return part.body.data;
+    for (const child of part.parts ?? []) {
+      const found = findHtmlPartData(child as typeof part);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+
+  async function* chunksOf(buffer: Buffer, chunkSize = 64 * 1024): AsyncIterable<Buffer> {
+    for (let offset = 0; offset < buffer.length; offset += chunkSize) {
+      yield buffer.subarray(offset, offset + chunkSize);
+    }
+  }
+
   return {
     async listMessageIds(input) {
       try {
@@ -286,6 +311,35 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
         const response = await gmail.users.getProfile({ userId: "me" });
         if (!response.data.historyId) throw new Error("Gmail profile response missing historyId");
         return response.data.historyId;
+      } catch (error) {
+        mapGoogleApiError(error);
+      }
+    },
+
+    /**
+     * Phase 3D-C Task 5 gap closure -- bounded `text/html` body fetch.
+     * Gmail's API has no partial/range fetch for a message body, so the
+     * full message still arrives over the wire in one response (same as
+     * `getMessage` above); the bound this enforces is on what gets
+     * decoded and handed onward: never more than
+     * `STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1` bytes, so the parser's
+     * own existing `readBoundedUtf8` bound check (structured-receipt.ts)
+     * still sees -- and rejects -- an oversized body, without this
+     * function ever buffering the full oversized content for longer than
+     * one `Buffer.subarray` call. Never logs or returns the body through
+     * any path other than this bounded AsyncIterable.
+     */
+    async getMessageHtmlBody(id) {
+      try {
+        const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+        const htmlData = findHtmlPartData(response.data.payload ?? undefined);
+        if (htmlData === null) return null;
+        const decoded = Buffer.from(htmlData, "base64url");
+        const bounded =
+          decoded.length > STRUCTURED_RECEIPT_MAX_DECODED_BYTES
+            ? decoded.subarray(0, STRUCTURED_RECEIPT_MAX_DECODED_BYTES + 1)
+            : decoded;
+        return chunksOf(bounded);
       } catch (error) {
         mapGoogleApiError(error);
       }

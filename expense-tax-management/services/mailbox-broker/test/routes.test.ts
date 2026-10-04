@@ -847,6 +847,7 @@ describe("mailbox-broker routes", () => {
           ],
         })),
         getAttachment: vi.fn(async () => Buffer.from("fake-bytes")),
+        getMessageHtmlBody: vi.fn(async () => null),
       }));
       return { appClient, getGmailClient };
     }

@@ -15,12 +15,15 @@
  *   `workflow-worker-mailbox` identity: `submitResult`/`getOcrInput`/
  *   `downloadFile` are ordinary job routes, not mailbox-specific ones, and
  *   need no mailbox credentials at all.
- * - `mailbox_materialize_candidate` (createMailboxMaterializeActivities):
- *   a thin wrapper over `MailboxAppApiClient.materializeCandidate` -- the
- *   worker's one opaque-by-candidateId call into the broker's new
- *   materialize route (mailbox-scoped `workflow-worker-mailbox` identity,
- *   scope `mailbox:materialize`, already provisioned on this client's
- *   broker token provider).
+ * - `mailbox_materialize_job` (createMailboxMaterializeActivities): the
+ *   combined materialize pipeline -- read-only candidateId resolution
+ *   (generic App identity), the broker materialize call (mailbox-scoped
+ *   `workflow-worker-mailbox` identity, scope `mailbox:materialize`,
+ *   already provisioned on this client's broker token provider), then
+ *   submits the opaque MailboxMaterializationResultV1 back to App via the
+ *   same generic job-result route every other job type uses. Needs BOTH
+ *   dependencies -- generic `appApi` for the job-status/result calls,
+ *   mailbox-scoped `mailboxClient` for the broker call.
  */
 import { createHash } from "node:crypto";
 
@@ -114,17 +117,37 @@ export function createMailboxOcrActivities({ appApi, extractReceipt }: MailboxOc
 }
 
 export interface MailboxMaterializeActivityDependencies {
+  readonly appApi: AppApiClient;
   readonly mailboxClient: MailboxAppApiClient;
 }
 
-export function createMailboxMaterializeActivities({ mailboxClient }: MailboxMaterializeActivityDependencies) {
+export function createMailboxMaterializeActivities({ appApi, mailboxClient }: MailboxMaterializeActivityDependencies) {
   return {
-    async mailbox_materialize_candidate(input: {
-      candidateId: string;
-      operationId: string;
-    }): Promise<MailboxMaterializationResultV1> {
+    /**
+     * One call: resolve candidateId (read-only, retry-safe), call the
+     * broker's materialize route by opaque candidateId (operationId =
+     * jobId, so a Temporal retry of this whole activity replays
+     * idempotently on the broker side too), submit the opaque result back
+     * to App. Mutates the job's own status only on this call's success --
+     * safe for Temporal to retry the entire activity on any earlier
+     * failure without a stale expectedJobVersion.
+     */
+    async mailbox_materialize_job(input: {
+      jobReference: JobReferenceV1;
+      expectedJobVersion: number;
+    }): Promise<number> {
+      const jobId = input.jobReference.jobId;
+
+      let candidateId: string;
       try {
-        return await mailboxClient.materializeCandidate(input);
+        candidateId = (await appApi.getMaterializeInput(jobId)).candidateId;
+      } catch (error) {
+        throwAppApiFailure(error, "MailboxMaterializeInputTransient", "MailboxMaterializeInputNonRetryable");
+      }
+
+      let result: MailboxMaterializationResultV1;
+      try {
+        result = await mailboxClient.materializeCandidate({ candidateId, operationId: jobId });
       } catch (error) {
         if (error instanceof MailboxClientError) {
           const message = `mailbox client request failed: ${error.code}`;
@@ -134,6 +157,21 @@ export function createMailboxMaterializeActivities({ mailboxClient }: MailboxMat
         }
         throw error;
       }
+
+      let job;
+      try {
+        job = await appApi.submitResult(jobId, {
+          schemaVersion: 1,
+          status: "SUCCEEDED",
+          idempotencyKey: `${jobId}:materialize:result:succeeded`,
+          expectedJobVersion: input.expectedJobVersion,
+          resultSchemaVersion: "mailbox-materialize-v1",
+          result,
+        });
+      } catch (error) {
+        throwAppApiFailure(error, "MailboxMaterializeSubmitTransient", "MailboxMaterializeSubmitNonRetryable");
+      }
+      return job.version;
     },
   };
 }

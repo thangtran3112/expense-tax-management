@@ -398,14 +398,15 @@ it("MailboxOcrReceiptWorkflow rejects a job reference for a different workflow t
 }, 60_000);
 
 /**
- * Phase 3D-C Task 5 — MailboxMaterializeWorkflow. Receives only
- * MailboxWorkerMaterializationInputV1 ({scanRunId, candidateId}) and
- * invokes exactly one opaque broker operation by candidateId.
+ * Phase 3D-C Task 5 gap closure — MailboxMaterializeWorkflow. Receives
+ * only a `JobReferenceV1` (dispatched through the ordinary job pipeline,
+ * same as MailboxOcrReceiptWorkflow above); one combined activity
+ * resolves candidateId/calls the broker/submits the result.
  */
-it("MailboxMaterializeWorkflow invokes mailbox_materialize_candidate with candidateId and an opaque operationId", async () => {
+it("MailboxMaterializeWorkflow marks running, runs the combined materialize activity, and returns", async () => {
   const calls: unknown[] = [];
   const env = await TestWorkflowEnvironment.createTimeSkipping();
-  const workflowId = "mailbox-materialize-candidate-1";
+  const workflowId = "mailbox-materialize-success";
   try {
     const worker = await Worker.create({
       connection: env.nativeConnection,
@@ -413,33 +414,90 @@ it("MailboxMaterializeWorkflow invokes mailbox_materialize_candidate with candid
       taskQueue: TASK_QUEUE,
       workflowsPath,
       activities: {
-        async mailbox_materialize_candidate(input: unknown) {
-          calls.push(["materialize", input]);
-          return {
-            schemaVersion: 1,
-            candidateId: "candidate-1",
-            status: "queued",
-            processingJobId: null,
-            expenseId: null,
-            sourceId: null,
-            duplicateMatchId: null,
-            idempotencyKey: "idem-1",
-          };
+        async mark_running(input: unknown) {
+          calls.push(["mark_running", input]);
+          return 2;
+        },
+        async mailbox_materialize_job(input: unknown) {
+          calls.push(["mailbox_materialize_job", input]);
+          return 3;
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 4;
         },
       },
     });
-    const result = await worker.runUntil(() =>
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "44444444-4444-4444-8444-444444444444",
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
       env.client.workflow.execute("MailboxMaterializeWorkflow", {
         workflowId,
         taskQueue: TASK_QUEUE,
-        args: [{ scanRunId: "scan-1", candidateId: "candidate-1" }],
+        args: [jobReference],
       }),
     );
-    expect(result).toMatchObject({ candidateId: "candidate-1", status: "queued" });
     expect(calls).toEqual([
-      ["materialize", { candidateId: "candidate-1", operationId: expect.any(String) }],
+      ["mark_running", { jobReference, expectedJobVersion: 2 }],
+      ["mailbox_materialize_job", { jobReference, expectedJobVersion: 2 }],
     ]);
     expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxMaterializeWorkflow marks the job failed (best-effort) when the combined activity fails permanently", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-materialize-failure";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running() {
+          return 2;
+        },
+        async mailbox_materialize_job() {
+          const { ApplicationFailure } = await import("@temporalio/activity");
+          throw ApplicationFailure.nonRetryable("broker call failed", "MailboxMaterializeNonRetryable");
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 5;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "55555555-5555-4555-8555-555555555555",
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxMaterializeWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "ocr_mark_failed",
+        {
+          jobReference,
+          expectedJobVersion: 2,
+          message: "MAILBOX_MATERIALIZE_FAILED: broker materialize call or result submission error",
+        },
+      ],
+    ]);
   } finally {
     await env.teardown();
   }

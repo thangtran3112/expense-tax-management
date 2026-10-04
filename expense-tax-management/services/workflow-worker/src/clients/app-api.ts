@@ -51,6 +51,7 @@ export class AppApiClientError extends Error {
 }
 
 const IdSchema = z.uuid();
+const MaterializeInputResponseSchema = z.strictObject({ candidateId: z.uuid() });
 const DeduplicationResponseSchema = z.strictObject({
   decision: z.enum(["no_match", "review"]),
   matchIds: z.array(z.uuid()),
@@ -146,6 +147,8 @@ export interface AppApiClient {
     evidence: DeduplicationEvidenceV1,
   ): Promise<DeduplicationResponse>;
   getOcrInput(jobId: string): Promise<OcrJobInputV1>;
+  /** Phase 3D-C Task 5 gap closure -- read-only candidateId resolver, never mutates the job. */
+  getMaterializeInput(jobId: string): Promise<{ readonly candidateId: string }>;
   issueFileReadUrl(fileId: string): Promise<FileReadUrlResponse>;
   downloadFile(fileId: string): Promise<Uint8Array>;
   getEnrichmentInput(
@@ -331,6 +334,15 @@ export function createAppApiClient(
         method: "GET",
         token: tokenProviders.jobs,
         responseSchema: OcrJobInputV1Schema,
+      });
+    },
+    getMaterializeInput(jobId) {
+      const parsedJobId = IdSchema.parse(jobId);
+      return requestJson({
+        path: `/internal/v1/jobs/${parsedJobId}/materialize-input`,
+        method: "GET",
+        token: tokenProviders.jobs,
+        responseSchema: MaterializeInputResponseSchema,
       });
     },
     issueFileReadUrl,

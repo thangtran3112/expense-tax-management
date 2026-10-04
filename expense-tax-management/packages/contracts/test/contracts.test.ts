@@ -147,7 +147,8 @@ describe("inferred types", () => {
         | "ForwardedReceiptWorkflow"
         | "ExpenseEnrichmentWorkflow"
         | "MailboxScanWorkflow"
-        | "MailboxOcrReceiptWorkflow";
+        | "MailboxOcrReceiptWorkflow"
+        | "MailboxMaterializeWorkflow";
       workflowId: string;
     }>();
   });

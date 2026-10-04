@@ -47,6 +47,8 @@ import {
   type MaterializeInput,
 } from "@expense-tax/contracts";
 
+import { materializeStructuredReceipt } from "./structured-receipt.js";
+
 export interface StreamTarget {
   write(chunk: Buffer): Promise<void>;
   abort(): Promise<void>;
@@ -183,19 +185,21 @@ export async function streamAttachment(
  * direct-App-callback glue Task 2/3 both flagged as not-yet-implemented).
  *
  * Narrower than `GmailDiscoveryClientLike` (discovery.ts) on purpose: only
- * the two attachment-fetch methods this function actually needs, so it
- * stays independently testable with a fake and carries no dependency on
+ * the three fetch methods this function actually needs, so it stays
+ * independently testable with a fake and carries no dependency on
  * discovery.ts's larger (list/history) surface.
  *
- * Ruling: only the attachment path is implemented. The structured-HTML
- * path (structured-receipt.ts's parseStructuredReceipt /
- * materializeStructuredReceipt) needs the message's HTML body, and no
- * Gmail client interface in this codebase exposes one yet
- * (GmailDiscoveryClientLike.getMessage returns attachment metadata only,
- * never a body) -- adding one is a discovery.ts/google-mailbox.ts change,
- * out of this task's file list (flagged in task-5-report.md). A
- * zero-attachment candidate therefore comes back "review", not silently
- * dropped.
+ * Gap closure (controller ruling, progress.md): the structured-HTML path
+ * is tried FIRST via a bounded `getMessageHtmlBody` fetch (google-
+ * mailbox.ts's real Gmail adapter) + the Task 2 parser
+ * (structured-receipt.ts's parseStructuredReceipt, run through
+ * materializeStructuredReceipt). A complete match submits directly to App
+ * and returns immediately -- no attachment upload grant is ever issued.
+ * Absent/invalid/oversize body falls through to the attachment/OCR path
+ * unchanged. Body bytes never cross into a log line or an App payload:
+ * only the parser's own bounded evidence codes and normalized fields
+ * (StructuredReceiptResultV1) ever leave this function via
+ * submitStructuredResult.
  *
  * Ruling: `MaterializeInput.connectionId` is accepted (canonical contract
  * shape) but unused -- same precedent as the discover route's own
@@ -213,6 +217,8 @@ export interface MaterializeGmailClient {
     }[];
   }>;
   getAttachment(input: { readonly messageId: string; readonly attachmentId: string }): Promise<Buffer>;
+  /** Null when the message has no `text/html` part -- falls through to the attachment path. */
+  getMessageHtmlBody(id: string): Promise<AsyncIterable<Buffer> | null>;
 }
 
 export interface MaterializeCandidateDependencies {
@@ -230,6 +236,29 @@ export async function materializeCandidate(
 ): Promise<MailboxMaterializationResultV1> {
   const binding = await deps.appClient.loadCandidateBinding(input.candidateId);
   const gmail = await deps.getGmailClient(binding.connectionId);
+
+  const htmlBody = await gmail.getMessageHtmlBody(binding.providerMessageId);
+  if (htmlBody) {
+    const structuredResult = await materializeStructuredReceipt(
+      { submitStructuredResult: deps.appClient.submitStructuredResult },
+      htmlBody,
+      {
+        candidateId: input.candidateId,
+        connectionId: binding.connectionId,
+        candidateVersion: binding.expectedCandidateVersion,
+      },
+      mailboxIdempotencyKey(
+        binding.connectionId,
+        "submit_structured_result",
+        input.candidateId,
+        binding.expectedCandidateVersion,
+      ),
+    );
+    // A complete, valid structured match materializes synchronously --
+    // no attachment upload grant is ever issued for this candidate.
+    if (structuredResult) return structuredResult;
+  }
+
   const message = await gmail.getMessage(binding.providerMessageId);
 
   if (message.attachments.length === 0) {

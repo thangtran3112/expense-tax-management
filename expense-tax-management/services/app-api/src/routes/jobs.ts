@@ -48,6 +48,10 @@ const FoundationEchoRequestSchema = z.strictObject({
   businessId: z.uuid().optional(),
 });
 
+const MailboxMaterializeInputResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+});
+
 function actorServicePrincipal(request: FastifyRequest): string {
   const clientId = request.authPrincipal?.clientId;
   if (!clientId) throw DomainError.forbidden();
@@ -162,6 +166,35 @@ export async function registerJobRoutes(
         requestId: request.id,
       });
       return reply.code(result.statusCode).send(result.body);
+    },
+  );
+
+  /**
+   * Phase 3D-C Task 5 gap closure -- read-only candidateId resolver for
+   * MailboxMaterializeWorkflow's combined activity. Deliberately NOT a
+   * new ProcessingJobsDomain method: reuses the existing `getJob` (already
+   * exposed, admin-guarded, at GET /internal/v1/jobs/:jobId) under the
+   * ordinary worker guard instead, same "small, local addition over a new
+   * cross-cutting domain method" choice as every other single-purpose
+   * job-input route here (ocr-input, enrichment-input). Never mutates the
+   * job -- safe for Temporal to retry this activity step any number of
+   * times without a version-conflict risk.
+   */
+  typedApp.get(
+    "/internal/v1/jobs/:jobId/materialize-input",
+    {
+      preHandler: workerGuard,
+      schema: {
+        params: ProcessingJobParamsSchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: MailboxMaterializeInputResponseSchema, ...errors },
+      },
+    },
+    async (request) => {
+      const job = await options.processingJobsDomain.getJob(request.params.jobId);
+      const candidateId = (job.inputParams as Record<string, unknown> | null)?.["mailboxCandidateId"];
+      if (typeof candidateId !== "string") throw DomainError.validation();
+      return { candidateId };
     },
   );
 

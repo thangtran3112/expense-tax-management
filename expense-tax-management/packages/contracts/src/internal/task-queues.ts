@@ -61,6 +61,25 @@ export const MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE = "MailboxScheduledSca
  * when MAILBOX_FEATURE_ENABLED is false.
  */
 export const MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE = "MailboxOcrReceiptWorkflow";
+/**
+ * Phase 3D-C Task 5 gap closure -- the materialization-trigger workflow.
+ * Unlike MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE's own direct-dispatch path
+ * (bypassing the generic job pipeline), this one IS created and dispatched
+ * through the ordinary processing_jobs/processing_job_dispatch_outbox/
+ * dispatchPendingJobs mechanism every other job type already uses --
+ * domain/mailbox-candidates.ts's resolveCandidate stamps it with the fixed
+ * TypeScript target (TARGET_TEMPORAL_NAMESPACE/AI_WORKER_TASK_QUEUE) while
+ * recording the current dispatch_generation, same pattern as Task 3's own
+ * mailbox OCR job. Must be in WorkflowTypeSchema (not bypassed like
+ * MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE above): dispatchPendingJobs
+ * parses JobReferenceV1 -- including workflowType -- before starting it.
+ */
+export const MAILBOX_MATERIALIZE_WORKFLOW_TYPE = "MailboxMaterializeWorkflow";
+/** Result schema version stamped on a MailboxMaterializeWorkflow job's
+ * allowed_result_schema_version / submitted via the generic job-result
+ * route -- the opaque MailboxMaterializationResultV1 shape, never OCR
+ * extraction fields. */
+export const MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION = "mailbox-materialize-v1";
 
 export const WorkflowTypeSchema = z.enum([
   FOUNDATION_ECHO_WORKFLOW_TYPE,
@@ -69,6 +88,7 @@ export const WorkflowTypeSchema = z.enum([
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
   MAILBOX_SCAN_WORKFLOW_TYPE,
   MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
 ]);
 export type WorkflowType = z.infer<typeof WorkflowTypeSchema>;
 

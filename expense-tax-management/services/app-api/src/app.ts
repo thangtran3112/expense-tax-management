@@ -528,7 +528,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const mailboxCandidatesDomain =
     options.mailboxCandidatesDomain ??
     (options.config.mailboxEnabled
-      ? createMailboxCandidatesDomain(database)
+      ? createMailboxCandidatesDomain(database, { mailboxEnabled: options.config.mailboxEnabled })
       : createDisabledMailboxCandidatesDomain());
   // Always registered (same pattern as every other route group in this
   // file) so the customer-facing route is always present in the generated

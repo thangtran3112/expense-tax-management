@@ -190,6 +190,17 @@ export interface GmailDiscoveryClientLike {
   getMessage(id: string): Promise<GmailMessageDetail>;
   getAttachment(input: { readonly messageId: string; readonly attachmentId: string }): Promise<Buffer>;
   getProfileHistoryId(): Promise<string>;
+  /**
+   * Phase 3D-C Task 5 gap closure -- bounded fetch of a message's
+   * `text/html` body part only (never the whole MIME tree's raw bytes),
+   * for structured-receipt parsing (ingestion.ts's materializeCandidate).
+   * Returns `null` when the message has no `text/html` part. Optional:
+   * every existing `GmailDiscoveryClientLike` fake in this codebase
+   * (discovery.test.ts, google-mailbox.test.ts, routes.test.ts) predates
+   * this method and is never used for materialize, so none needs to
+   * implement it.
+   */
+  getMessageHtmlBody?(id: string): Promise<AsyncIterable<Buffer> | null>;
 }
 
 /**
