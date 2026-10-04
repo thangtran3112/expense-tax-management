@@ -103,6 +103,12 @@ export default function MailboxPage() {
   const [scanStarting, setScanStarting] = useState(false);
   const [scanActionError, setScanActionError] = useState<string | null>(null);
   const [candidateRefreshSignal, setCandidateRefreshSignal] = useState(0);
+  // Fix round 1 (review Important #2) -- bumped by `handleScanNow` to
+  // restart the poll effect below from a fresh immediate fetch, instead
+  // of a separate uncoordinated fetch that left the effect's own timer
+  // loop stopped (it had already stopped scheduling once the prior run
+  // reached a terminal status).
+  const [pollGeneration, setPollGeneration] = useState(0);
   const previousScanStatusRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -198,7 +204,7 @@ export default function MailboxPage() {
       if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, organizationId]);
+  }, [connectionId, organizationId, pollGeneration]);
 
   async function handleScanNow() {
     if (!session || !organizationId || !connectionId) return;
@@ -212,12 +218,12 @@ export default function MailboxPage() {
       );
     } finally {
       setScanStarting(false);
-      try {
-        const items = await loadMailboxScanRuns(session, connectionId, getToken, organizationId);
-        setScanRuns(items);
-      } catch {
-        // Next poll tick will retry.
-      }
+      // Restart the poll effect from a fresh immediate fetch -- a scan
+      // may now be pending/running even on a 409 skipped_overlap (someone
+      // else's run is active), and the effect's own loop had already
+      // stopped scheduling once the *previous* run reached a terminal
+      // status.
+      setPollGeneration((count) => count + 1);
     }
   }
 

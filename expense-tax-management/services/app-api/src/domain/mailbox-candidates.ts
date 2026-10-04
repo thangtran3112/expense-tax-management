@@ -85,12 +85,6 @@ const TRANSIENT_MAILBOX_ERROR_CODES = new Set<MailboxErrorCodeV1>([
   "GOOGLE_UNAVAILABLE",
 ]);
 
-function toMailboxScope(row: Pick<ConnectionRow, "personal_profile_id" | "business_id">): MailboxScope {
-  return row.personal_profile_id !== null
-    ? { kind: "personal", profileId: row.personal_profile_id }
-    : { kind: "business", businessId: row.business_id as string };
-}
-
 function toMailboxScopeOrNull(
   row: Pick<CandidateRow, "candidate_personal_profile_id" | "candidate_business_id">,
 ): MailboxScope | null {
@@ -149,13 +143,41 @@ function decodeCandidateCursor(cursor: string): { receivedAt: Date; id: string }
 /**
  * Spec: "Every connection/candidate list, detail, and mutation
  * revalidates current tenant membership, connection status/version,
- * owner or non-revoked reviewer grant, and grant version." Three
- * independent paths to access, any one sufficient: the connection's
- * owner, an explicit non-revoked `mailbox_reviewer_grants` row for this
- * actor, or ordinary Personal/business scope membership on the
- * connection's own scope (same `requireScopeRole` every other mailbox
- * domain file in this package uses).
+ * owner or non-revoked reviewer grant, and grant version... No
+ * tenant-admin shortcut grants access to Personal/business candidate
+ * data... Revoked connection/grant immediately removes read and mutation
+ * access." Fix round 1 (review Important #2): ordinary Personal/business
+ * scope membership (`requireScopeRole`) is deliberately NOT an access
+ * path here -- only the connection's owner or an exact, currently
+ * non-revoked `mailbox_reviewer_grants` row may read/mutate its
+ * candidates. Generic scope membership stays scoped to `ingest`'s own
+ * *target*-scope check below, which the spec names as a separate,
+ * additional requirement ("Review assignment additionally revalidates
+ * target-scope membership"), not a substitute for connection-level
+ * authorization.
+ *
+ * A connection's own current `status` is revalidated fresh on every call
+ * (this function always re-reads the row; nothing is cached from an
+ * earlier request): only a fully `revoked` connection blocks read/
+ * mutation access -- `reauth_required` does not (mockup owner decision:
+ * "Reauthorization blocks scanning only; already-staged candidates stay
+ * fully reviewable").
  */
+async function requireActiveTenantMembership(
+  database: Kysely<AppDatabase>,
+  actorUserId: string,
+  tenantId: string,
+): Promise<void> {
+  const membership = await database
+    .selectFrom("app.tenant_memberships")
+    .select(["user_id"])
+    .where("tenant_id", "=", tenantId)
+    .where("user_id", "=", actorUserId)
+    .where("status", "=", "active")
+    .executeTakeFirst();
+  if (!membership) throw DomainError.forbidden();
+}
+
 async function authorizeCandidateAccess(
   database: Kysely<AppDatabase>,
   input: { readonly actorUserId: string; readonly tenantId: string; readonly connectionId: string },
@@ -168,6 +190,9 @@ async function authorizeCandidateAccess(
     .executeTakeFirst();
   if (!connection) throw DomainError.notFound();
 
+  await requireActiveTenantMembership(database, input.actorUserId, input.tenantId);
+  if (connection.status === "revoked") throw DomainError.forbidden();
+
   if (connection.owner_user_id === input.actorUserId) return connection;
 
   const grant = await database
@@ -179,16 +204,7 @@ async function authorizeCandidateAccess(
     .executeTakeFirst();
   if (grant) return connection;
 
-  try {
-    await requireScopeRole(database, {
-      actorUserId: input.actorUserId,
-      tenantId: input.tenantId,
-      scope: toMailboxScope(connection),
-    });
-    return connection;
-  } catch {
-    throw DomainError.forbidden();
-  }
+  throw DomainError.forbidden();
 }
 
 export type MailboxCandidateReviewAction = "ingest" | "skip" | "not_receipt" | "retry";

@@ -149,6 +149,34 @@ describe("classifyCandidateEvidence — marketing / no-signal not_receipt", () =
   });
 });
 
+describe("classifyCandidateEvidence — precedence: attachment/structured evidence outranks a marketing subject", () => {
+  it("fix round 1 (review Minor): an accepted attachment plus a marketing-keyword subject is ambiguous (conflicting evidence), never not_receipt", () => {
+    const result = classifyCandidateEvidence({
+      subject: "🔥 Flash sale: your receipt for 30% off everything",
+      hasAcceptedAttachment: true,
+      senderDomainKnownRetailer: true,
+    });
+    expect(result.classification).toBe("ambiguous");
+    expect(result.evidence).toContain("pdf_attachment_detected");
+    expect(result.evidence).toContain("marketing_keyword_match");
+    // Real structured/attachment evidence is present -- asserting
+    // "no_structured_or_attachment_evidence" here would be factually wrong.
+    expect(result.evidence).not.toContain("no_structured_or_attachment_evidence");
+  });
+
+  it("a structured order-confirmation schema signal plus a marketing-keyword subject is also ambiguous, not auto-receipt and not not_receipt", () => {
+    const result = classifyCandidateEvidence({
+      subject: "Flash sale order confirmation — 30% off",
+      hasAcceptedAttachment: false,
+      senderDomainKnownRetailer: false,
+      hasOrderConfirmationSchema: true,
+    });
+    expect(result.classification).toBe("ambiguous");
+    expect(result.evidence).toContain("order_confirmation_schema");
+    expect(result.evidence).toContain("marketing_keyword_match");
+  });
+});
+
 describe("classifyCandidateEvidence — no raw body", () => {
   it("accepts only bounded subject text and booleans, never a body/html/content field", () => {
     const input: Record<string, unknown> = {

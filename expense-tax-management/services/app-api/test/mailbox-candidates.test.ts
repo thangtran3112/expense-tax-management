@@ -291,6 +291,80 @@ describe.skipIf(!requested)(
     });
 
     // ---------------------------------------------------------------- //
+    // Fix round 1 (review Important #2): no generic scope-membership
+    // shortcut; revoked connection removes owner/reviewer access; an
+    // inactive tenant membership removes owner access even though the
+    // connection row's owner_user_id is unchanged.
+    // ---------------------------------------------------------------- //
+
+    it("rejects a user with ordinary Personal/business scope membership but no owner relationship and no reviewer grant", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      insertCandidate(connectionId, scanRunId);
+      // MEMBER_USER_ID is a business_memberships owner (seeded globally)
+      // but has no reviewer grant on *this* connection and is not its
+      // owner_user_id -- scope membership alone must not grant access.
+      await expect(
+        domain.listCandidates({ actorUserId: MEMBER_USER_ID, tenantId: TENANT_ID, connectionId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("rejects the connection owner's own access once the connection is revoked", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      insertCandidate(connectionId, scanRunId);
+      runtimeSql(`UPDATE app.mailbox_connections SET status = 'revoked', revoked_at = now() WHERE id = '${connectionId}'`);
+
+      await expect(
+        domain.listCandidates({ actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("rejects a non-revoked reviewer grant once the connection itself is revoked", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      insertCandidate(connectionId, scanRunId);
+      grantReviewer(connectionId, OUTSIDER_USER_ID);
+      runtimeSql(`UPDATE app.mailbox_connections SET status = 'revoked', revoked_at = now() WHERE id = '${connectionId}'`);
+
+      await expect(
+        domain.listCandidates({ actorUserId: OUTSIDER_USER_ID, tenantId: TENANT_ID, connectionId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("still allows review while the connection is only reauth_required (reauth pauses scanning only, per the approved mockup)", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      insertCandidate(connectionId, scanRunId);
+      runtimeSql(`UPDATE app.mailbox_connections SET status = 'reauth_required' WHERE id = '${connectionId}'`);
+
+      await expect(
+        domain.listCandidates({ actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId }),
+      ).resolves.toMatchObject({});
+    });
+
+    it("rejects the owner once their own tenant membership is inactive", async () => {
+      const domain = createDomain();
+      const { connectionId, scanRunId } = createConnectionAndScanRun();
+      insertCandidate(connectionId, scanRunId);
+      runtimeSql(
+        `UPDATE app.tenant_memberships SET status = 'inactive' WHERE tenant_id = '${TENANT_ID}' AND user_id = '${OWNER_USER_ID}'`,
+      );
+
+      try {
+        await expect(
+          domain.listCandidates({ actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId }),
+        ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      } finally {
+        // Restore -- OWNER_USER_ID's tenant membership is shared fixture
+        // state reused by every other test in this file.
+        runtimeSql(
+          `UPDATE app.tenant_memberships SET status = 'active' WHERE tenant_id = '${TENANT_ID}' AND user_id = '${OWNER_USER_ID}'`,
+        );
+      }
+    });
+
+    // ---------------------------------------------------------------- //
     // Ambiguous-scope candidates visible in the review list
     // ---------------------------------------------------------------- //
 

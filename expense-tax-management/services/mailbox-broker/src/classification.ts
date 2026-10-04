@@ -89,6 +89,17 @@ export function classifyCandidateEvidence(
     return { classification: "receipt", confidence: 0.9, evidence };
   }
 
+  // Fix round 1 (review Minor): real structured/attachment evidence
+  // alongside a marketing-keyword subject is genuinely *conflicting*
+  // evidence, not an absence of evidence -- spec: "Ambiguous or
+  // conflicting evidence enters review," never auto-receipt (the
+  // marketing signal is reason enough to withhold auto-ingestion) and
+  // never `not_receipt` (asserting "no structured or attachment
+  // evidence" would be factually wrong when there plainly is some).
+  if (hasStrongEvidence && isMarketing) {
+    return { classification: "ambiguous", confidence: 0.5, evidence };
+  }
+
   if (isMarketing) {
     evidence.push("no_structured_or_attachment_evidence");
     return { classification: "not_receipt", confidence: 0.05, evidence };
