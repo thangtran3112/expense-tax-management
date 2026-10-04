@@ -677,20 +677,42 @@ export function createFilesDomain(
         return fail((scan.code as MailboxErrorCodeV1 | null) ?? "ATTACHMENT_SIGNATURE_REJECTED");
       }
 
-      // Scan passed and hash already verified above: only now does the
-      // object get written to the file's own persisted storage_key and
-      // the row confirmed READY.
-      await storage.writeObject({
-        storageKey,
-        data: bounded.data,
-        contentType: sniffed,
-      });
-      await database
-        .updateTable("app.expense_files")
-        .set({ status: "READY", updated_at: new Date(), version: created.version + 1 })
-        .where("id", "=", fileId)
-        .where("status", "=", "PENDING")
-        .execute();
+      // Scan passed and hash already verified (against the candidate's own
+      // manifest) above. Write, then re-read the bytes actually persisted
+      // and re-hash them -- never trust the in-memory buffer alone to
+      // match what storage actually wrote -- and only confirm READY once
+      // both the persisted-byte hash and the row UPDATE's own effect are
+      // verified. Any failure in this block (write, read-back, hash
+      // mismatch, or a no-op UPDATE) deletes the just-written object and
+      // returns FAILED: never a confirmed row pointing at missing/corrupt
+      // bytes, never an orphaned object behind a non-READY row.
+      try {
+        await storage.writeObject({
+          storageKey,
+          data: bounded.data,
+          contentType: sniffed,
+        });
+        const persisted = await storage.readObject(storageKey);
+        const persistedHash = createHash("sha256").update(persisted).digest("hex");
+        if (
+          persisted.byteLength !== bounded.sizeBytes ||
+          persistedHash !== bounded.sha256Hex
+        ) {
+          throw new Error("persisted object bytes do not match the computed hash");
+        }
+        const updateResult = await database
+          .updateTable("app.expense_files")
+          .set({ status: "READY", updated_at: new Date(), version: created.version + 1 })
+          .where("id", "=", fileId)
+          .where("status", "=", "PENDING")
+          .executeTakeFirst();
+        if (updateResult.numUpdatedRows !== 1n) {
+          throw new Error("expense_files row was not PENDING when confirming READY");
+        }
+      } catch {
+        await storage.deleteObject(storageKey).catch(() => {});
+        return fail("ATTACHMENT_CONFIRMATION_FAILED");
+      }
 
       return {
         candidateId: input.candidateId,

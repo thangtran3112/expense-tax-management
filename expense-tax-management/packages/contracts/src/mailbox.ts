@@ -75,6 +75,11 @@ export const MailboxErrorCodeV1Schema = z.enum([
   "ATTACHMENT_HASH_MISMATCH",
   "MALWARE_DETECTED",
   "OCR_EXTRACTION_FAILED",
+  // Task 3 fix round 1 (review Important #4): the persisted-bytes
+  // re-read/re-hash or the final READY row UPDATE itself failed --
+  // distinct from ATTACHMENT_HASH_MISMATCH (which is the pre-persist
+  // manifest check) so operators can tell the two failure modes apart.
+  "ATTACHMENT_CONFIRMATION_FAILED",
 ]);
 export type MailboxErrorCodeV1 = z.infer<typeof MailboxErrorCodeV1Schema>;
 

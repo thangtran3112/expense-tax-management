@@ -28616,7 +28616,8 @@
                                   "STRUCTURED_RECEIPT_INCOMPLETE",
                                   "ATTACHMENT_HASH_MISMATCH",
                                   "MALWARE_DETECTED",
-                                  "OCR_EXTRACTION_FAILED"
+                                  "OCR_EXTRACTION_FAILED",
+                                  "ATTACHMENT_CONFIRMATION_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -29253,7 +29254,8 @@
                             "STRUCTURED_RECEIPT_INCOMPLETE",
                             "ATTACHMENT_HASH_MISMATCH",
                             "MALWARE_DETECTED",
-                            "OCR_EXTRACTION_FAILED"
+                            "OCR_EXTRACTION_FAILED",
+                            "ATTACHMENT_CONFIRMATION_FAILED"
                           ],
                           "type": "string"
                         },
@@ -29751,7 +29753,8 @@
                                   "STRUCTURED_RECEIPT_INCOMPLETE",
                                   "ATTACHMENT_HASH_MISMATCH",
                                   "MALWARE_DETECTED",
-                                  "OCR_EXTRACTION_FAILED"
+                                  "OCR_EXTRACTION_FAILED",
+                                  "ATTACHMENT_CONFIRMATION_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -30182,7 +30185,8 @@
                                 "STRUCTURED_RECEIPT_INCOMPLETE",
                                 "ATTACHMENT_HASH_MISMATCH",
                                 "MALWARE_DETECTED",
-                                "OCR_EXTRACTION_FAILED"
+                                "OCR_EXTRACTION_FAILED",
+                                "ATTACHMENT_CONFIRMATION_FAILED"
                               ],
                               "type": "string"
                             },
@@ -30496,7 +30500,8 @@
                                 "STRUCTURED_RECEIPT_INCOMPLETE",
                                 "ATTACHMENT_HASH_MISMATCH",
                                 "MALWARE_DETECTED",
-                                "OCR_EXTRACTION_FAILED"
+                                "OCR_EXTRACTION_FAILED",
+                                "ATTACHMENT_CONFIRMATION_FAILED"
                               ],
                               "type": "string"
                             },

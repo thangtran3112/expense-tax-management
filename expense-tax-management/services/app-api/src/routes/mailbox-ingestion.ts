@@ -12,10 +12,25 @@
  * streamAttachment). candidateId/attachmentIndex travel as path params;
  * uploadGrantId/expectedCandidateVersion/idempotencyKey as query params,
  * since the body itself is the opaque byte stream.
+ *
+ * Fix round 1 (review Important #1) -- the content-type parser below is
+ * registered with NO `parseAs` option, which per Fastify's own docs means
+ * it receives the raw request stream and Fastify does not buffer or
+ * size-check it at all; `done(null, payload)` hands that same stream
+ * straight through as `request.body`, so the handler passes it to
+ * `receiveAttachment` exactly as received -- zero bytes are buffered in
+ * this process before domain/storage/bounded-stream.ts's own
+ * MAX_UPLOAD_BYTES enforcement (which hashes incrementally while reading)
+ * ever runs. Breaking out of (or throwing from) the `for await` loop that
+ * consumes an AsyncIterable over a Node Readable stream -- which is
+ * exactly what a bound violation does -- triggers the stream's own
+ * automatic destroy() via the async-iterator-return protocol, so an
+ * oversize upload's connection is torn down rather than drained to
+ * completion.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { ErrorResponseSchema, MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
+import { ErrorResponseSchema } from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
 import type { MailboxIngestionDomain } from "../domain/mailbox-ingestion.js";
@@ -111,10 +126,15 @@ export async function registerMailboxIngestionRoutes(
     serviceGuard(options.brokerServiceSubject ?? "mailbox-broker-app", ["mailbox:write"]),
   ];
 
+  // No `parseAs` -- raw-stream mode. `payload` is the request's own
+  // Readable stream (an AsyncIterable<Buffer>); handing it straight
+  // through via `done(null, payload)` means `request.body` IS that
+  // stream, never a fully-buffered Buffer.
   typedApp.addContentTypeParser(
     "application/octet-stream",
-    { parseAs: "buffer", bodyLimit: MAX_UPLOAD_BYTES },
-    async (_request: FastifyRequest, body: unknown) => body,
+    (_request: FastifyRequest, payload: NodeJS.ReadableStream, done) => {
+      done(null, payload);
+    },
   );
 
   typedApp.post(
@@ -151,10 +171,11 @@ export async function registerMailboxIngestionRoutes(
       },
     },
     async (request) => {
-      const body = request.body as Buffer;
-      async function* singleChunk(): AsyncIterable<Buffer> {
-        yield body;
-      }
+      // The raw-stream content-type parser above hands this straight
+      // through as the live request stream -- never buffered here or
+      // anywhere upstream of domain/storage/bounded-stream.ts's own
+      // incremental, size-capped hashing.
+      const source = request.body as AsyncIterable<Buffer>;
       return options.mailboxIngestionDomain.receiveAttachment(
         {
           candidateId: request.params.candidateId,
@@ -163,7 +184,7 @@ export async function registerMailboxIngestionRoutes(
           expectedCandidateVersion: request.query.expectedCandidateVersion,
           idempotencyKey: request.query.idempotencyKey,
         },
-        singleChunk(),
+        source,
       );
     },
   );

@@ -71,18 +71,34 @@ import { readDispatchRoutingForShare } from "./dispatch-routing.js";
 import { insertExpenseInTransaction } from "./expenses.js";
 import type { FileScope, FilesDomain } from "./files.js";
 import { hashNormalizedRequest, toJsonValue } from "./idempotency.js";
+import type { PlansDomain } from "./plans.js";
 
 type CandidateRow = Selectable<AppDatabase["app.mailbox_candidates"]>;
 type ConnectionRow = Selectable<AppDatabase["app.mailbox_connections"]>;
+type IngestionOperationRow = Selectable<AppDatabase["app.mailbox_ingestion_operations"]>;
 
 const UPLOAD_GRANT_TTL_MS = 15 * 60 * 1_000;
 
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: string }).code === "23505"
+/**
+ * Fix round 1 (review Important #3) -- the fixed modeKey ("ocr_mode_fast")
+ * was never gated on the tenant's own connected_mailbox_scan entitlement
+ * before this round, unlike every other mailbox-scan/review entry point
+ * (domain/mailbox-scans.ts's own resolveEntitlementVersion checks the same
+ * featureKey). Reused verbatim, not reinvented.
+ */
+async function requireConnectedMailboxEntitlement(
+  plansDomain: PlansDomain,
+  tenantId: string,
+  actorUserId: string,
+): Promise<void> {
+  const entitlements = await plansDomain.resolveEffectiveEntitlements({
+    tenantId,
+    actorUserId,
+  });
+  const entitlement = entitlements.find(
+    (candidate) => candidate.featureKey === "connected_mailbox_scan",
   );
+  if (!entitlement?.isEnabled) throw DomainError.forbidden();
 }
 
 function candidateFileScope(candidate: CandidateRow): FileScope {
@@ -350,19 +366,19 @@ export function createMailboxIngestionDomain(
   deps: {
     readonly filesDomain: FilesDomain;
     readonly temporalStarter: TemporalWorkflowStarter;
+    readonly plansDomain: PlansDomain;
   },
 ): MailboxIngestionDomain {
-  async function requireCandidate(candidateId: string): Promise<CandidateRow> {
-    const candidate = await database
-      .selectFrom("app.mailbox_candidates")
-      .selectAll()
-      .where("id", "=", candidateId)
-      .executeTakeFirst();
-    if (!candidate) throw DomainError.notFound();
-    return candidate;
-  }
-
   /**
+   * Fix round 1 (review Important #5) -- re-reads and FOR-UPDATE-locks the
+   * candidate row itself inside the caller's own transaction before
+   * deciding whether to create a job: the caller (receiveAttachment's
+   * finalize phase) already holds this same lock for the whole claim, so
+   * two concurrent attachment completions for the SAME candidate serialize
+   * here instead of each separately reading a stale `processing_job_id`
+   * and both creating a job. Also where the fixed modeKey's entitlement
+   * gate (review Important #3) is enforced, before any job row exists.
+   *
    * Inlined job-row + dispatch-outbox insert (not processing-jobs.ts's
    * createJobInTransaction -- see the import comment above for why), same
    * shape as enrichment-jobs.ts's own createEnrichmentJobInTransaction.
@@ -375,112 +391,148 @@ export function createMailboxIngestionDomain(
    * readDispatchRoutingForShare is still called (fence + a valid >=1
    * generation number for the NOT NULL/CHECK-constrained column), its
    * namespace/task_queue return values are simply not used.
+   *
+   * Returns the claimed job's id/workflowId for the caller to dispatch
+   * AFTER this transaction commits (a Temporal network call must never run
+   * inside a transaction holding a row lock), or null if a job already
+   * existed (another concurrent completion won the race, or this is a
+   * re-run with no new attachment).
    */
-  async function dispatchMailboxOcrJobIfAbsent(
-    locked: CandidateRow,
+  async function claimMailboxOcrJobInTransaction(
+    transaction: Transaction<AppDatabase>,
+    candidateId: string,
     fileId: string,
     requestId: string,
-  ): Promise<void> {
-    if (locked.processing_job_id !== null) return;
-    const connection = await database
+  ): Promise<{ readonly jobId: string; readonly workflowId: string } | null> {
+    const locked = await transaction
+      .selectFrom("app.mailbox_candidates")
+      .selectAll()
+      .where("id", "=", candidateId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (locked.processing_job_id !== null) return null;
+
+    const connection = await transaction
       .selectFrom("app.mailbox_connections")
       .selectAll()
       .where("id", "=", locked.connection_id)
       .executeTakeFirstOrThrow();
+    // Fix round 1 (review Important #3): receiveAttachment's phase 1
+    // already refuses the whole upload up front when the entitlement is
+    // disabled (before any side effect, so no ledger claim is ever left
+    // stuck). This is a defense-in-depth re-check for the narrow window
+    // between that claim and this finalize step -- deliberately returns
+    // null (skip job creation, leave processing_job_id unset for a later
+    // retry) rather than throwing, since throwing here would roll back
+    // the finalize transaction and permanently strand the ledger claim in
+    // 'started' with no legal forward transition left to retry it.
+    const entitlements = await deps.plansDomain.resolveEffectiveEntitlements({
+      tenantId: locked.tenant_id,
+      actorUserId: connection.owner_user_id,
+    });
+    const entitled = entitlements.find(
+      (entitlement) => entitlement.featureKey === "connected_mailbox_scan",
+    )?.isEnabled;
+    if (!entitled) return null;
     const actor = resolveMailboxOcrActor(locked, connection);
     const scope = candidateFileScope(locked);
 
     const jobId = randomUUID();
     const workflowId = `job-${jobId}`;
     const now = new Date();
-    await database.transaction().execute(async (transaction) => {
-      const dispatchTarget = await readDispatchRoutingForShare(transaction);
-      await transaction
-        .insertInto("app.processing_jobs")
-        .values({
-          id: jobId,
-          tenant_id: locked.tenant_id,
-          personal_profile_id: scope.kind === "personal" ? scope.profileId : null,
-          business_id: scope.kind === "business" ? scope.businessId : null,
-          workflow_type: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-          workflow_id: workflowId,
-          task_queue: AI_WORKER_TASK_QUEUE,
-          dispatch_generation: dispatchTarget.generation,
-          dispatch_namespace: TARGET_TEMPORAL_NAMESPACE,
-          run_id: null,
-          status: "PENDING",
-          target_aggregate_type: "expense",
-          target_aggregate_id: null,
-          expected_aggregate_version: null,
-          requested_by_user_id: actor.kind === "user" ? actor.requestedByUserId : null,
-          source_file_id: fileId,
-          input_params: toJsonValue({
-            modeKey: "ocr_mode_fast",
-            mailboxCandidateId: locked.id,
-            mailboxConnectionId: locked.connection_id,
-          }),
-          allowed_result_schema_version: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
-          result: null,
-          error_message: null,
-          version: 1,
-          created_at: now,
-          updated_at: now,
-          dispatched_at: null,
-          completed_at: null,
-        })
-        .execute();
-      await transaction
-        .insertInto("app.processing_job_dispatch_outbox")
-        .values({
-          id: randomUUID(),
-          processing_job_id: jobId,
-          job_reference: toJsonValue({
-            schemaVersion: 1,
-            jobId,
-            workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-            workflowId,
-          }),
-          status: "PENDING",
-          attempts: 0,
-          last_error: null,
-          created_at: now,
-          dispatched_at: null,
-        })
-        .execute();
-      await recordAuditEvent(transaction, {
-        tenantId: locked.tenant_id,
-        actorServicePrincipal:
-          actor.kind === "service" ? actor.actorServicePrincipal : null,
-        actorUserId: actor.kind === "user" ? actor.requestedByUserId : null,
-        action: "processing_job.created",
-        outcome: "success",
-        resourceType: "processing_job",
-        resourceId: jobId,
-        requestId,
-      });
-      await transaction
-        .updateTable("app.mailbox_candidates")
-        .set({ processing_job_id: jobId, updated_at: now })
-        .where("id", "=", locked.id)
-        .where("processing_job_id", "is", null)
-        .execute();
+    const dispatchTarget = await readDispatchRoutingForShare(transaction);
+    await transaction
+      .insertInto("app.processing_jobs")
+      .values({
+        id: jobId,
+        tenant_id: locked.tenant_id,
+        personal_profile_id: scope.kind === "personal" ? scope.profileId : null,
+        business_id: scope.kind === "business" ? scope.businessId : null,
+        workflow_type: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+        workflow_id: workflowId,
+        task_queue: AI_WORKER_TASK_QUEUE,
+        dispatch_generation: dispatchTarget.generation,
+        dispatch_namespace: TARGET_TEMPORAL_NAMESPACE,
+        run_id: null,
+        status: "PENDING",
+        target_aggregate_type: "expense",
+        target_aggregate_id: null,
+        expected_aggregate_version: null,
+        requested_by_user_id: actor.kind === "user" ? actor.requestedByUserId : null,
+        source_file_id: fileId,
+        input_params: toJsonValue({
+          modeKey: "ocr_mode_fast",
+          mailboxCandidateId: locked.id,
+          mailboxConnectionId: locked.connection_id,
+        }),
+        allowed_result_schema_version: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
+        result: null,
+        error_message: null,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+        dispatched_at: null,
+        completed_at: null,
+      })
+      .execute();
+    await transaction
+      .insertInto("app.processing_job_dispatch_outbox")
+      .values({
+        id: randomUUID(),
+        processing_job_id: jobId,
+        job_reference: toJsonValue({
+          schemaVersion: 1,
+          jobId,
+          workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+          workflowId,
+        }),
+        status: "PENDING",
+        attempts: 0,
+        last_error: null,
+        created_at: now,
+        dispatched_at: null,
+      })
+      .execute();
+    await recordAuditEvent(transaction, {
+      tenantId: locked.tenant_id,
+      actorServicePrincipal:
+        actor.kind === "service" ? actor.actorServicePrincipal : null,
+      actorUserId: actor.kind === "user" ? actor.requestedByUserId : null,
+      action: "processing_job.created",
+      outcome: "success",
+      resourceType: "processing_job",
+      resourceId: jobId,
+      requestId,
     });
+    await transaction
+      .updateTable("app.mailbox_candidates")
+      .set({ processing_job_id: jobId, updated_at: now })
+      .where("id", "=", locked.id)
+      .where("processing_job_id", "is", null)
+      .execute();
 
-    // Mailbox workflow types bypass the generation-fenced dispatch
-    // pipeline entirely (Task 1 ruling) -- dispatch directly against the
-    // fixed TypeScript worker namespace/queue rather than waiting for
-    // dispatchPendingJobs' generation-routed outbox poll. Same
-    // "create row, then start workflow directly, then mark DISPATCHED"
-    // shape as temporal/mailbox-schedules.ts's dispatchIfStarted.
+    return { jobId, workflowId };
+  }
+
+  /**
+   * Network dispatch, called only AFTER the transaction that claimed the
+   * job (above) has committed -- never while holding the candidate's row
+   * lock. Same "create row, then start workflow directly, then mark
+   * DISPATCHED" shape as temporal/mailbox-schedules.ts's dispatchIfStarted.
+   */
+  async function dispatchClaimedMailboxOcrJob(claimed: {
+    readonly jobId: string;
+    readonly workflowId: string;
+  }): Promise<void> {
     const jobReference: JobReferenceV1 = {
       schemaVersion: 1,
-      jobId,
+      jobId: claimed.jobId,
       workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-      workflowId,
+      workflowId: claimed.workflowId,
     };
     const started = await deps.temporalStarter.start({
       workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
-      workflowId,
+      workflowId: claimed.workflowId,
       taskQueue: AI_WORKER_TASK_QUEUE,
       namespace: TARGET_TEMPORAL_NAMESPACE,
       args: [jobReference],
@@ -490,7 +542,7 @@ export function createMailboxIngestionDomain(
       await transaction
         .updateTable("app.processing_job_dispatch_outbox")
         .set({ status: "DISPATCHED", dispatched_at: dispatchedAt })
-        .where("processing_job_id", "=", jobId)
+        .where("processing_job_id", "=", claimed.jobId)
         .where("status", "=", "PENDING")
         .execute();
       await transaction
@@ -502,7 +554,7 @@ export function createMailboxIngestionDomain(
           updated_at: dispatchedAt,
           version: eb("version", "+", 1),
         }))
-        .where("id", "=", jobId)
+        .where("id", "=", claimed.jobId)
         .where("status", "=", "PENDING")
         .execute();
     });
@@ -510,43 +562,55 @@ export function createMailboxIngestionDomain(
 
   return {
     async issueUploadGrant(input) {
-      const candidate = await requireCandidate(input.candidateId);
       const operationKey = `issue-upload-grant:${input.candidateId}`;
       const requestHash = hashNormalizedRequest({
         candidateId: input.candidateId,
         expectedCandidateVersion: input.expectedCandidateVersion,
       });
 
-      const existing = await database
-        .selectFrom("app.mailbox_ingestion_operations")
-        .select(["normalized_request_hash", "response_json"])
-        .where("tenant_id", "=", candidate.tenant_id)
-        .where("operation_key", "=", operationKey)
-        .where("idempotency_key", "=", input.operationId)
-        .executeTakeFirst();
-      if (existing) {
-        if (existing.normalized_request_hash !== requestHash) {
-          throw DomainError.idempotencyConflict();
+      // Claim-first (review Important #6): the replay check, the
+      // candidate's status/version check, and the eventual ledger insert
+      // all happen under this one candidate FOR UPDATE lock, so two
+      // concurrent callers with the same operationId serialize on the
+      // lock instead of racing a bare unique-constraint-catch fallback.
+      return database.transaction().execute(async (transaction) => {
+        const candidate = await transaction
+          .selectFrom("app.mailbox_candidates")
+          .selectAll()
+          .where("id", "=", input.candidateId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!candidate) throw DomainError.notFound();
+
+        const existing = await transaction
+          .selectFrom("app.mailbox_ingestion_operations")
+          .select(["normalized_request_hash", "response_json"])
+          .where("tenant_id", "=", candidate.tenant_id)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.operationId)
+          .executeTakeFirst();
+        if (existing) {
+          if (existing.normalized_request_hash !== requestHash) {
+            throw DomainError.idempotencyConflict();
+          }
+          return existing.response_json as unknown as MailboxBrokerUploadGrantV1;
         }
-        return existing.response_json as unknown as MailboxBrokerUploadGrantV1;
-      }
 
-      if (candidate.status !== "queued") throw DomainError.conflict();
-      if (candidate.version !== input.expectedCandidateVersion) {
-        throw DomainError.versionConflict();
-      }
+        if (candidate.status !== "queued") throw DomainError.conflict();
+        if (candidate.version !== input.expectedCandidateVersion) {
+          throw DomainError.versionConflict();
+        }
 
-      const grant: MailboxBrokerUploadGrantV1 = {
-        candidateId: input.candidateId,
-        connectionId: candidate.connection_id,
-        uploadGrantId: randomUUID(),
-        expiresAt: new Date(Date.now() + UPLOAD_GRANT_TTL_MS).toISOString(),
-        maxBytes: 26214400,
-        maxAttachments: 5,
-      };
+        const grant: MailboxBrokerUploadGrantV1 = {
+          candidateId: input.candidateId,
+          connectionId: candidate.connection_id,
+          uploadGrantId: randomUUID(),
+          expiresAt: new Date(Date.now() + UPLOAD_GRANT_TTL_MS).toISOString(),
+          maxBytes: 26214400,
+          maxAttachments: 5,
+        };
 
-      try {
-        await database
+        await transaction
           .insertInto("app.mailbox_ingestion_operations")
           .values({
             id: randomUUID(),
@@ -565,25 +629,11 @@ export function createMailboxIngestionDomain(
             updated_at: new Date(),
           })
           .execute();
-      } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        const replay = await database
-          .selectFrom("app.mailbox_ingestion_operations")
-          .select(["normalized_request_hash", "response_json"])
-          .where("tenant_id", "=", candidate.tenant_id)
-          .where("operation_key", "=", operationKey)
-          .where("idempotency_key", "=", input.operationId)
-          .executeTakeFirstOrThrow();
-        if (replay.normalized_request_hash !== requestHash) {
-          throw DomainError.idempotencyConflict();
-        }
-        return replay.response_json as unknown as MailboxBrokerUploadGrantV1;
-      }
-      return grant;
+        return grant;
+      });
     },
 
     async receiveAttachment(input, source) {
-      const candidate = await requireCandidate(input.candidateId);
       const operationKey = `upload-attachment:${input.candidateId}:${input.attachmentIndex}`;
       const requestHash = hashNormalizedRequest({
         candidateId: input.candidateId,
@@ -592,35 +642,117 @@ export function createMailboxIngestionDomain(
         expectedCandidateVersion: input.expectedCandidateVersion,
       });
 
-      const existing = await database
-        .selectFrom("app.mailbox_ingestion_operations")
-        .select(["normalized_request_hash", "response_json"])
-        .where("tenant_id", "=", candidate.tenant_id)
-        .where("operation_key", "=", operationKey)
-        .where("idempotency_key", "=", input.idempotencyKey)
-        .executeTakeFirst();
-      if (existing) {
-        if (existing.normalized_request_hash !== requestHash) {
-          throw DomainError.idempotencyConflict();
-        }
-        return existing.response_json as unknown as MailboxAttachmentUploadResultV1;
-      }
+      // Phase 1 ("claim"): one transaction, candidate FOR UPDATE. Binds
+      // the grant single-use to this exact (candidateId, attachmentIndex)
+      // pair -- any later call for the SAME pair with a DIFFERENT
+      // idempotencyKey is rejected outright, not replayed and not allowed
+      // to re-run side effects (review Important #2) -- and claims the
+      // ledger slot (status 'started') before any side effect runs
+      // (review Important #6).
+      const claim:
+        | { readonly kind: "replay"; readonly result: MailboxAttachmentUploadResultV1 }
+        | { readonly kind: "claimed"; readonly tenantId: string } =
+        await database.transaction().execute(async (transaction) => {
+          const candidate = await transaction
+            .selectFrom("app.mailbox_candidates")
+            .selectAll()
+            .where("id", "=", input.candidateId)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!candidate) throw DomainError.notFound();
 
-      const grantRows = await database
-        .selectFrom("app.mailbox_ingestion_operations")
-        .select(["response_json"])
-        .where("tenant_id", "=", candidate.tenant_id)
-        .where("candidate_id", "=", input.candidateId)
-        .where("operation_kind", "=", "issue_upload_grant")
-        .where("status", "=", "completed")
-        .orderBy("created_at", "desc")
-        .execute();
-      const grant = grantRows
-        .map((row) => row.response_json as unknown as MailboxBrokerUploadGrantV1)
-        .find((candidateGrant) => candidateGrant.uploadGrantId === input.uploadGrantId);
-      if (!grant) throw DomainError.notFound();
-      if (new Date(grant.expiresAt).getTime() < Date.now()) throw DomainError.gone();
+          const existingOperation: IngestionOperationRow | undefined = await transaction
+            .selectFrom("app.mailbox_ingestion_operations")
+            .selectAll()
+            .where("tenant_id", "=", candidate.tenant_id)
+            .where("operation_key", "=", operationKey)
+            .executeTakeFirst();
+          if (existingOperation) {
+            if (
+              existingOperation.idempotency_key !== input.idempotencyKey ||
+              existingOperation.normalized_request_hash !== requestHash
+            ) {
+              // Same upload-grant/attachment slot re-used with a different
+              // idempotency key or payload -- reject. Grants/slots are
+              // single-use: this is not a replay.
+              throw DomainError.idempotencyConflict();
+            }
+            if (existingOperation.status === "completed") {
+              return {
+                kind: "replay" as const,
+                result: existingOperation.response_json as unknown as MailboxAttachmentUploadResultV1,
+              };
+            }
+            // status === "started": an attempt with the exact same key is
+            // (or was) already in flight -- never race a second concurrent
+            // execution of the same side effects.
+            throw DomainError.conflict();
+          }
 
+          if (candidate.version !== input.expectedCandidateVersion) {
+            throw DomainError.versionConflict();
+          }
+
+          // Fix round 1 (review Important #3): refuse the whole upload
+          // before any side effect (grant consumption, storage write, job
+          // creation) when the tenant's connected_mailbox_scan entitlement
+          // is disabled -- checked here, not only at job-creation time, so
+          // a disabled tenant never leaves a stuck 'started' ledger claim
+          // behind (this phase hasn't inserted one yet).
+          const connection = await transaction
+            .selectFrom("app.mailbox_connections")
+            .select("owner_user_id")
+            .where("id", "=", candidate.connection_id)
+            .executeTakeFirstOrThrow();
+          await requireConnectedMailboxEntitlement(
+            deps.plansDomain,
+            candidate.tenant_id,
+            connection.owner_user_id,
+          );
+
+          const grantRows = await transaction
+            .selectFrom("app.mailbox_ingestion_operations")
+            .select(["response_json"])
+            .where("tenant_id", "=", candidate.tenant_id)
+            .where("candidate_id", "=", input.candidateId)
+            .where("operation_kind", "=", "issue_upload_grant")
+            .where("status", "=", "completed")
+            .execute();
+          const grant = grantRows
+            .map((row) => row.response_json as unknown as MailboxBrokerUploadGrantV1)
+            .find((candidateGrant) => candidateGrant.uploadGrantId === input.uploadGrantId);
+          if (!grant) throw DomainError.notFound();
+          if (new Date(grant.expiresAt).getTime() < Date.now()) throw DomainError.gone();
+
+          await transaction
+            .insertInto("app.mailbox_ingestion_operations")
+            .values({
+              id: randomUUID(),
+              tenant_id: candidate.tenant_id,
+              connection_id: candidate.connection_id,
+              candidate_id: input.candidateId,
+              operation_kind: "upload_attachment",
+              operation_key: operationKey,
+              idempotency_key: input.idempotencyKey,
+              normalized_request_hash: requestHash,
+              response_json: null,
+              status: "started",
+              version: 1,
+              error_code: null,
+              created_at: new Date(),
+              updated_at: new Date(),
+            })
+            .execute();
+
+          return { kind: "claimed" as const, tenantId: candidate.tenant_id };
+        });
+
+      if (claim.kind === "replay") return claim.result;
+
+      // Phase 2: the slow stream/bound/hash/scan/storage work, outside any
+      // row lock (review Important #1: routes/mailbox-ingestion.ts streams
+      // the raw request body straight into `source`, never buffering it
+      // first).
       const result = await deps.filesDomain.writeMailboxAttachment(
         {
           candidateId: input.candidateId,
@@ -633,56 +765,46 @@ export function createMailboxIngestionDomain(
         source,
       );
 
-      if (result.status === "READY") {
-        const locked = await requireCandidate(input.candidateId);
-        await dispatchMailboxOcrJobIfAbsent(locked, result.fileId, input.idempotencyKey);
-      }
-
-      try {
-        await database
-          .insertInto("app.mailbox_ingestion_operations")
-          .values({
-            id: randomUUID(),
-            tenant_id: candidate.tenant_id,
-            connection_id: candidate.connection_id,
-            candidate_id: input.candidateId,
-            operation_kind: "upload_attachment",
-            operation_key: operationKey,
-            idempotency_key: input.idempotencyKey,
-            normalized_request_hash: requestHash,
+      // Phase 3 ("finalize"): one more transaction, candidate FOR UPDATE
+      // again -- completes the ledger claim and, only if READY, claims
+      // the mailbox OCR job while still holding the lock (review
+      // Important #5: two concurrent attachment completions for the same
+      // candidate can no longer both observe a null processing_job_id).
+      let claimedJob: { readonly jobId: string; readonly workflowId: string } | null = null;
+      await database.transaction().execute(async (transaction) => {
+        const updated = await transaction
+          .updateTable("app.mailbox_ingestion_operations")
+          .set({
             response_json: toJsonValue(result),
             status: "completed",
-            version: 1,
             error_code: result.errorCode,
-            created_at: new Date(),
             updated_at: new Date(),
           })
-          .execute();
-      } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-      }
+          .where("tenant_id", "=", claim.tenantId)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.idempotencyKey)
+          .where("status", "=", "started")
+          .executeTakeFirst();
+        if (updated.numUpdatedRows !== 1n) return;
+
+        if (result.status === "READY") {
+          claimedJob = await claimMailboxOcrJobInTransaction(
+            transaction,
+            input.candidateId,
+            result.fileId,
+            input.idempotencyKey,
+          );
+        }
+      });
+
+      if (claimedJob) await dispatchClaimedMailboxOcrJob(claimedJob);
 
       return result;
     },
 
     async submitStructuredReceipt(input) {
-      const candidate = await requireCandidate(input.result.candidateId);
       const operationKey = `submit-structured-result:${input.result.candidateId}`;
       const requestHash = hashNormalizedRequest(input.result);
-
-      const existing = await database
-        .selectFrom("app.mailbox_ingestion_operations")
-        .select(["normalized_request_hash", "response_json"])
-        .where("tenant_id", "=", candidate.tenant_id)
-        .where("operation_key", "=", operationKey)
-        .where("idempotency_key", "=", input.idempotencyKey)
-        .executeTakeFirst();
-      if (existing) {
-        if (existing.normalized_request_hash !== requestHash) {
-          throw DomainError.idempotencyConflict();
-        }
-        return existing.response_json as unknown as MailboxMaterializationResultV1;
-      }
 
       return database.transaction().execute(async (transaction) => {
         const locked = await transaction
@@ -690,7 +812,28 @@ export function createMailboxIngestionDomain(
           .selectAll()
           .where("id", "=", input.result.candidateId)
           .forUpdate()
-          .executeTakeFirstOrThrow();
+          .executeTakeFirst();
+        if (!locked) throw DomainError.notFound();
+
+        // Claim-first (review Important #6): the replay check happens
+        // under this same candidate lock so a concurrent same-key racer
+        // either sees the completed row (true replay) or blocks on the
+        // lock until this call's own insert commits -- never duplicates
+        // the expense/provenance/dedup side effects below.
+        const existing = await transaction
+          .selectFrom("app.mailbox_ingestion_operations")
+          .select(["normalized_request_hash", "response_json"])
+          .where("tenant_id", "=", locked.tenant_id)
+          .where("operation_key", "=", operationKey)
+          .where("idempotency_key", "=", input.idempotencyKey)
+          .executeTakeFirst();
+        if (existing) {
+          if (existing.normalized_request_hash !== requestHash) {
+            throw DomainError.idempotencyConflict();
+          }
+          return existing.response_json as unknown as MailboxMaterializationResultV1;
+        }
+
         if (locked.status !== "queued") throw DomainError.conflict();
         if (locked.version !== input.result.candidateVersion) {
           throw DomainError.versionConflict();

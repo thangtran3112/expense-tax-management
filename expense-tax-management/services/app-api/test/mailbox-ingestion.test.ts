@@ -17,9 +17,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+  type ZodTypeProvider,
+} from "fastify-type-provider-zod";
 import type { Kysely } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { AuthPrincipal } from "../src/auth/types.js";
 import { createAppDatabase } from "../src/database/client.js";
 import type { AppDatabase } from "../src/database/types.js";
 import { runMigrations } from "../src/database/migrate.js";
@@ -27,8 +34,15 @@ import {
   createFilesDomain,
   createMailboxStagingScanner,
 } from "../src/domain/files.js";
-import { createMailboxIngestionDomain } from "../src/domain/mailbox-ingestion.js";
+import {
+  createMailboxIngestionDomain,
+  type MailboxIngestionDomain,
+} from "../src/domain/mailbox-ingestion.js";
+import type { PlansDomain } from "../src/domain/plans.js";
+import { registerErrorHandlers } from "../src/errors.js";
 import { PatternMalwareScanner } from "../src/inbound/security.js";
+import { registerAuthPlugin } from "../src/plugins/auth.js";
+import { registerMailboxIngestionRoutes } from "../src/routes/mailbox-ingestion.js";
 import {
   BoundedStreamSizeExceededError,
   readBoundedStream,
@@ -36,6 +50,8 @@ import {
 import { createStorageAdapter } from "../src/storage/factory.js";
 import type { StorageAdapter } from "../src/storage/types.js";
 import type { TemporalWorkflowStarter } from "../src/temporal/client.js";
+
+type FastifyApp = ReturnType<typeof Fastify>;
 
 // -------------------------------------------------------------------- //
 // storage/bounded-stream.ts -- pure function, always runs.
@@ -72,6 +88,110 @@ describe("storage/bounded-stream.ts", () => {
       BoundedStreamSizeExceededError,
     );
     expect(secondChunkRead).toBe(false);
+  });
+});
+
+// -------------------------------------------------------------------- //
+// routes/mailbox-ingestion.ts -- fix round 1 (review Important #1): the
+// attachment-upload route must stream the raw request body straight
+// through to the domain layer, never buffering it first. No Docker/live
+// DB needed: a fake MailboxIngestionDomain captures exactly what `source`
+// argument it was called with, same minimal-harness convention
+// test/mailbox-internal.test.ts already uses for a broker-guarded route.
+// -------------------------------------------------------------------- //
+
+describe("routes/mailbox-ingestion.ts -- attachment upload streaming", () => {
+  const apps: FastifyApp[] = [];
+
+  afterAll(async () => {
+    await Promise.all(apps.map((app) => app.close()));
+  });
+
+  function brokerPrincipal(): AuthPrincipal {
+    return {
+      tokenType: "service",
+      subject: "mailbox-broker-app",
+      clientId: null,
+      audience: "app-service",
+      issuer: "https://services.test",
+      roles: [],
+      scopes: ["mailbox:write"],
+      tokenId: "token-1",
+      email: null,
+      emailVerified: null,
+      displayName: null,
+    };
+  }
+
+  function createStreamingTestApp(
+    receiveAttachment: MailboxIngestionDomain["receiveAttachment"],
+  ) {
+    const app = Fastify({ logger: false });
+    apps.push(app);
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    registerErrorHandlers(app);
+    registerAuthPlugin(app, {
+      authVerifiers: {
+        tenant: { verify: async () => brokerPrincipal() },
+        service: { verify: async () => brokerPrincipal() },
+      },
+    });
+    const mailboxIngestionDomain: MailboxIngestionDomain = {
+      issueUploadGrant: async () => {
+        throw new Error("not used in this test");
+      },
+      receiveAttachment,
+      submitStructuredReceipt: async () => {
+        throw new Error("not used in this test");
+      },
+      recordConnectedMailboxEvidence: async () => {
+        throw new Error("not used in this test");
+      },
+    };
+    app.register(registerMailboxIngestionRoutes, { mailboxIngestionDomain });
+    return app.withTypeProvider<ZodTypeProvider>();
+  }
+
+  it("passes the live request stream straight through to receiveAttachment -- never a pre-buffered Buffer", async () => {
+    let capturedSource: AsyncIterable<Buffer> | undefined;
+    const app = createStreamingTestApp(async (_input, source) => {
+      capturedSource = source;
+      // Actually drain it, proving it is a real, readable async iterable
+      // (not just a type-compatible empty object).
+      const parts: Buffer[] = [];
+      for await (const chunk of source) parts.push(chunk);
+      return {
+        candidateId: _input.candidateId,
+        attachmentIndex: _input.attachmentIndex,
+        fileId: randomUUID(),
+        status: "READY",
+        errorCode: null,
+        idempotencyKey: _input.idempotencyKey,
+      };
+    });
+    await app.ready();
+
+    const payload = Buffer.from("fake-attachment-bytes");
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/candidates/${randomUUID()}/attachments/0?uploadGrantId=${randomUUID()}&expectedCandidateVersion=1&idempotencyKey=${randomUUID()}`,
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/octet-stream",
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: "READY" });
+    // The content-type parser hands the live request stream straight
+    // through -- it must never be a fully materialized Buffer by the time
+    // the domain layer receives it (Buffer IS an AsyncIterable<number>,
+    // so the structural check is explicitly "not a Buffer instance", not
+    // "has Symbol.asyncIterator").
+    expect(capturedSource).toBeDefined();
+    expect(capturedSource instanceof Buffer).toBe(false);
   });
 });
 
@@ -291,11 +411,30 @@ describe.skipIf(!requested)(
       return { connectionId, candidateId };
     }
 
-    function createDomain() {
+    function fakePlansDomain(entitled: boolean): PlansDomain {
+      return {
+        resolveEffectiveEntitlements: async () => [
+          {
+            featureKey: "connected_mailbox_scan",
+            isEnabled: entitled,
+            limitValue: null,
+            limitPeriod: null,
+            source: "plan",
+          },
+        ],
+      } as unknown as PlansDomain;
+    }
+
+    function createDomain(options: { readonly entitled?: boolean } = {}) {
       const scanner = createMailboxStagingScanner(storage, PatternMalwareScanner);
       const filesDomain = createFilesDomain(database!, storage, { mailboxScanner: scanner });
       const temporalStarter = fakeTemporalStarter();
-      const domain = createMailboxIngestionDomain(database!, { filesDomain, temporalStarter });
+      const plansDomain = fakePlansDomain(options.entitled ?? true);
+      const domain = createMailboxIngestionDomain(database!, {
+        filesDomain,
+        temporalStarter,
+        plansDomain,
+      });
       return { domain, temporalStarter, filesDomain };
     }
 
@@ -547,6 +686,216 @@ describe.skipIf(!requested)(
           idempotencyKey: "v-conflict",
         }),
       ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    });
+
+    // ------------------------------------------------------------ //
+    // Fix round 1 (task-3-review.md)
+    // ------------------------------------------------------------ //
+
+    it("review #2: rejects re-use of the same upload grant/attachment slot with a different idempotency key -- the slot is single-use, not a replay", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const first = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: "first-key",
+        },
+        chunks([bytes]),
+      );
+      expect(first.status).toBe("READY");
+
+      // Same grant, same candidate, same attachmentIndex, a DIFFERENT
+      // idempotencyKey -- this must be rejected outright, not replayed,
+      // and must not re-run the stream/scan/job side effects.
+      await expect(
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: "second-key",
+          },
+          chunks([bytes]),
+        ),
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+      // Exactly one expense_files row for this attachment slot -- no
+      // second file/job was created by the rejected re-use attempt.
+      const jobCount = await database!
+        .selectFrom("app.processing_jobs")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("source_file_id", "=", first.fileId)
+        .executeTakeFirstOrThrow();
+      expect(Number(jobCount.count)).toBe(1);
+    });
+
+    it("review #3: refuses the whole attachment upload when connected_mailbox_scan is disabled, before any storage/job side effect", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const { domain } = createDomain({ entitled: false });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      await expect(
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+          },
+          chunks([bytes]),
+        ),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      // No ledger claim was ever inserted and the candidate is untouched
+      // -- refused in phase 1, before any side effect commits.
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+      expect(candidateRow.processing_job_id).toBeNull();
+      const operationRows = await database!
+        .selectFrom("app.mailbox_ingestion_operations")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("candidate_id", "=", candidateId)
+        .where("operation_kind", "=", "upload_attachment")
+        .executeTakeFirstOrThrow();
+      expect(Number(operationRows.count)).toBe(0);
+    });
+
+    it("review #4: deletes the persisted object and never confirms READY when the bytes actually persisted don't match the computed hash", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const scanner = createMailboxStagingScanner(storage, PatternMalwareScanner);
+      // Corrupting storage double: every write succeeds, but readObject
+      // for the file's own FINAL storage key (never the scan-staging key)
+      // returns different bytes than were written -- simulating silent
+      // storage corruption between write and read-back.
+      const corruptingStorage: StorageAdapter = {
+        ...storage,
+        async readObject(storageKey: string) {
+          if (storageKey.endsWith(".scan-staging")) return storage.readObject(storageKey);
+          return Buffer.from("corrupted-on-persist");
+        },
+      };
+      const filesDomain = createFilesDomain(database!, corruptingStorage, {
+        mailboxScanner: scanner,
+      });
+      const temporalStarter = fakeTemporalStarter();
+      const domain = createMailboxIngestionDomain(database!, {
+        filesDomain, temporalStarter, plansDomain: fakePlansDomain(true),
+      });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([bytes]),
+      );
+      expect(result.status).toBe("FAILED");
+      expect(result.errorCode).toBe("ATTACHMENT_CONFIRMATION_FAILED");
+
+      const fileRow = await database!
+        .selectFrom("app.expense_files").selectAll()
+        .where("id", "=", result.fileId).executeTakeFirstOrThrow();
+      expect(fileRow.status).toBe("FAILED");
+      // Orphan check: the (corrupting, but still real) storage backend's
+      // own object for this key must be gone -- compensating delete ran.
+      const finalStat = await storage.statObject(fileRow.storage_key);
+      expect(finalStat).toBeNull();
+      expect(temporalStarter.calls).toHaveLength(0);
+    });
+
+    it("review #5: two concurrent attachment completions for the same candidate never create two processing_jobs rows", async () => {
+      const bytesFor = (n: number) => Buffer.concat([pngBytes(), Buffer.from(`-dup-${n}`)]);
+      const hashes = [0, 1].map((n) => sha256Hex(bytesFor(n)));
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: hashes });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const [resultA, resultB] = await Promise.all([
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+          },
+          chunks([bytesFor(0)]),
+        ),
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 1, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+          },
+          chunks([bytesFor(1)]),
+        ),
+      ]);
+      expect(resultA.status).toBe("READY");
+      expect(resultB.status).toBe("READY");
+
+      const jobCount = await database!
+        .selectFrom("app.processing_jobs")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("source_file_id", "in", [resultA.fileId, resultB.fileId])
+        .executeTakeFirstOrThrow();
+      expect(Number(jobCount.count)).toBe(1);
+
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.processing_job_id).not.toBeNull();
+    });
+
+    it("review #6: two concurrent calls with the exact same idempotency key never both run side effects -- one succeeds, the other is rejected or replays the same result", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const sharedIdempotencyKey = randomUUID();
+
+      const outcomes = await Promise.allSettled([
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: sharedIdempotencyKey,
+          },
+          chunks([bytes]),
+        ),
+        domain.receiveAttachment(
+          {
+            candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+            expectedCandidateVersion: 1, idempotencyKey: sharedIdempotencyKey,
+          },
+          chunks([bytes]),
+        ),
+      ]);
+
+      const fulfilled = outcomes.filter(
+        (outcome): outcome is PromiseFulfilledResult<unknown> => outcome.status === "fulfilled",
+      );
+      expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+
+      // Claim-first: exactly one upload_attachment ledger row for this
+      // (candidate, attachmentIndex) pair, never two -- the losing racer
+      // either replayed the winner's row or was rejected outright, it
+      // never inserted a second claim of its own.
+      const claimCount = await database!
+        .selectFrom("app.mailbox_ingestion_operations")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("candidate_id", "=", candidateId)
+        .where("operation_kind", "=", "upload_attachment")
+        .executeTakeFirstOrThrow();
+      expect(Number(claimCount.count)).toBe(1);
     });
   },
 );
