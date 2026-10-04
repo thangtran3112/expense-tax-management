@@ -94,6 +94,8 @@ export default function MailboxPage() {
     undefined,
   );
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+  const [reconnectStarting, setReconnectStarting] = useState(false);
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
   const [disconnectNote, setDisconnectNote] = useState<string | null>(null);
 
   // Phase 3D-B Task 5 -- scan history/trigger + candidate review queue.
@@ -271,6 +273,37 @@ export default function MailboxPage() {
     }
   }
 
+  /**
+   * Fix round 2 (review Important #1) -- a real OAuth re-authorization
+   * attempt for this *existing* connection's own scope (App API's
+   * `startConnection` reuses any non-revoked connection row for the same
+   * scope rather than creating a second one -- see
+   * domain/mailbox-connections.ts's `selectExistingConnectionId`), not a
+   * stub. Reuses the same "waiting on Google" phase as a first-time
+   * connect; a failure keeps the connected view visible with its own
+   * `reconnectError` (the shared `error`/`phase` pair above only renders
+   * inside the no-connection Scenario 1 view).
+   */
+  async function handleReconnect() {
+    if (!session || !organizationId || !connection) return;
+    setReconnectStarting(true);
+    setReconnectError(null);
+    try {
+      const result = await connectMailboxGoogle(session, connection.scope, getToken, organizationId);
+      setAuthorizationUrl(result.authorizationUrl);
+      setPhase("oauth-pending");
+      if (typeof window !== "undefined") {
+        window.open(result.authorizationUrl, "_blank", "noopener,noreferrer");
+      }
+    } catch (caught: unknown) {
+      setReconnectError(
+        caught instanceof MailboxConnectionError ? caught.message : "Couldn't start reconnection.",
+      );
+    } finally {
+      setReconnectStarting(false);
+    }
+  }
+
   // ------------------------------------------------------------------ //
   // Scenario 2: OAuth in progress / OAuth return
   // ------------------------------------------------------------------ //
@@ -392,9 +425,23 @@ export default function MailboxPage() {
         <div className="banner warn" role="alert">
           <h3>Reconnect needed</h3>
           <p>
-            Google requires renewed consent for {connection.accountEmail}. Receipt scans are paused until
-            you reconnect.
+            Google requires renewed consent for {connection.accountEmail}. Only scanning is blocked —
+            candidates already staged stay fully reviewable below.
           </p>
+          <button
+            type="button"
+            className="secondary"
+            disabled={reconnectStarting}
+            aria-disabled={reconnectStarting}
+            onClick={() => void handleReconnect()}
+          >
+            {reconnectStarting ? "Starting..." : "Reconnect Gmail"}
+          </button>
+          {reconnectError && (
+            <p role="alert" className="status bad">
+              {reconnectError}
+            </p>
+          )}
         </div>
       )}
       {connection.status === "revoked" && (
@@ -466,18 +513,36 @@ export default function MailboxPage() {
         </div>
         {(() => {
           const running = scanRuns?.[0]?.status === "pending" || scanRuns?.[0]?.status === "running";
+          // Fix round 2 (review Important #1) -- reauth_required blocks
+          // *scanning* only, not review (owner decision, mockup
+          // "Reauth pauses discovery only"). "Scan now" must be disabled
+          // with an accessible explanation and a reconnect path; the
+          // candidate review panel below stays fully open regardless.
+          const reauthBlocked = connection.status === "reauth_required";
           return (
             <>
               <button
                 type="button"
                 className="secondary"
-                disabled={scanStarting || running}
-                aria-disabled={scanStarting || running}
-                title={running ? "A scan is already running" : undefined}
+                disabled={scanStarting || running || reauthBlocked}
+                aria-disabled={scanStarting || running || reauthBlocked}
+                title={
+                  reauthBlocked
+                    ? "Reconnect Gmail to resume scanning"
+                    : running
+                      ? "A scan is already running"
+                      : undefined
+                }
                 onClick={() => void handleScanNow()}
               >
                 {scanStarting ? "Starting..." : "Scan now"}
               </button>
+              {reauthBlocked && (
+                <p role="status">
+                  Scanning is paused until you reconnect Gmail. Review of already-staged candidates stays
+                  open below.
+                </p>
+              )}
               {running && (
                 <p role="status" aria-live="polite">
                   Scan in progress — {scanRuns?.[0]?.discoveredCount ?? 0} discovered so far. The candidate
@@ -783,6 +848,45 @@ export function MailboxCandidateReviewPanel({
               </span>
             ))}
           </p>
+
+          {/* Fix round 2 (review Important #2) -- the approved gate's
+              metadata fields (plans/mockups/office-mailbox-review/
+              review.html): candidate/scan-run IDs, content fingerprint,
+              and per-attachment name/type/size/hash. Metadata only --
+              `MailboxCandidateV1` carries no body/HTML/content field to
+              render in the first place. */}
+          <div style={{ marginTop: 16 }}>
+            <div className="field-row">
+              <label>Received</label>
+              <span>{new Date(selected.receivedAt).toLocaleString()}</span>
+            </div>
+            <div className="field-row">
+              <label>Candidate ID</label>
+              <span>{selected.id}</span>
+            </div>
+            <div className="field-row">
+              <label>Scan run</label>
+              <span>{selected.scanRunId}</span>
+            </div>
+            <div className="field-row">
+              <label>Content fingerprint</label>
+              <span>sha256:{selected.contentHash}</span>
+            </div>
+          </div>
+
+          {selected.attachmentManifest.length > 0 && (
+            <>
+              <h4>Attachments (metadata only)</h4>
+              {selected.attachmentManifest.map((attachment) => (
+                <div className="field-row" key={attachment.sha256}>
+                  <label>{attachment.name}</label>
+                  <span>
+                    {attachment.mimeType} · {attachment.sizeBytes} bytes · sha256:{attachment.sha256}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
 
           <fieldset style={{ border: 0, padding: 0, margin: "14px 0 0" }}>
             <legend>

@@ -341,3 +341,137 @@ describe("rendered Office mailbox page — scan status polling (connected)", () 
     }
   });
 });
+
+// ------------------------------------------------------------------ //
+// Fix round 2 (review Important #1) -- reauth_required must disable
+// scanning (with an accessible explanation and a reconnect action)
+// while candidate review stays fully open.
+// ------------------------------------------------------------------ //
+
+describe("rendered Office mailbox page — reauth_required blocks scanning only", () => {
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    harness.clerk.getToken.mockResolvedValue("office-token");
+    harness.searchParams = new URLSearchParams();
+    harness.readOfficeSession.mockImplementation(() => ({ ...PERSONAL_SESSION }));
+    harness.loadMailboxConnection.mockResolvedValue({ ...ACTIVE_CONNECTION, status: "reauth_required" });
+    harness.loadAuthorizedBusinesses.mockResolvedValue([]);
+    harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
+    harness.loadMailboxScanRuns.mockResolvedValue([scanRun("completed", "run-0")]);
+    harness.loadMailboxCandidates.mockResolvedValue({ items: [], nextCursor: null });
+  });
+
+  it("disables Scan now with an accessible explanation, and offers a Reconnect Gmail action, while candidates still load", async () => {
+    render(<MailboxPage />);
+
+    const scanButton = await screen.findByRole("button", { name: /Scan now/ });
+    expect((scanButton as HTMLButtonElement).disabled).toBe(true);
+    expect(scanButton.getAttribute("title")).toMatch(/reconnect/i);
+    await screen.findByText(/paused until you reconnect/i);
+
+    const reconnectButton = screen.getByRole("button", { name: /Reconnect Gmail/ });
+    expect((reconnectButton as HTMLButtonElement).disabled).toBe(false);
+
+    // Owner decision: reauth blocks scanning only -- review of
+    // already-staged candidates stays open (the panel still loads).
+    await waitFor(() => expect(harness.loadMailboxCandidates).toHaveBeenCalled());
+  });
+
+  it("Reconnect Gmail starts a real OAuth attempt for this connection's own scope", async () => {
+    harness.connectMailboxGoogle.mockResolvedValue({ authorizationUrl: "https://broker.test/begin" });
+    render(<MailboxPage />);
+
+    const reconnectButton = await screen.findByRole("button", { name: /Reconnect Gmail/ });
+    fireEvent.click(reconnectButton);
+
+    await waitFor(() => expect(harness.connectMailboxGoogle).toHaveBeenCalledOnce());
+    const [, scopeArg] = harness.connectMailboxGoogle.mock.calls[0] as [unknown, unknown];
+    expect(scopeArg).toEqual(ACTIVE_CONNECTION.scope);
+
+    // Reuses the existing "waiting on Google" scenario.
+    await screen.findByText(/consent window opened/i);
+  });
+});
+
+// ------------------------------------------------------------------ //
+// Fix round 2 (review Important #2) -- candidate detail must render the
+// approved gate's metadata fields (candidate/scan-run IDs, content
+// fingerprint, attachment name/type/size/hash) -- metadata only, never
+// a body/content field (none exists on the contract to render).
+// ------------------------------------------------------------------ //
+
+describe("rendered Office mailbox page — candidate detail metadata (approved gate)", () => {
+  afterEach(() => cleanup());
+
+  const CANDIDATE = {
+    schemaVersion: 1 as const,
+    id: "cand_8f21b309",
+    scanRunId: "run_20261002_0700",
+    connectionId: ACTIVE_CONNECTION.id,
+    tenantId: "tenant-1",
+    receivedAt: "2026-10-02T13:48:00.000Z",
+    senderAddress: "receipts@shopwaveco.example",
+    senderDomain: "shopwaveco.example",
+    subject: "Your order #48213 from ShopWave Co.",
+    contentHash: "9c4e".padEnd(64, "0"),
+    attachmentManifest: [
+      {
+        name: "invoice.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 182_000,
+        sha256: "7b21".padEnd(64, "0"),
+      },
+    ],
+    classification: "ambiguous" as const,
+    confidence: 0.61,
+    evidence: ["order_confirmation_schema", "sender_domain_unverified"],
+    scope: null,
+    status: "review" as const,
+    processingJobId: null,
+    expenseId: null,
+    sourceId: null,
+    duplicateMatchId: null,
+    version: 1,
+    idempotencyKey: "cand-key-1",
+    errorCode: null,
+    createdAt: "2026-10-02T13:48:00.000Z",
+    updatedAt: "2026-10-02T13:48:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    harness.clerk.getToken.mockResolvedValue("office-token");
+    harness.searchParams = new URLSearchParams();
+    harness.readOfficeSession.mockImplementation(() => ({ ...PERSONAL_SESSION }));
+    harness.loadMailboxConnection.mockResolvedValue(ACTIVE_CONNECTION);
+    harness.loadAuthorizedBusinesses.mockResolvedValue([]);
+    harness.loadOwnPersonalProfile.mockResolvedValue({ id: "profile-1", name: "Personal" });
+    harness.loadMailboxScanRuns.mockResolvedValue([scanRun("completed", "run-0")]);
+    harness.loadMailboxCandidates.mockImplementation(
+      async (_session: unknown, _connectionId: unknown, classification: string) =>
+        classification === "ambiguous" ? { items: [CANDIDATE], nextCursor: null } : { items: [], nextCursor: null },
+    );
+  });
+
+  it("renders candidate/scan-run IDs, content fingerprint, and attachment name/type/size/hash -- metadata only, never a body field", async () => {
+    render(<MailboxPage />);
+
+    const candidateButton = await screen.findByRole("button", { name: /receipts@shopwaveco\.example/ });
+    fireEvent.click(candidateButton);
+
+    await screen.findByText(CANDIDATE.id);
+    expect(screen.getByText(CANDIDATE.scanRunId)).toBeTruthy();
+    expect(screen.getByText(new RegExp(CANDIDATE.contentHash))).toBeTruthy();
+    expect(screen.getByText(/invoice\.pdf/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`application/pdf.*${CANDIDATE.attachmentManifest[0].sizeBytes}`))).toBeTruthy();
+    expect(screen.getByText(new RegExp(CANDIDATE.attachmentManifest[0].sha256))).toBeTruthy();
+
+    // No raw-body rendering path exists on the contract at all --
+    // structural proof, not just a missing-text assertion.
+    expect(Object.keys(CANDIDATE)).not.toContain("body");
+    expect(Object.keys(CANDIDATE)).not.toContain("rawBody");
+    expect(Object.keys(CANDIDATE)).not.toContain("html");
+  });
+});
