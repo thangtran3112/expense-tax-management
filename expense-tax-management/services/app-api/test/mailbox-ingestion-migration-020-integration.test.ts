@@ -466,7 +466,17 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId,
-            responseJson: JSON.stringify({ rawHtml: "not allowed" }),
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId,
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-extra-1",
+              rawHtml: "not allowed",
+            }),
           }),
         );
         expect(result).toContain("STDERR:");
@@ -484,7 +494,17 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId,
-            responseJson: JSON.stringify({ uploadGrantId: "grant-token-1" }),
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId,
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-extra-2",
+              uploadGrantId: "grant-token-1",
+            }),
           }),
         );
         expect(result).toContain("STDERR:");
@@ -500,7 +520,16 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId,
-            responseJson: JSON.stringify({ candidateId: "<div>not a uuid</div>" }),
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId: "<div>not a uuid</div>",
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-html-1",
+            }),
           }),
         );
         expect(result).toContain("STDERR:");
@@ -517,7 +546,14 @@ describe.skipIf(!requested)(
             connectionId: CONNECTION_A_ID,
             candidateId,
             operationKind: "upload_attachment",
-            responseJson: JSON.stringify({ errorCode: "not a real code, just <b>raw</b> content" }),
+            responseJson: JSON.stringify({
+              candidateId,
+              attachmentIndex: 0,
+              fileId: "file-token-html",
+              status: "FAILED",
+              errorCode: "not a real code, just <b>raw</b> content",
+              idempotencyKey: "idem-html-2",
+            }),
           }),
         );
         expect(result).toContain("STDERR:");
@@ -577,7 +613,16 @@ describe.skipIf(!requested)(
             id: randomUUID(),
             connectionId: CONNECTION_A_ID,
             candidateId: candidateIdB,
-            responseJson: JSON.stringify({ candidateId: candidateIdB, status: "READY" }),
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId: candidateIdB,
+              status: "READY",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-3b",
+            }),
           }),
         );
         expect(resultB).toContain("STDERR:");
@@ -646,6 +691,167 @@ describe.skipIf(!requested)(
         );
         expect(result).toContain("STDERR:");
         expect(result).toMatch(/response_json must be a JSON object/);
+      });
+
+      it("rejects an empty object '{}' -- every required key for the operation_kind is missing (fix round 3)", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({}),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/is missing required field/);
+      });
+
+      it("rejects a response missing one required key (schemaVersion omitted) even though every other key is valid (fix round 3)", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({
+              candidateId,
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-6",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/is missing required field schemaVersion for operation_kind materialize_candidate/);
+      });
+
+      it("rejects JSON null in a required, non-nullable field (candidateId) -- fix round 3", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId: null,
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-7",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field candidateId must not be null/);
+      });
+
+      it("rejects JSON null in a required, non-nullable field (status) -- fix round 3", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId,
+              status: null,
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-8",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/field status must not be null/);
+      });
+
+      it("accepts JSON null in the documented nullable fields (errorCode, processingJobId/expenseId/sourceId/duplicateMatchId) -- control case", () => {
+        const candidateIdA = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateIdA, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+        expect(() =>
+          runtimeSqlOk(
+            insertOperationSql({
+              id: randomUUID(),
+              connectionId: CONNECTION_A_ID,
+              candidateId: candidateIdA,
+              operationKind: "upload_attachment",
+              responseJson: JSON.stringify({
+                candidateId: candidateIdA,
+                attachmentIndex: 0,
+                fileId: "file-token-6",
+                status: "READY",
+                errorCode: null,
+                idempotencyKey: "idem-9",
+              }),
+            }),
+          ),
+        ).not.toThrow();
+
+        const candidateIdB = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateIdB, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+        expect(() =>
+          runtimeSqlOk(
+            insertOperationSql({
+              id: randomUUID(),
+              connectionId: CONNECTION_A_ID,
+              candidateId: candidateIdB,
+              responseJson: JSON.stringify({
+                schemaVersion: 1,
+                candidateId: candidateIdB,
+                status: "queued",
+                processingJobId: null,
+                expenseId: null,
+                sourceId: null,
+                duplicateMatchId: null,
+                idempotencyKey: "idem-10",
+              }),
+            }),
+          ),
+        ).not.toThrow();
+      });
+
+      it("rejects an extra key alongside an otherwise-complete, exact-key-set response (full key-set equality, not just 'not missing')", () => {
+        const candidateId = randomUUID();
+        runtimeSqlOk(insertCandidateSql({ id: candidateId, connectionId: CONNECTION_A_ID, scanRunId: SCAN_RUN_A_ID }));
+
+        const result = runtimeSqlExpectError(
+          insertOperationSql({
+            id: randomUUID(),
+            connectionId: CONNECTION_A_ID,
+            candidateId,
+            responseJson: JSON.stringify({
+              schemaVersion: 1,
+              candidateId,
+              status: "processed",
+              processingJobId: null,
+              expenseId: null,
+              sourceId: null,
+              duplicateMatchId: null,
+              idempotencyKey: "idem-11",
+              extraField: "not allowed",
+            }),
+          }),
+        );
+        expect(result).toContain("STDERR:");
+        expect(result).toMatch(/carries a field not valid for operation_kind materialize_candidate: extraField/);
       });
     });
   },

@@ -391,7 +391,17 @@ export async function up(database: Kysely<unknown>): Promise<void> {
      (Zod, not plain interfaces) as that write-side contract, with formats
      mirroring this trigger's regexes exactly; wiring them into an actual
      write path is Task 3/4's job (no domain write code exists yet --
-     Task 1 owns only contracts and migration 020). */
+     Task 1 owns only contracts and migration 020).
+     Fix round 3 (re-review): the key-allow-list above only ever rejected
+     an EXTRA key -- "{}" and "{ candidateId: null }" both persisted as a
+     "valid" response for every operation_kind. Every key in allowed_keys
+     is now also required (a FOREACH presence check below), and JSON null
+     is only accepted for the fields the real contracts type as nullable
+     (errorCode, processingJobId/expenseId/sourceId/duplicateMatchId) --
+     every other key rejects null outright, same as the real Zod schemas
+     (packages/contracts/src/mailbox-ingestion.ts), which need no change:
+     z.strictObject with no optional() fields already requires every key
+     present, and only .nullable()-marked fields accept a null value. */
   await sql`
     CREATE OR REPLACE FUNCTION app.validate_mailbox_ingestion_operation_response()
     RETURNS trigger
@@ -402,6 +412,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       response_value jsonb;
       response_text text;
       allowed_keys text[];
+      required_key text;
     BEGIN
       IF NEW.response_json IS NULL THEN
         RETURN NEW;
@@ -427,13 +438,35 @@ export async function up(database: Kysely<unknown>): Promise<void> {
         ELSE ARRAY[]::text[]
       END;
 
+      /* Fix round 3 (re-review: "{}" and "{ candidateId: null }" both
+         persisted as a valid response -- allowed_keys only ever rejected
+         EXTRA keys, never caught a MISSING one, matching the real
+         contracts (packages/contracts/src/mailbox-ingestion.ts), which are
+         z.strictObject with no optional() field -- every key in
+         allowed_keys is required to be present, nullable or not. */
+      FOREACH required_key IN ARRAY allowed_keys LOOP
+        IF NOT (NEW.response_json ? required_key) THEN
+          RAISE EXCEPTION 'mailbox ingestion operation response_json is missing required field % for operation_kind %', required_key, NEW.operation_kind;
+        END IF;
+      END LOOP;
+
       FOR response_key, response_value IN SELECT key, value FROM jsonb_each(NEW.response_json) LOOP
         IF NOT (response_key = ANY (allowed_keys)) THEN
           RAISE EXCEPTION 'mailbox ingestion operation response_json carries a field not valid for operation_kind %: %', NEW.operation_kind, response_key;
         END IF;
 
         IF response_value = 'null'::jsonb THEN
-          CONTINUE;
+          /* Fix round 3 (re-review): JSON null was previously accepted for
+             EVERY key, including required non-nullable ones like
+             candidateId/status/schemaVersion. Only the fields the real
+             contracts type as nullable() (errorCode,
+             processingJobId/expenseId/sourceId/duplicateMatchId) may
+             actually be null. */
+          IF response_key = ANY (ARRAY['errorCode', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId']) THEN
+            CONTINUE;
+          ELSE
+            RAISE EXCEPTION 'mailbox ingestion operation response_json field % must not be null', response_key;
+          END IF;
         END IF;
 
         CASE response_key

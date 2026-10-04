@@ -200,6 +200,18 @@ describe("mailbox ingestion migration 020 – app.mailbox_ingestion_operations",
     expect(migration).not.toMatch(/\\x21-\\x7e\]\{1,500\}/);
   });
 
+  it("requires every key in the per-kind allow-list to be present, not just rejecting extras (fix round 3)", () => {
+    expect(migration).toMatch(
+      /FOREACH required_key IN ARRAY allowed_keys LOOP[\s\S]*NOT \(NEW\.response_json \? required_key\)[\s\S]*is missing required field/,
+    );
+  });
+
+  it("rejects JSON null for every field except the ones the real contracts type as nullable (fix round 3)", () => {
+    expect(migration).toMatch(
+      /response_value = 'null'::jsonb THEN[\s\S]*response_key = ANY \(ARRAY\['errorCode', 'processingJobId', 'expenseId', 'sourceId', 'duplicateMatchId'\]\)[\s\S]*CONTINUE;[\s\S]*ELSE[\s\S]*must not be null/,
+    );
+  });
+
   it("indexes a reconcile sweep over pending/started materialize_candidate rows", () => {
     expect(migration).toMatch(
       /CREATE INDEX mailbox_ingestion_operations_materialize_pending_index[\s\S]*ON app\.mailbox_ingestion_operations \(tenant_id, status\)[\s\S]*WHERE operation_kind = 'materialize_candidate' AND status IN \('pending', 'started'\)/,
