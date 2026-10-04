@@ -13,7 +13,11 @@
  * mere messenger: it never creates, stores, or transports the nonce
  * itself, so there is no cookie-handling code left in this module at all.
  */
-import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
+import type {
+  MailboxCandidateClassification,
+  MailboxCandidateV1,
+  Scope,
+} from "@expense-tax/contracts";
 
 import type { ClerkGetToken } from "./clerk";
 import {
@@ -154,4 +158,167 @@ const REVIEW_ACTION_LABELS: Record<MailboxCandidateReviewAction, string> = {
 
 export function mailboxCandidateReviewActionLabel(action: MailboxCandidateReviewAction): string {
   return REVIEW_ACTION_LABELS[action];
+}
+
+// ------------------------------------------------------------------ //
+// Ingestion status (Phase 3D-C Task 6)
+//
+// Reuses the existing candidate read API (MailboxCandidateV1 already
+// carries status/scope/errorCode/expenseId -- no backend change needed;
+// see task-6-report.md). A candidate only reaches this board once it has
+// been approved for ingestion at least once -- detected by `scope` being
+// assigned (only `resolveCandidate`'s `ingest` action ever sets it),
+// which also safely excludes pre-approval `staged`/`review` candidates
+// from the other classification-based review queue above.
+// ------------------------------------------------------------------ //
+
+export type MailboxIngestionBucket = "in_progress" | "needs_attention" | "completed";
+
+export const MAILBOX_INGESTION_GROUPS: readonly {
+  readonly bucket: MailboxIngestionBucket;
+  readonly label: string;
+  readonly emptyMessage: string;
+}[] = [
+  { bucket: "in_progress", label: "In progress", emptyMessage: "No ingestion activity yet." },
+  { bucket: "needs_attention", label: "Needs attention", emptyMessage: "Nothing needs attention." },
+  { bucket: "completed", label: "Completed", emptyMessage: "Nothing ingested yet." },
+];
+
+/** Link target for every "duplicate detected" outcome -- the existing
+ * Duplicates review queue, never a mailbox-specific view (approved gate
+ * owner decision #4/#2). */
+export const MAILBOX_DUPLICATES_HREF = "/duplicates";
+
+/** Typed transient codes a `retry`/`ingest` review action may clear --
+ * mirrors services/app-api/src/domain/mailbox-candidates.ts's own
+ * TRANSIENT_MAILBOX_ERROR_CODES + PROCESSING_TRANSIENT_MAILBOX_ERROR_CODES
+ * (frontend cannot import backend domain code, so this is a UI-local
+ * display mirror, not a second source of authorization truth -- the
+ * server re-validates retry eligibility on every call regardless). */
+const MAILBOX_RETRYABLE_ERROR_CODES = new Set<string>([
+  "GOOGLE_RATE_LIMITED",
+  "GOOGLE_UNAVAILABLE",
+  "OCR_EXTRACTION_FAILED",
+  "MAILBOX_MATERIALIZE_FAILED",
+]);
+
+type IngestionCandidate = Pick<MailboxCandidateV1, "status" | "scope" | "errorCode" | "expenseId">;
+
+/** True only for a candidate that has been approved for ingestion at
+ * least once (see module comment above). */
+export function isMailboxIngestionCandidate(candidate: Pick<MailboxCandidateV1, "status" | "scope">): boolean {
+  return (
+    candidate.scope !== null &&
+    (candidate.status === "queued" ||
+      candidate.status === "processed" ||
+      candidate.status === "duplicate" ||
+      candidate.status === "review" ||
+      candidate.status === "failed")
+  );
+}
+
+export function mailboxIngestionBucket(candidate: Pick<MailboxCandidateV1, "status">): MailboxIngestionBucket {
+  if (candidate.status === "queued") return "in_progress";
+  if (candidate.status === "processed") return "completed";
+  return "needs_attention";
+}
+
+export type MailboxIngestionAction =
+  | { readonly kind: "retry" }
+  | { readonly kind: "retryIngest" }
+  | { readonly kind: "dismiss" }
+  | { readonly kind: "viewExpense"; readonly expenseId: string }
+  | { readonly kind: "viewDuplicate" };
+
+export interface MailboxIngestionStatusDisplay {
+  readonly label: string;
+  readonly tone: MailboxStatusTone;
+  readonly note: string;
+  readonly action: MailboxIngestionAction | null;
+}
+
+/**
+ * Status text and action for one ingestion row -- status text only, per
+ * the approved gate (no opaque ID here; IDs live in a separate "Support
+ * details" disclosure the caller renders from the same candidate).
+ * Never reads anything but status/errorCode/expenseId: no message
+ * body/content field exists on the contract to leak in the first place.
+ */
+export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): MailboxIngestionStatusDisplay {
+  switch (candidate.status) {
+    case "queued":
+      return {
+        label: "Queued",
+        tone: "warn",
+        note: "Waiting to be ingested. No file created yet.",
+        action: null,
+      };
+    case "processed":
+      return {
+        label: "Ingested",
+        tone: "ok",
+        note: "Processing complete. Open the expense for full details.",
+        action: candidate.expenseId ? { kind: "viewExpense", expenseId: candidate.expenseId } : null,
+      };
+    case "duplicate":
+      return {
+        label: "Duplicate detected",
+        tone: "warn",
+        note: "Matches an existing expense. Pending in the Duplicates queue -- no automatic merge.",
+        action: { kind: "viewDuplicate" },
+      };
+    case "review":
+      return {
+        label: "Failed -- recoverable",
+        tone: "bad",
+        note: "A prior attempt failed and was cleared. Approve again to retry -- the same scope is reused.",
+        action: { kind: "retryIngest" },
+      };
+    case "failed":
+      if (candidate.errorCode && MAILBOX_RETRYABLE_ERROR_CODES.has(candidate.errorCode)) {
+        return {
+          label: "Failed -- transient error",
+          tone: "bad",
+          note: "Safe to retry -- the same idempotency key is reused, so retrying cannot create a duplicate expense.",
+          action: { kind: "retry" },
+        };
+      }
+      if (candidate.errorCode === "MALWARE_DETECTED") {
+        return {
+          label: "Malware scan blocked",
+          tone: "bad",
+          note: "Attachment failed the malware scan and was never stored. This is a dead end: no retry and no download -- the source message must be re-sent or handled outside Office.",
+          action: { kind: "dismiss" },
+        };
+      }
+      return {
+        label: "Unsupported attachment",
+        tone: "bad",
+        note: "Attachment exceeded the size/type limit. Not eligible for retry.",
+        action: null,
+      };
+    default:
+      return { label: candidate.status, tone: "warn", note: "", action: null };
+  }
+}
+
+/** Message for a `retry`/`ingest`-against-this-panel 409 (stale candidate
+ * version) -- same inline-refresh handling as the candidate review panel
+ * above and the Duplicates queue (approved gate owner decision #5). */
+export function mailboxIngestionConflictMessage(status: number | undefined): string {
+  return status === 409
+    ? "Candidate changed while retrying -- status refreshed below. Confirm before retrying again."
+    : "Action failed. Try again.";
+}
+
+/** Non-null only when the connection itself blocks ingestion-status
+ * access (mirrors App API's authorizeCandidateAccess, which 403s every
+ * candidate read once a connection is fully revoked -- "reauth_required"
+ * is not included here; it only blocks new scanning, never review/
+ * ingestion-status access, per the existing mailbox page's own
+ * reauth-required handling). */
+export function mailboxIngestionAccessMessage(connectionStatus: MailboxConnectionStatus): string | null {
+  return connectionStatus === "revoked"
+    ? "Mailbox disconnected. Already-ingested expenses are unaffected; no new ingestion activity will appear here."
+    : null;
 }

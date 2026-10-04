@@ -124,3 +124,23 @@ export function loadMailboxCandidates(
     ...(cursor ? { cursor } : {}),
   });
 }
+
+/**
+ * Phase 3D-C Task 6 -- every candidate on a connection, unfiltered by
+ * classification, for the ingestion-status board (which groups by
+ * ingestion *status*, not classification, and only after approval --
+ * see lib/mailbox.ts's isMailboxIngestionCandidate). No backend addition
+ * needed: MailboxCandidateV1 already carries status/scope/errorCode/
+ * expenseId/sourceId/duplicateMatchId (see task-6-report.md Ruling 1).
+ */
+export function loadMailboxIngestionCandidates(
+  session: OfficeSession,
+  connectionId: string,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  cursor?: string,
+) {
+  return fetchMailboxCandidates(session, connectionId, getToken, organizationId, {
+    ...(cursor ? { cursor } : {}),
+  });
+}

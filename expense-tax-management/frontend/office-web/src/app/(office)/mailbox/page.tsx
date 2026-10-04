@@ -1,6 +1,7 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, MailboxConnectionStatus, Scope } from "@expense-tax/contracts";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PageHead, Status } from "@/components/ui";
@@ -16,12 +17,21 @@ import {
   mailboxReasonCodeLabel,
   connectMailboxGoogle,
   mailboxStatusDisplay,
+  isMailboxIngestionCandidate,
+  mailboxIngestionAccessMessage,
+  mailboxIngestionBucket,
+  mailboxIngestionConflictMessage,
+  mailboxIngestionStatusDisplay,
   MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS,
+  MAILBOX_DUPLICATES_HREF,
+  MAILBOX_INGESTION_GROUPS,
+  type MailboxIngestionAction,
 } from "@/lib/mailbox";
 import {
   loadAuthorizedBusinesses,
   loadMailboxCandidates,
   loadMailboxConnection,
+  loadMailboxIngestionCandidates,
   loadMailboxScanRuns,
   loadOwnPersonalProfile,
 } from "@/lib/page-data";
@@ -573,6 +583,13 @@ export default function MailboxPage() {
         refreshSignal={candidateRefreshSignal}
       />
 
+      <MailboxIngestionStatusPanel
+        session={session}
+        connectionId={connection.id}
+        connectionStatus={connection.status}
+        refreshSignal={candidateRefreshSignal}
+      />
+
       {/* Scenario 5: disconnect confirmation */}
       {confirmingDisconnect && (
         <div className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="disconnect-heading">
@@ -926,6 +943,238 @@ export function MailboxCandidateReviewPanel({
             </button>
           </div>
         </aside>
+      )}
+    </Panel>
+  );
+}
+
+// ------------------------------------------------------------------ //
+// Ingestion status board (Phase 3D-C Task 6)
+//
+// Per-candidate status after "Approve for ingestion" -- the approved
+// gate (plans/mockups/office-mailbox-ingestion/). Reuses the existing
+// candidate list route with no classification filter (no backend
+// change -- see task-6-report.md Ruling 1); grouping/pagination is
+// therefore one shared feed bucketed client-side into the gate's three
+// sections, rather than the mockup's three independent per-status
+// cursors, which the real list route has no status filter to support
+// (Ruling 2).
+// ------------------------------------------------------------------ //
+
+type MailboxIngestionItem = Awaited<ReturnType<typeof loadMailboxIngestionCandidates>>["items"][number];
+
+function MailboxIngestionStatusPanel({
+  session,
+  connectionId,
+  connectionStatus,
+  refreshSignal,
+}: {
+  session: OfficeSession;
+  connectionId: string;
+  connectionStatus: MailboxConnectionStatus;
+  refreshSignal: number;
+}) {
+  const { getToken } = useAuth();
+  const { organization } = useOrganization();
+  const organizationId = organization?.id ?? null;
+
+  const [rawItems, setRawItems] = useState<readonly MailboxIngestionItem[] | undefined>(undefined);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [dismissedIds, setDismissedIds] = useState<ReadonlySet<string>>(new Set());
+  const [workingId, setWorkingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const accessMessage = mailboxIngestionAccessMessage(connectionStatus);
+
+  useEffect(() => {
+    if (!organizationId || accessMessage) return;
+    let active = true;
+    async function load() {
+      setRawItems(undefined);
+      setListError(null);
+      try {
+        const data = await loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId);
+        if (!active) return;
+        setRawItems(data.items);
+        setNextCursor(data.nextCursor);
+      } catch (caught: unknown) {
+        if (!active) return;
+        setRawItems([]);
+        setListError(caught instanceof Error ? caught.message : "Could not load ingestion status.");
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, organizationId, refreshSignal, accessMessage]);
+
+  async function loadMore() {
+    if (!organizationId || !nextCursor) return;
+    setLoadingMore(true);
+    try {
+      const data = await loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId, nextCursor);
+      setRawItems((current) => [...(current ?? []), ...data.items]);
+      setNextCursor(data.nextCursor);
+    } catch (caught: unknown) {
+      setListError(caught instanceof Error ? caught.message : "Could not load more ingestion status.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function act(candidate: MailboxIngestionItem, action: MailboxIngestionAction) {
+    if (action.kind === "dismiss") {
+      setDismissedIds((current) => new Set(current).add(candidate.id));
+      return;
+    }
+    if (action.kind === "viewExpense" || action.kind === "viewDuplicate") return;
+    if (!organizationId) return;
+    // "retryIngest" re-approves a candidate a prior retry already cleared
+    // back to "review" -- same scope, no reviewer input needed (approved
+    // gate: "Approve again to retry -- the same scope is reused").
+    const reviewAction: MailboxCandidateReviewAction = action.kind === "retryIngest" ? "ingest" : "retry";
+    if (reviewAction === "ingest" && !candidate.scope) return;
+    setWorkingId(candidate.id);
+    setActionError(null);
+    try {
+      const updated = await resolveMailboxCandidate(
+        session,
+        connectionId,
+        candidate.id,
+        reviewAction,
+        candidate.version,
+        getToken,
+        organizationId,
+        reviewAction === "ingest" ? (candidate.scope ?? undefined) : undefined,
+      );
+      setRawItems((current) => (current ?? []).map((item) => (item.id === candidate.id ? updated : item)));
+    } catch (caught: unknown) {
+      if (caught instanceof MailboxCandidateError && caught.status === 409) {
+        setActionError(mailboxIngestionConflictMessage(caught.status));
+        if (organizationId) {
+          void loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId).then((data) => {
+            setRawItems(data.items);
+            setNextCursor(data.nextCursor);
+          });
+        }
+      } else {
+        setActionError(caught instanceof Error ? caught.message : "Action failed.");
+      }
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  if (accessMessage) {
+    return (
+      <Panel title="Ingestion status">
+        <p role="status">{accessMessage}</p>
+      </Panel>
+    );
+  }
+
+  const ingestionItems = (rawItems ?? []).filter(
+    (item) => isMailboxIngestionCandidate(item) && !dismissedIds.has(item.id),
+  );
+
+  return (
+    <Panel title="Ingestion status">
+      <p>
+        Once a candidate is approved for ingestion, it moves here -- status text and counts only. No
+        provider message IDs, attachment bytes, or message content ever render in Office.
+      </p>
+      {listError && (
+        <p role="alert" className="status bad">
+          {listError}
+        </p>
+      )}
+      {actionError && (
+        <p role="alert" className="status bad">
+          {actionError}
+        </p>
+      )}
+      {rawItems === undefined ? (
+        <p aria-live="polite">Loading ingestion status...</p>
+      ) : ingestionItems.length === 0 ? (
+        <p role="status">
+          No ingestion activity yet. Approve a candidate from the review queue above to see its status here.
+        </p>
+      ) : (
+        MAILBOX_INGESTION_GROUPS.map((group) => {
+          const items = ingestionItems.filter((item) => mailboxIngestionBucket(item) === group.bucket);
+          return (
+            <section key={group.bucket} aria-label={`${group.label} ingestion candidates`}>
+              <h3>
+                {group.label} <span>{items.length}</span>
+              </h3>
+              {items.length === 0 ? (
+                <p role="status">{group.emptyMessage}</p>
+              ) : (
+                <ul>
+                  {items.map((candidate) => {
+                    const display = mailboxIngestionStatusDisplay(candidate);
+                    const busy = workingId === candidate.id;
+                    return (
+                      <li key={candidate.id}>
+                        <article aria-labelledby={`mailbox-ingestion-${candidate.id}-sender`} role="status">
+                          <span id={`mailbox-ingestion-${candidate.id}-sender`}>{candidate.senderAddress}</span>
+                          <Status tone={display.tone}>{display.label}</Status>
+                          <p>{candidate.subject}</p>
+                          <p>{display.note}</p>
+                          <p>
+                            Scope:{" "}
+                            {candidate.scope
+                              ? candidate.scope.kind === "personal"
+                                ? "Personal"
+                                : "Business"
+                              : "unassigned"}
+                          </p>
+                          {display.action?.kind === "retry" && (
+                            <button type="button" disabled={busy} onClick={() => void act(candidate, display.action!)}>
+                              {busy ? "Retrying..." : "Retry"}
+                            </button>
+                          )}
+                          {display.action?.kind === "retryIngest" && (
+                            <button type="button" disabled={busy} onClick={() => void act(candidate, display.action!)}>
+                              {busy ? "Retrying..." : "Retry"}
+                            </button>
+                          )}
+                          {display.action?.kind === "dismiss" && (
+                            <button type="button" disabled={busy} onClick={() => void act(candidate, display.action!)}>
+                              Dismiss
+                            </button>
+                          )}
+                          {display.action?.kind === "viewExpense" && (
+                            <Link href={`/expenses/${display.action.expenseId}`}>View expense →</Link>
+                          )}
+                          {display.action?.kind === "viewDuplicate" && (
+                            <Link href={MAILBOX_DUPLICATES_HREF}>Review duplicate match →</Link>
+                          )}
+                          <details>
+                            <summary>Support details</summary>
+                            <div className="field-row">
+                              <label>Candidate ID</label>
+                              <span>{candidate.id}</span>
+                            </div>
+                          </details>
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })
+      )}
+      {nextCursor && (
+        <button type="button" disabled={loadingMore} aria-busy={loadingMore} onClick={() => void loadMore()}>
+          {loadingMore ? "Loading more..." : "Load more"}
+        </button>
       )}
     </Panel>
   );
