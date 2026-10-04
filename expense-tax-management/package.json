@@ -31,6 +31,7 @@
     "contracts:check": "pnpm --filter @expense-tax/contracts --fail-if-no-match run check-generated",
     "compose:up": "./scripts/compose.sh up -d",
     "compose:down": "./scripts/compose.sh down",
+    "smoke:local-worker": "node scripts/local-worker-smoke.mjs",
     "db:migrate:app": "pnpm --filter @expense-tax/app-api --fail-if-no-match run db:migrate",
     "db:migrate:foundry": "pnpm --filter @expense-tax/foundry-service --fail-if-no-match run db:migrate",
     "test:integration": "vitest run test/integration",
