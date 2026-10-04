@@ -24,6 +24,7 @@ import type {
   AdvanceTokenGenerationInput,
   AdvanceTokenGenerationResult,
   ConnectedAccount,
+  MailboxBrokerCandidateBindingV1,
   MailboxBrokerConnectionAppClient,
   MailboxBrokerDiscoveryAppClient,
   MailboxBrokerScanBindingV1,
@@ -123,6 +124,16 @@ const ScanBindingResponseSchema = z.strictObject({
   nextPageSequence: z.number().int(),
 });
 
+// Phase 3D-B Task 4 Step 3a -- mirrors routes/mailbox-internal.ts's
+// candidate broker-binding response shape exactly.
+const CandidateBrokerBindingResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+  connectionId: z.uuid(),
+  expectedCandidateVersion: z.number().int(),
+  providerMessageId: z.string(),
+  providerThreadId: z.string().nullable(),
+});
+
 const CandidatePagesResponseSchema = z.strictObject({
   schemaVersion: z.literal(1),
   scanRunId: z.uuid(),
@@ -151,6 +162,20 @@ export interface MailboxAppClientOptions {
     MachineTokenProviderOptions,
     "endpoint" | "keyResolver" | "jwksFetch" | "nowSeconds"
   >;
+}
+
+/**
+ * Phase 3D-B Task 4 Step 3a (fix round 1, review Important #4) -- the
+ * plan's exact wording: the broker-binding route is "authenticated as
+ * mailbox-broker-app with mailbox:materialize". Not part of any
+ * `@expense-tax/contracts` canonical client interface (the plan's
+ * canonical contracts block never names a client method for this route,
+ * only the wire shape `MailboxBrokerCandidateBindingV1`), so it is its
+ * own small interface here rather than an addition to
+ * `MailboxBrokerConnectionAppClient`/`MailboxBrokerDiscoveryAppClient`.
+ */
+export interface MailboxBrokerMaterializeAppClient {
+  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -203,7 +228,7 @@ function errorCodeForStatus(status: number, bodyCode: string | undefined): Mailb
 export function createMailboxAppClient(
   config: MailboxAppClientConfig,
   options: MailboxAppClientOptions = {},
-): MailboxBrokerConnectionAppClient & MailboxBrokerDiscoveryAppClient {
+): MailboxBrokerConnectionAppClient & MailboxBrokerDiscoveryAppClient & MailboxBrokerMaterializeAppClient {
   const fetchImplementation = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const tokenProvider =
@@ -213,7 +238,13 @@ export function createMailboxAppClient(
         issuerUrl: config.issuerUrl,
         jwksUrl: config.jwksUrl,
         credentials: config.credentials,
-        scopes: ["mailbox:write"],
+        // Fix round 1 (review Important #4) -- "mailbox:materialize"
+        // added alongside "mailbox:write": same principal
+        // (mailbox-broker-app), same single token, multiple scopes --
+        // same precedent as workflow-worker's own mailbox token
+        // providers (clients/mailbox-client.ts: ["mailbox:discover",
+        // "mailbox:materialize"] together).
+        scopes: ["mailbox:write", "mailbox:materialize"],
       },
       { fetch: fetchImplementation, ...options.machineTokenOptions },
     );
@@ -392,6 +423,15 @@ export function createMailboxAppClient(
         path: `/internal/v1/mailbox/scan-runs/${scanRunId}/broker-binding`,
         method: "POST",
         responseSchema: ScanBindingResponseSchema,
+        body: {},
+      });
+    },
+
+    async loadCandidateBinding(candidateId): Promise<MailboxBrokerCandidateBindingV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/candidates/${candidateId}/broker-binding`,
+        method: "POST",
+        responseSchema: CandidateBrokerBindingResponseSchema,
         body: {},
       });
     },

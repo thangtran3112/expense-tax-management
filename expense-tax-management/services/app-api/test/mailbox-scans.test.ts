@@ -649,5 +649,59 @@ describe.skipIf(!requested)(
       );
       expect(rowCount).toBe("1"); // never duplicated
     });
+
+    it("rejects a conflicting provider_message_id whose metadata differs from the already-staged row (IDEMPOTENCY_CONFLICT, not a silent skip)", async () => {
+      const domain = createDomain();
+      const connectionId = createActiveConnection();
+      const started = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      const binding1 = await domain.loadScanBinding(started.scanRun.id);
+      const repeatedProviderMessageId = `gmail-${randomUUID()}`;
+
+      await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding1.expectedConnectionVersion,
+          cursorBeforeDigest: binding1.currentCursorDigest,
+          preFenceToken: binding1.preFenceToken,
+          pageSequence: 1,
+          messages: [{ ...stagingInput().messages[0]!, providerMessageId: repeatedProviderMessageId }],
+        }),
+      );
+
+      const binding2 = await domain.loadScanBinding(started.scanRun.id);
+      await expect(
+        domain.recordCandidateMetadata(
+          stagingInput({
+            scanRunId: started.scanRun.id,
+            connectionId,
+            expectedConnectionVersion: binding2.expectedConnectionVersion,
+            cursorBeforeDigest: binding2.currentCursorDigest,
+            preFenceToken: binding2.preFenceToken,
+            pageSequence: 2,
+            messages: [
+              // Same provider_message_id, but a DIFFERENT subject than
+              // page 1 staged -- a genuinely conflicting payload, not an
+              // identical replay. Must reject, never silently skip.
+              {
+                ...stagingInput().messages[0]!,
+                providerMessageId: repeatedProviderMessageId,
+                subject: "A completely different subject",
+              },
+            ],
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+      // Rejected entirely -- page 2's transaction rolled back, cursor never advanced.
+      const bindingAfter = await domain.loadScanBinding(started.scanRun.id);
+      expect(bindingAfter.nextPageSequence).toBe(2);
+      const rowCount = runtimeSql(
+        `SELECT count(*) FROM app.mailbox_candidates WHERE connection_id = '${connectionId}' AND provider_message_id = '${repeatedProviderMessageId}'`,
+      );
+      expect(rowCount).toBe("1"); // still just page 1's original row
+    });
   },
 );

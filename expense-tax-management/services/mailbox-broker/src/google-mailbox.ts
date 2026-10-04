@@ -139,27 +139,95 @@ function defaultFetchProfile(client: OAuth2ClientLike): Promise<GmailProfile> {
  * this task makes a real Google network call, per the brief); covered
  * indirectly by discovery.test.ts's fakes exercising the narrow
  * interface this wraps.
+ *
+ * Fix round 1 (review Important #6) -- `mapGoogleApiError` never
+ * re-throws the raw googleapis error (which can carry request URLs,
+ * headers, or other internals in its message/body): every failure maps
+ * to one of `GmailApiError`'s five typed, static-message codes, falling
+ * back to `"unknown"` for anything unrecognized. Reads a `Retry-After`
+ * response header (seconds) when present and attaches it so
+ * `withGoogleRetry` can honor it.
  */
+function parseRetryAfterMs(error: unknown): number | undefined {
+  const headers = (error as { response?: { headers?: Record<string, unknown> } } | undefined)?.response
+    ?.headers;
+  const raw = headers?.["retry-after"];
+  const seconds = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : undefined;
+  return seconds !== undefined && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
+}
+
 function mapGoogleApiError(error: unknown): never {
   const status = (error as { code?: number; response?: { status?: number } } | undefined)?.response
     ?.status ?? (error as { code?: number } | undefined)?.code;
+  const retryAfterMs = parseRetryAfterMs(error);
   if (status === 404) throw new GmailApiError("not_found");
   if (status === 401) throw new GmailApiError("reauth_required");
-  if (status === 429) throw new GmailApiError("rate_limited");
-  if (typeof status === "number" && status >= 500) throw new GmailApiError("unavailable");
-  throw error;
+  if (status === 429) throw new GmailApiError("rate_limited", "Gmail API request failed: rate_limited", retryAfterMs);
+  if (typeof status === "number" && status >= 500) {
+    throw new GmailApiError("unavailable", "Gmail API request failed: unavailable", retryAfterMs);
+  }
+  throw new GmailApiError("unknown");
+}
+
+/** Bounds the internal page-token walk in `listHistoryPaginated` below -- same spirit as every other hard cap in this module. */
+const MAX_HISTORY_PAGE_FETCHES = 20;
+
+export interface GmailHistoryListPage {
+  readonly historyId?: string | null;
+  readonly nextPageToken?: string | null;
+  readonly addedMessageIds: readonly { readonly id: string; readonly threadId: string | null }[];
+}
+
+/**
+ * Fix round 1 (review Critical #2) -- exhausts Gmail's own
+ * `nextPageToken` internally before returning, bounded by `maxResults`
+ * total ids and `MAX_HISTORY_PAGE_FETCHES` page fetches, so
+ * discovery.ts's `GmailDiscoveryClientLike.listHistory` never sees a
+ * partial history walk. Exported (and the real `gmail.users.history.list`
+ * call shape pushed behind the injected `fetchPage`) so this aggregation
+ * logic is directly unit-testable with a multi-page fake -- no real
+ * Google network access, per task constraints.
+ */
+export async function listHistoryPaginated(
+  fetchPage: (pageToken: string | undefined) => Promise<GmailHistoryListPage>,
+  maxResults: number,
+): Promise<{ readonly historyId: string | undefined; readonly ids: readonly { id: string; threadId: string | null }[] }> {
+  const ids: { id: string; threadId: string | null }[] = [];
+  let historyId: string | undefined;
+  let pageToken: string | undefined;
+  let pageFetches = 0;
+  do {
+    const page = await fetchPage(pageToken);
+    historyId = page.historyId ?? historyId;
+    ids.push(...page.addedMessageIds);
+    pageToken = page.nextPageToken ?? undefined;
+    pageFetches += 1;
+  } while (pageToken && ids.length < maxResults && pageFetches < MAX_HISTORY_PAGE_FETCHES);
+  return { historyId, ids: ids.slice(0, maxResults) };
 }
 
 function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
   const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
 
   function parseAttachmentParts(
-    part: { parts?: unknown[]; filename?: string | null; mimeType?: string | null; body?: { attachmentId?: string | null } } | undefined,
-  ): { attachmentId: string; filename: string; mimeType: string }[] {
+    part:
+      | {
+          parts?: unknown[];
+          filename?: string | null;
+          mimeType?: string | null;
+          body?: { attachmentId?: string | null; size?: number | null };
+        }
+      | undefined,
+  ): { attachmentId: string; filename: string; mimeType: string; sizeBytes: number }[] {
     if (!part) return [];
-    const results: { attachmentId: string; filename: string; mimeType: string }[] = [];
+    const results: { attachmentId: string; filename: string; mimeType: string; sizeBytes: number }[] = [];
     if (part.filename && part.body?.attachmentId && part.mimeType) {
-      results.push({ attachmentId: part.body.attachmentId, filename: part.filename, mimeType: part.mimeType });
+      results.push({
+        attachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType,
+        sizeBytes: part.body.size ?? 0,
+      });
     }
     for (const child of part.parts ?? []) {
       results.push(...parseAttachmentParts(child as typeof part));
@@ -188,21 +256,28 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
 
     async listHistory(input) {
       try {
-        const response = await gmail.users.history.list({
-          userId: "me",
-          startHistoryId: input.startHistoryId,
-          maxResults: input.maxResults,
-          historyTypes: ["messageAdded"],
-        });
-        const ids: { id: string; threadId: string | null }[] = [];
-        for (const entry of response.data.history ?? []) {
-          for (const added of entry.messagesAdded ?? []) {
-            if (added.message?.id) {
-              ids.push({ id: added.message.id, threadId: added.message.threadId ?? null });
+        const result = await listHistoryPaginated(async (pageToken) => {
+          const response = await gmail.users.history.list({
+            userId: "me",
+            startHistoryId: input.startHistoryId,
+            historyTypes: ["messageAdded"],
+            ...(pageToken ? { pageToken } : {}),
+          });
+          const addedMessageIds: { id: string; threadId: string | null }[] = [];
+          for (const entry of response.data.history ?? []) {
+            for (const added of entry.messagesAdded ?? []) {
+              if (added.message?.id) {
+                addedMessageIds.push({ id: added.message.id, threadId: added.message.threadId ?? null });
+              }
             }
           }
-        }
-        return { historyId: response.data.historyId ?? input.startHistoryId, ids };
+          return {
+            historyId: response.data.historyId ?? null,
+            nextPageToken: response.data.nextPageToken ?? null,
+            addedMessageIds,
+          };
+        }, input.maxResults);
+        return { historyId: result.historyId ?? input.startHistoryId, ids: result.ids };
       } catch (error) {
         mapGoogleApiError(error);
       }

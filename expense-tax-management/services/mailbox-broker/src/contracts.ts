@@ -22,6 +22,7 @@ export type {
   // Phase 3D-B Task 4 -- discovery boundary shapes.
   DiscoveryInput,
   DiscoveryPageV1,
+  MailboxBrokerCandidateBindingV1,
   MailboxBrokerDiscoveryAppClient,
   MailboxDiscoveryProviderAdapter,
 } from "@expense-tax/contracts";

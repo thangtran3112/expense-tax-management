@@ -12,12 +12,14 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   createGmailMailboxProvider,
   createMailboxProviderAdapter,
   GMAIL_READONLY_SCOPE,
+  listHistoryPaginated,
+  type GmailHistoryListPage,
 } from "../src/google-mailbox.js";
 import { createOAuthState } from "../src/oauth-state.js";
 import { decryptVaultRow, selectVaultRow } from "../src/token-vault.js";
@@ -33,6 +35,54 @@ import {
 } from "./support/vault-database.js";
 
 const ALLOWED_ORIGIN = "https://expense-office.test";
+
+describe("google-mailbox.ts listHistoryPaginated (fix round 1, review Critical #2)", () => {
+  it("follows nextPageToken until exhausted, aggregating every page's ids", async () => {
+    const pages: GmailHistoryListPage[] = [
+      { historyId: "mid-1", nextPageToken: "token-2", addedMessageIds: [{ id: "m1", threadId: null }] },
+      { historyId: "mid-2", nextPageToken: "token-3", addedMessageIds: [{ id: "m2", threadId: null }] },
+      { historyId: "final", nextPageToken: null, addedMessageIds: [{ id: "m3", threadId: null }] },
+    ];
+    const fetchPage = vi.fn(async (pageToken: string | undefined) => {
+      const page = pages.shift();
+      if (!page) throw new Error("no more fake pages");
+      if (pages.length === 2) expect(pageToken).toBeUndefined(); // first call carries no token
+      return page;
+    });
+
+    const result = await listHistoryPaginated(fetchPage, 100);
+
+    expect(fetchPage).toHaveBeenCalledTimes(3);
+    expect(result.ids.map((entry) => entry.id)).toEqual(["m1", "m2", "m3"]);
+    expect(result.historyId).toBe("final"); // the LAST page's historyId, not the first
+  });
+
+  it("stops early once maxResults ids are aggregated, without fetching further pages", async () => {
+    const fetchPage = vi.fn(async (): Promise<GmailHistoryListPage> => ({
+      historyId: "h",
+      nextPageToken: "more",
+      addedMessageIds: [{ id: "a", threadId: null }, { id: "b", threadId: null }],
+    }));
+
+    const result = await listHistoryPaginated(fetchPage, 2);
+
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(result.ids).toHaveLength(2);
+  });
+
+  it("stops after a bounded number of page fetches even if nextPageToken never ends (safety cap)", async () => {
+    const fetchPage = vi.fn(async (): Promise<GmailHistoryListPage> => ({
+      historyId: "h",
+      nextPageToken: "forever",
+      addedMessageIds: [],
+    }));
+
+    await listHistoryPaginated(fetchPage, 1_000_000);
+
+    expect(fetchPage.mock.calls.length).toBeLessThanOrEqual(20);
+    expect(fetchPage).toHaveBeenCalled();
+  });
+});
 
 describe("google-mailbox.ts createMailboxProviderAdapter", () => {
   it("rejects provider 'outlook' with PROVIDER_UNSUPPORTED (no database touched)", () => {

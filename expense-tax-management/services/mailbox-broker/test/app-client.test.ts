@@ -255,4 +255,29 @@ describe("app-client.ts createMailboxAppClient", () => {
     expect(capturedBody?.pageSequence).toBe(1);
     expect(capturedBody?.cursorBeforeDigest).toBe("a".repeat(64));
   });
+
+  it("loadCandidateBinding posts an empty body to the candidate broker-binding route and parses the binding", async () => {
+    const { createClient } = await setup();
+    const candidateId = "66666666-6666-4666-8666-666666666666";
+    let capturedBody: string | undefined;
+    const client = createClient((url, init) => {
+      capturedBody = init.body as string;
+      expect(url.pathname).toBe(`/internal/v1/mailbox/candidates/${candidateId}/broker-binding`);
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          expectedCandidateVersion: 1,
+          providerMessageId: "gmail-message-1",
+          providerThreadId: null,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const binding = await client.loadCandidateBinding(candidateId);
+
+    expect(binding.providerMessageId).toBe("gmail-message-1");
+    expect(capturedBody).toBe("{}");
+  });
 });

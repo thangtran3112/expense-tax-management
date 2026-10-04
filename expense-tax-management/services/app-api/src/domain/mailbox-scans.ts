@@ -633,6 +633,15 @@ export function createMailboxScansDomain(
         // `staged`/`review`/`candidateIds` are computed only from rows
         // that actually inserted, via `returning`, not from every row
         // this page attempted.
+        //
+        // Fix round 1 (review Important #3) -- "idempotent" means
+        // identical replay only. A conflicting `provider_message_id`
+        // whose freshly-computed `normalized_request_hash` does NOT match
+        // the already-stored row's hash is a genuinely different payload
+        // for the same message (corruption, or a real Gmail edit) and
+        // must be rejected as `IDEMPOTENCY_CONFLICT`, not silently
+        // dropped -- the same hash-compare pattern this file already uses
+        // for scan-run/page-level permanent idempotency keys above.
         let staged = 0;
         let review = 0;
         const candidateIds: string[] = [];
@@ -641,8 +650,23 @@ export function createMailboxScansDomain(
             .insertInto("app.mailbox_candidates")
             .values(candidateRows)
             .onConflict((builder) => builder.columns(["connection_id", "provider_message_id"]).doNothing())
-            .returning(["id", "classification"])
+            .returning(["id", "classification", "provider_message_id"])
             .execute();
+          const insertedProviderMessageIds = new Set(insertedRows.map((row) => row.provider_message_id));
+          const conflictedRows = candidateRows.filter(
+            (row) => !insertedProviderMessageIds.has(row.provider_message_id),
+          );
+          for (const conflicted of conflictedRows) {
+            const existing = await transaction
+              .selectFrom("app.mailbox_candidates")
+              .select(["normalized_request_hash"])
+              .where("connection_id", "=", input.connectionId)
+              .where("provider_message_id", "=", conflicted.provider_message_id)
+              .executeTakeFirstOrThrow();
+            if (existing.normalized_request_hash !== conflicted.normalized_request_hash) {
+              throw DomainError.idempotencyConflict();
+            }
+          }
           for (const row of insertedRows) {
             candidateIds.push(row.id);
             if (row.classification === "receipt") staged += 1;
