@@ -2,9 +2,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NativeConnection, Worker } from "@temporalio/worker";
 
-import { createActivities } from "./activities/index.js";
+import { createActivities, createMailboxActivities } from "./activities/index.js";
 import { createAppApiClient } from "./clients/app-api.js";
 import { createFoundryClient } from "./clients/foundry.js";
+import { createMailboxAppApiClient } from "./clients/mailbox-client.js";
 import { workerConfigFromEnv, type WorkerConfig } from "./config.js";
 import { extractFakeReceipt } from "./providers/fake-ocr.js";
 
@@ -32,6 +33,13 @@ export async function runWorker(
       foundry: createFoundryClient(config),
       extractReceipt: extractFakeReceipt,
     });
+    // Phase 3D-B Task 3: mirrors 3D-A Task 5's own "mailbox config is
+    // optional, construct only when present" convention -- an ordinary
+    // dev->main deploy carries no mailbox env at all.
+    const mailboxActivities =
+      config.clerk.mailboxApp && config.clerk.mailboxBroker
+        ? createMailboxActivities({ mailboxClient: createMailboxAppApiClient(config) })
+        : {};
     const worker = await factories.create({
       connection,
       namespace: config.temporal.namespace,
@@ -39,7 +47,7 @@ export async function runWorker(
       workflowsPath: fileURLToPath(
         new URL("./workflows/index.js", import.meta.url),
       ),
-      activities,
+      activities: { ...activities, ...mailboxActivities },
       // Temporal Runtime handles SIGTERM and stops polling before this drain.
       shutdownGraceTime: "30s",
     });

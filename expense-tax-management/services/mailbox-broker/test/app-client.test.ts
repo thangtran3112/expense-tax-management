@@ -176,4 +176,112 @@ describe("app-client.ts createMailboxAppClient", () => {
 
     expect(seenHeaders).toHaveLength(1);
   });
+
+  // Phase 3D-B Task 2 -- MailboxBrokerDiscoveryAppClient additions.
+  it("loadScanBinding posts an empty body and parses the scan binding", async () => {
+    const { createClient } = await setup();
+    const scanRunId = "33333333-3333-4333-8333-333333333333";
+    let capturedBody: string | undefined;
+    const client = createClient((url, init) => {
+      capturedBody = init.body as string;
+      expect(url.pathname).toBe(`/internal/v1/mailbox/scan-runs/${scanRunId}/broker-binding`);
+      return new Response(
+        JSON.stringify({
+          scanRunId,
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          expectedConnectionVersion: 1,
+          currentHistoryId: null,
+          currentCursorDigest: "a".repeat(64),
+          preFenceToken: "b".repeat(64),
+          nextPageSequence: 1,
+          preFenceHistoryId: null,
+          historyPageToken: null,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const binding = await client.loadScanBinding(scanRunId);
+
+    expect(binding.nextPageSequence).toBe(1);
+    expect(capturedBody).toBe("{}");
+  });
+
+  it("stageCandidateMetadata sends the fence fields and messages, and parses the counts", async () => {
+    const { createClient } = await setup();
+    const scanRunId = "44444444-4444-4444-8444-444444444444";
+    let capturedBody: Record<string, unknown> | undefined;
+    const client = createClient((url, init) => {
+      capturedBody = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(url.pathname).toBe(`/internal/v1/mailbox/scan-runs/${scanRunId}/candidate-pages`);
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          scanRunId,
+          pageSequence: 1,
+          candidateIds: ["55555555-5555-4555-8555-555555555555"],
+          counts: { discovered: 1, staged: 1, review: 0, failed: 0 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await client.stageCandidateMetadata({
+      schemaVersion: 1,
+      scanRunId,
+      connectionId: "11111111-1111-4111-8111-111111111111",
+      expectedConnectionVersion: 1,
+      cursorBeforeDigest: "a".repeat(64),
+      preFenceToken: "b".repeat(64),
+      pageSequence: 1,
+      nextHistoryId: null,
+      nextPreFenceHistoryId: null,
+      nextHistoryPageToken: null,
+      messages: [
+        {
+          receivedAt: "2026-10-03T00:00:00.000Z",
+          senderAddress: "merchant@example.test",
+          senderDomain: "example.test",
+          subject: "Your receipt",
+          contentHash: "c".repeat(64),
+          attachmentManifest: [],
+          classification: "receipt",
+          confidence: 0.95,
+          evidence: ["subject keyword"],
+          providerMessageId: "gmail-message-1",
+          providerThreadId: null,
+        },
+      ],
+      idempotencyKey: "page-1",
+    });
+
+    expect(result.counts).toEqual({ discovered: 1, staged: 1, review: 0, failed: 0 });
+    expect(capturedBody?.pageSequence).toBe(1);
+    expect(capturedBody?.cursorBeforeDigest).toBe("a".repeat(64));
+  });
+
+  it("loadCandidateBinding posts an empty body to the candidate broker-binding route and parses the binding", async () => {
+    const { createClient } = await setup();
+    const candidateId = "66666666-6666-4666-8666-666666666666";
+    let capturedBody: string | undefined;
+    const client = createClient((url, init) => {
+      capturedBody = init.body as string;
+      expect(url.pathname).toBe(`/internal/v1/mailbox/candidates/${candidateId}/broker-binding`);
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          expectedCandidateVersion: 1,
+          providerMessageId: "gmail-message-1",
+          providerThreadId: null,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const binding = await client.loadCandidateBinding(candidateId);
+
+    expect(binding.providerMessageId).toBe("gmail-message-1");
+    expect(capturedBody).toBe("{}");
+  });
 });

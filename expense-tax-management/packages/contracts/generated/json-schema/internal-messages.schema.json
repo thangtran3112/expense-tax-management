@@ -20,7 +20,8 @@
         "FoundationEchoWorkflow",
         "OcrReceiptWorkflow",
         "ForwardedReceiptWorkflow",
-        "ExpenseEnrichmentWorkflow"
+        "ExpenseEnrichmentWorkflow",
+        "MailboxScanWorkflow"
       ],
       "type": "string"
     }

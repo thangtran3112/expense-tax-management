@@ -24,7 +24,12 @@ import type {
   AdvanceTokenGenerationInput,
   AdvanceTokenGenerationResult,
   ConnectedAccount,
+  MailboxBrokerCandidateBindingV1,
   MailboxBrokerConnectionAppClient,
+  MailboxBrokerDiscoveryAppClient,
+  MailboxBrokerScanBindingV1,
+  MailboxCandidateMetadataStagingResultV1,
+  MailboxCandidateMetadataStagingV1,
   MailboxConnectionV1,
   TokenOperationLeaseV1,
 } from "@expense-tax/contracts";
@@ -107,6 +112,43 @@ const ConnectionResponseSchema = z.looseObject({
   status: z.string(),
 });
 
+// Phase 3D-B Task 2 -- mirrors services/app-api/src/routes/mailbox-internal.ts's
+// exact response shapes.
+const ScanBindingResponseSchema = z.strictObject({
+  scanRunId: z.uuid(),
+  connectionId: z.uuid(),
+  expectedConnectionVersion: z.number().int(),
+  currentHistoryId: z.string().nullable(),
+  currentCursorDigest: z.string(),
+  preFenceToken: z.string(),
+  nextPageSequence: z.number().int(),
+  preFenceHistoryId: z.string().nullable(),
+  historyPageToken: z.string().nullable(),
+});
+
+// Phase 3D-B Task 4 Step 3a -- mirrors routes/mailbox-internal.ts's
+// candidate broker-binding response shape exactly.
+const CandidateBrokerBindingResponseSchema = z.strictObject({
+  candidateId: z.uuid(),
+  connectionId: z.uuid(),
+  expectedCandidateVersion: z.number().int(),
+  providerMessageId: z.string(),
+  providerThreadId: z.string().nullable(),
+});
+
+const CandidatePagesResponseSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  scanRunId: z.uuid(),
+  pageSequence: z.number().int(),
+  candidateIds: z.array(z.uuid()),
+  counts: z.strictObject({
+    discovered: z.number().int(),
+    staged: z.number().int(),
+    review: z.number().int(),
+    failed: z.number().int(),
+  }),
+});
+
 export interface MailboxAppClientConfig {
   readonly baseUrl: string;
   readonly issuerUrl: string;
@@ -122,6 +164,20 @@ export interface MailboxAppClientOptions {
     MachineTokenProviderOptions,
     "endpoint" | "keyResolver" | "jwksFetch" | "nowSeconds"
   >;
+}
+
+/**
+ * Phase 3D-B Task 4 Step 3a (fix round 1, review Important #4) -- the
+ * plan's exact wording: the broker-binding route is "authenticated as
+ * mailbox-broker-app with mailbox:materialize". Not part of any
+ * `@expense-tax/contracts` canonical client interface (the plan's
+ * canonical contracts block never names a client method for this route,
+ * only the wire shape `MailboxBrokerCandidateBindingV1`), so it is its
+ * own small interface here rather than an addition to
+ * `MailboxBrokerConnectionAppClient`/`MailboxBrokerDiscoveryAppClient`.
+ */
+export interface MailboxBrokerMaterializeAppClient {
+  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -174,7 +230,7 @@ function errorCodeForStatus(status: number, bodyCode: string | undefined): Mailb
 export function createMailboxAppClient(
   config: MailboxAppClientConfig,
   options: MailboxAppClientOptions = {},
-): MailboxBrokerConnectionAppClient {
+): MailboxBrokerConnectionAppClient & MailboxBrokerDiscoveryAppClient & MailboxBrokerMaterializeAppClient {
   const fetchImplementation = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const tokenProvider =
@@ -184,7 +240,13 @@ export function createMailboxAppClient(
         issuerUrl: config.issuerUrl,
         jwksUrl: config.jwksUrl,
         credentials: config.credentials,
-        scopes: ["mailbox:write"],
+        // Fix round 1 (review Important #4) -- "mailbox:materialize"
+        // added alongside "mailbox:write": same principal
+        // (mailbox-broker-app), same single token, multiple scopes --
+        // same precedent as workflow-worker's own mailbox token
+        // providers (clients/mailbox-client.ts: ["mailbox:discover",
+        // "mailbox:materialize"] together).
+        scopes: ["mailbox:write", "mailbox:materialize"],
       },
       { fetch: fetchImplementation, ...options.machineTokenOptions },
     );
@@ -356,6 +418,46 @@ export function createMailboxAppClient(
         body: { operationId: input.operationId, status: input.status },
       });
       return result as unknown as MailboxConnectionV1;
+    },
+
+    async loadScanBinding(scanRunId): Promise<MailboxBrokerScanBindingV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/scan-runs/${scanRunId}/broker-binding`,
+        method: "POST",
+        responseSchema: ScanBindingResponseSchema,
+        body: {},
+      });
+    },
+
+    async loadCandidateBinding(candidateId): Promise<MailboxBrokerCandidateBindingV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/candidates/${candidateId}/broker-binding`,
+        method: "POST",
+        responseSchema: CandidateBrokerBindingResponseSchema,
+        body: {},
+      });
+    },
+
+    async stageCandidateMetadata(
+      input: MailboxCandidateMetadataStagingV1,
+    ): Promise<MailboxCandidateMetadataStagingResultV1> {
+      return requestJson({
+        path: `/internal/v1/mailbox/scan-runs/${input.scanRunId}/candidate-pages`,
+        method: "POST",
+        responseSchema: CandidatePagesResponseSchema,
+        body: {
+          connectionId: input.connectionId,
+          expectedConnectionVersion: input.expectedConnectionVersion,
+          cursorBeforeDigest: input.cursorBeforeDigest,
+          preFenceToken: input.preFenceToken,
+          pageSequence: input.pageSequence,
+          nextHistoryId: input.nextHistoryId,
+          nextPreFenceHistoryId: input.nextPreFenceHistoryId,
+          nextHistoryPageToken: input.nextHistoryPageToken,
+          messages: input.messages,
+          idempotencyKey: input.idempotencyKey,
+        },
+      });
     },
   };
 }

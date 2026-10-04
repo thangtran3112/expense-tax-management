@@ -68,7 +68,7 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 | Parallel | **Local Clerk development bootstrap** | Development credentials and M2M checks complete; local sign-in, webhook, and scoped data flow pending | [sub-plan](sub-plans/local-clerk-development-bootstrap.md) |
 | 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
 | 2 | **3D-A - Mailbox broker and connection lifecycle** | Implemented on `dev` branch (worktree `feature/phase-3d`, Tasks 1-6 complete and phase-verified against real PostgreSQL); not merged, not deployed; operator activation pending | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
-| 3 | **3D-B - Mailbox discovery and review** | Blocked by 3D-A | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
+| 3 | **3D-B - Mailbox discovery and review** | Implemented on `feature/phase-3d-b` (Tasks 1-6 complete and phase-verified against real PostgreSQL); not merged, not deployed; production use additionally requires runtime migration Task 7 cutover since 3D workflows run only on the TypeScript worker | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
 | 4 | **3D-C - Mailbox ingestion and provenance** | Blocked by 3D-B | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
 | Later | **6A/6B/6C - SQL, semantic, and AI search** | Deferred; replan before execution | `plans/sub-plans/phase-6*.md` |
 | Later | **9A/9B/9C - Graph foundation, ingestion, and search** | Deferred; replan before execution | `plans/sub-plans/phase-9*.md` |
@@ -95,6 +95,10 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 5. **Cloudflare Terraform apply** — run `terraform plan`/`apply` in `infrastructure/cloudflare/expense-tax/` (via `.github/workflows/expense-tax-cloudflare.yml`'s production-environment, manually-dispatched job) to create the `expense-mailbox.tobytran.dev` DNS record and Tunnel ingress rule for `/oauth/google/callback`.
 
 3D-B/3D-C source may also merge to `dev` once implemented, but their workflows' production activation additionally depends on runtime migration Task 7 cutover (3D workflows run only on the TypeScript worker) — independent of, and in addition to, the 3D-A list above.
+
+### 3D-B Operator Activation (additional, after the 3D-A list above)
+
+3D-B's scheduled scans do not start themselves: nothing calls `ensureMailboxSchedule` automatically (by design — reconciliation over import-time creation). After `MAILBOX_FEATURE_ENABLED` is turned on and runtime migration Task 7 cutover has happened, an operator must run `node dist/temporal/mailbox-schedule-reconcile.js reconcile` (`services/app-api/src/temporal/mailbox-schedule-reconcile.ts`) once to create the daily `02:00` Temporal Schedule for every existing active/scan-enabled connection; re-running it later is safe (idempotent) and is how a newly-connected mailbox's schedule gets created going forward until a startup hook replaces this manual step.
 
 ## Remaining-Phase Constraints
 

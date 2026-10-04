@@ -17,6 +17,7 @@ import {
   ErrorResponseSchema,
   MailboxConnectionV1Schema,
   MailboxOAuthAttemptV1Schema,
+  MailboxScanRunV1Schema,
   MailboxScopeSchema,
   TenantIdParamsSchema,
   type MailboxConnectionRecordV1,
@@ -28,9 +29,17 @@ import type { IdentityResolver } from "../domain/authenticated-user.js";
 import { authenticatedUserGuard, serviceGuard, tenantGuard } from "../plugins/auth.js";
 import { DomainError } from "../errors.js";
 import type { MailboxConnectionsDomain } from "../domain/mailbox-connections.js";
+import type { MailboxScansDomain } from "../domain/mailbox-scans.js";
 
 export interface MailboxConnectionsRouteOptions {
   readonly mailboxConnectionsDomain: MailboxConnectionsDomain;
+  /**
+   * Phase 3D-B Task 2 -- manual scan trigger + scan history routes.
+   * Optional so the broker-guard-only unit tests that construct this
+   * file's options without a tenant-facing surface keep working
+   * unchanged (same reasoning as `identityResolver` below).
+   */
+  readonly mailboxScansDomain?: MailboxScansDomain;
   /**
    * Required for the customer-facing google/start route; the four
    * existing broker-only internal routes (Task 2) don't need it. Optional
@@ -173,6 +182,25 @@ const RevokeBodySchema = z.strictObject({
   operationId: z.string().trim().min(1),
   status: z.enum(["revoked", "revocation_pending"]),
 });
+
+// ----------------------------------------------------------------
+// Phase 3D-B Task 2 -- manual scan trigger + scan history (Step 4).
+// ----------------------------------------------------------------
+const TenantConnectionParamsSchema = z.strictObject({
+  tenantId: z.uuid(),
+  connectionId: z.uuid(),
+});
+const ScanStartBodySchema = z.strictObject({ requestId: z.string().trim().min(1) });
+const ScanStartResponseSchema = z.strictObject({
+  scanRun: MailboxScanRunV1Schema,
+  status: z.enum(["started", "skipped_overlap"]),
+});
+const ScanListResponseSchema = z.strictObject({ items: z.array(MailboxScanRunV1Schema) });
+// Deliberately excludes 409 from the shared `errors` map -- a
+// skipped_overlap response is a normal ScanStartResponseSchema body at
+// HTTP 409 (spec: "manual start returns the existing run with HTTP 409
+// semantics"), not an error envelope.
+const scanErrors = { 401: ErrorResponseSchema, 403: ErrorResponseSchema, 404: ErrorResponseSchema };
 
 export async function registerMailboxConnectionRoutes(
   app: FastifyInstance,
@@ -344,6 +372,52 @@ export async function registerMailboxConnectionRoutes(
         return { connection };
       },
     );
+
+    if (options.mailboxScansDomain) {
+      const scansDomain = options.mailboxScansDomain;
+
+      typedApp.post(
+        "/api/v1/tenants/:tenantId/mailbox-connections/:connectionId/scans",
+        {
+          preHandler: customerGuard,
+          schema: {
+            params: TenantConnectionParamsSchema,
+            body: ScanStartBodySchema,
+            security: [{ tenantBearer: [] }],
+            response: { 201: ScanStartResponseSchema, 409: ScanStartResponseSchema, ...scanErrors },
+          },
+        },
+        async (request, reply) => {
+          const result = await scansDomain.startManualScan({
+            actorUserId: actorUserId(request),
+            tenantId: request.params.tenantId,
+            connectionId: request.params.connectionId,
+            requestId: request.body.requestId,
+          });
+          return reply.code(result.status === "started" ? 201 : 409).send(result);
+        },
+      );
+
+      typedApp.get(
+        "/api/v1/tenants/:tenantId/mailbox-connections/:connectionId/scans",
+        {
+          preHandler: customerGuard,
+          schema: {
+            params: TenantConnectionParamsSchema,
+            security: [{ tenantBearer: [] }],
+            response: { 200: ScanListResponseSchema, ...errors },
+          },
+        },
+        async (request) => {
+          const result = await scansDomain.listScanRuns({
+            actorUserId: actorUserId(request),
+            tenantId: request.params.tenantId,
+            connectionId: request.params.connectionId,
+          });
+          return { items: [...result.items] };
+        },
+      );
+    }
   }
 
   // ----------------------------------------------------------------

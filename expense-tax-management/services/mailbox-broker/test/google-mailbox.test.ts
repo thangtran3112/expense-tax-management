@@ -294,4 +294,88 @@ describe.skipIf(!requested)("google-mailbox.ts createGmailMailboxProvider (live 
     const row = await selectVaultRow(database(), connectionId, 1);
     expect(row?.disabled_at).not.toBeNull();
   });
+
+  it("discover() reconstructs an OAuth2Client from the vault's active generation when none is cached (e.g. a different broker replica)", async () => {
+    const vaultKeys = createVaultKeyMap();
+    const connectionId = randomUUID();
+
+    // Provider A: a real OAuth exchange, same role as 3D-A's own flow,
+    // populating the vault row that provider B (below) must read back.
+    const providerA = createGmailMailboxProvider({
+      clientId: "client",
+      clientSecret: "secret",
+      redirectUri: "https://broker.test/callback",
+      vaultKeys,
+      database: database(),
+      appClient: createFakeAppClient(),
+      createOAuth2Client: () => createFakeOAuth2Client(),
+      fetchProfile: async () => ({ emailAddress: "user4@example.test", historyId: "1" }),
+    });
+    const state = createOAuthState({
+      connectionId,
+      attemptId: randomUUID(),
+      sessionNonce: "nonce",
+      redirectOrigin: ALLOWED_ORIGIN,
+      ttlSeconds: 600,
+      vaultKeys,
+    });
+    await providerA.exchangeAuthorizationCode({
+      code: "auth-code",
+      state: state.state,
+      requestOrigin: ALLOWED_ORIGIN,
+    });
+
+    // Provider B: a fresh factory instance (its own empty `liveClients`
+    // cache), pointed at the same vault database/keys -- simulates a
+    // discover() call landing on a different broker replica than the one
+    // that handled the original OAuth callback.
+    const discoveryAppClient = {
+      loadScanBinding: async (scanRunId: string) => ({
+        scanRunId,
+        connectionId,
+        expectedConnectionVersion: 1,
+        currentHistoryId: null,
+        currentCursorDigest: "cursor-0",
+        preFenceToken: "fence-0",
+        nextPageSequence: 1,
+      }),
+      stageCandidateMetadata: async (input: { scanRunId: string; pageSequence: number }) => ({
+        schemaVersion: 1 as const,
+        scanRunId: input.scanRunId,
+        pageSequence: input.pageSequence,
+        candidateIds: [],
+        counts: { discovered: 0, staged: 0, review: 0, failed: 0 },
+      }),
+    };
+    const freshOAuth2Client = createFakeOAuth2Client();
+    const discoveryGmailClient = {
+      listMessageIds: async () => ({ ids: [] }),
+      listHistory: async () => ({ historyId: "history-1", ids: [] }),
+      getMessage: async () => {
+        throw new Error("not reached in this test");
+      },
+      getAttachment: async () => Buffer.alloc(0),
+      getProfileHistoryId: async () => "history-1",
+    };
+
+    const providerB = createGmailMailboxProvider({
+      clientId: "client",
+      clientSecret: "secret",
+      redirectUri: "https://broker.test/callback",
+      vaultKeys,
+      database: database(),
+      appClient: createFakeAppClient(),
+      createOAuth2Client: () => freshOAuth2Client,
+      discoveryAppClient,
+      createGmailDiscoveryClient: () => discoveryGmailClient,
+    });
+
+    const scanRunId = randomUUID();
+    const page = await providerB.discover({ connectionId, scanRunId });
+
+    expect(freshOAuth2Client.setCredentials).toHaveBeenCalledWith(
+      expect.objectContaining({ refresh_token: "fake-refresh-token" }),
+    );
+    expect(page).toEqual({ scanRunId, pageSequence: 1, candidateCount: 0, retryCount: 0 });
+  });
 });

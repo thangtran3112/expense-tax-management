@@ -1,6 +1,6 @@
-import type { Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
 
-import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxConnection, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
+import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxCandidates, fetchMailboxConnection, fetchMailboxScanRuns, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
 import type { OfficeSession } from "./session";
 
@@ -92,4 +92,35 @@ export function loadOwnPersonalProfile(
   organizationId: string | null | undefined,
 ) {
   return fetchOwnPersonalProfile(session, getToken, organizationId);
+}
+
+/**
+ * Phase 3D-B Task 5 -- scan history for the connection's "Scan schedule"
+ * panel (routes already existed from Task 2/3; this is the first Office
+ * caller).
+ */
+export function loadMailboxScanRuns(
+  session: OfficeSession,
+  connectionId: string,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+) {
+  return fetchMailboxScanRuns(session, connectionId, getToken, organizationId);
+}
+
+/**
+ * Phase 3D-B Task 5 -- one classification group's page of candidates.
+ */
+export function loadMailboxCandidates(
+  session: OfficeSession,
+  connectionId: string,
+  classification: MailboxCandidateClassification,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  cursor?: string,
+) {
+  return fetchMailboxCandidates(session, connectionId, getToken, organizationId, {
+    classification,
+    ...(cursor ? { cursor } : {}),
+  });
 }

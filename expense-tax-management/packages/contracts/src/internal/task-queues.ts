@@ -23,12 +23,36 @@ export const FORWARDED_RECEIPT_WORKFLOW_TYPE = "ForwardedReceiptWorkflow";
 export const OCR_EXTRACTION_RESULT_SCHEMA_VERSION = "ocr-extraction-v1";
 export const EXPENSE_ENRICHMENT_WORKFLOW_TYPE = "ExpenseEnrichmentWorkflow";
 export const EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION = "expense-enrichment-v1";
+/**
+ * Phase 3D-B mailbox scan workflow. TypeScript-only: it has no Python
+ * `ai-worker` implementation and never will (see 3D-B pre-flight C2/C4), so
+ * later tasks start it directly against TARGET_TEMPORAL_NAMESPACE /
+ * AI_WORKER_TASK_QUEUE rather than through the generation-fenced
+ * app.temporal_dispatch_routing path used by OCR/enrichment/forwarded-
+ * receipt during their Task 7 cutover window.
+ */
+export const MAILBOX_SCAN_WORKFLOW_TYPE = "MailboxScanWorkflow";
+/**
+ * Phase 3D-B Task 3. The daily-schedule target workflow: Temporal Schedules
+ * start a workflow with fixed, schedule-creation-time args, so the real
+ * per-connection scan run (minted by App API's lease/idempotency ledger)
+ * cannot be known until the Schedule actually fires. This thin trigger
+ * workflow takes the one value a Schedule CAN carry unchanged forever
+ * (`connectionId`), mints the scan run via an activity, and starts
+ * MailboxScanWorkflow as its child with the resulting `scanRunId`.
+ * Deliberately NOT part of WorkflowTypeSchema: Temporal's native Schedule
+ * API (`client.schedule.create`) takes a plain string workflow type and
+ * never flows through TemporalWorkflowStarter/StartWorkflowInput's typed
+ * enum, so this constant has no reason to widen that enum.
+ */
+export const MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE = "MailboxScheduledScanTriggerWorkflow";
 
 export const WorkflowTypeSchema = z.enum([
   FOUNDATION_ECHO_WORKFLOW_TYPE,
   OCR_RECEIPT_WORKFLOW_TYPE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
 ]);
 export type WorkflowType = z.infer<typeof WorkflowTypeSchema>;
 

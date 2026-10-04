@@ -18,6 +18,13 @@
  * No Docker/live DB: `mailboxConnectionsDomain` and `identityDomain` are
  * injected fakes, same override pattern businesses.test.ts/tags.test.ts use
  * for every other domain in this file.
+ *
+ * Phase 3D-B Task 3 fix round 1 (review finding 3) adds the same real-
+ * signed-fixture coverage for the two worker-facing routes Task 3 added
+ * (`scheduled-scans`/`finalize`), guarded by the worker's own service
+ * principal (subject "workflow-worker-mailbox", scope "mailbox:discover")
+ * -- distinct from the broker's subject/scope used by every other
+ * describe block in this file.
  */
 import { randomUUID } from "node:crypto";
 
@@ -28,12 +35,14 @@ import { buildApp } from "../src/app.js";
 import { createTokenVerifier } from "../src/auth/verifier.js";
 import { createAppConfig } from "../src/config.js";
 import type { MailboxConnectionsDomain } from "../src/domain/mailbox-connections.js";
+import type { MailboxScansDomain } from "../src/domain/mailbox-scans.js";
 
 const TENANT_ISSUER = "https://identity.test";
 const TENANT_AUDIENCE = "expense-app";
 const SERVICE_ISSUER = "https://services.test";
 const SERVICE_AUDIENCE = "expense-app-internal";
 const BROKER_SUBJECT = "mailbox-broker-app";
+const WORKER_SUBJECT = "workflow-worker-mailbox";
 
 const TEST_ENV = {
   APP_TENANT_TOKEN_ISSUER: TENANT_ISSUER,
@@ -153,6 +162,64 @@ function createFakeDomain(): MailboxConnectionsDomain {
   };
 }
 
+function createFakeScansDomain(): MailboxScansDomain {
+  return {
+    startManualScan: vi.fn(),
+    startScheduledScan: vi.fn(async (input) => ({
+      scanRun: {
+        schemaVersion: 1 as const,
+        id: randomUUID(),
+        connectionId: input.connectionId,
+        tenantId: input.tenantId,
+        initiatedBy: "schedule" as const,
+        entitlementVersion: 1,
+        connectionVersion: 1,
+        status: "pending" as const,
+        discoveredCount: 0,
+        stagedCount: 0,
+        reviewCount: 0,
+        duplicateCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        errorCode: null,
+        idempotencyKey: input.requestId,
+        createdAt: "2026-10-03T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+      },
+      status: "started" as const,
+    })),
+    listScanRuns: vi.fn(),
+    loadScanBinding: vi.fn(),
+    loadCandidateBinding: vi.fn(),
+    recordCandidateMetadata: vi.fn(),
+    finalizeScanRun: vi.fn(async (input) => ({
+      scanRun: {
+        schemaVersion: 1 as const,
+        id: input.scanRunId,
+        connectionId: CONNECTION_ID,
+        tenantId: TENANT_ID,
+        initiatedBy: "schedule" as const,
+        entitlementVersion: 1,
+        connectionVersion: 1,
+        status: input.outcome === "succeeded" ? ("completed" as const) : ("failed" as const),
+        discoveredCount: 0,
+        stagedCount: 0,
+        reviewCount: 0,
+        duplicateCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        errorCode: null,
+        idempotencyKey: "idempotency-key",
+        createdAt: "2026-10-03T00:00:00.000Z",
+        startedAt: "2026-10-03T00:00:00.000Z",
+        completedAt: "2026-10-03T00:05:00.000Z",
+      },
+      leaseReleased: true,
+    })),
+  };
+}
+
 const startPayload = () => ({
   scope: { kind: "personal", profileId: USER_ID },
   redirectOrigin: "https://expense-office.test",
@@ -189,6 +256,7 @@ describe("mailbox routes — real registration through buildApp", () => {
 
   function createTestApp(envOverrides: Record<string, string> = {}) {
     const mailboxConnectionsDomain = createFakeDomain();
+    const mailboxScansDomain = createFakeScansDomain();
     const tenantVerifier = createTokenVerifier({
       tokenType: "tenant",
       issuer: TENANT_ISSUER,
@@ -216,9 +284,10 @@ describe("mailbox routes — real registration through buildApp", () => {
         })),
       },
       mailboxConnectionsDomain,
+      mailboxScansDomain,
     });
     apps.add(app);
-    return { app, mailboxConnectionsDomain };
+    return { app, mailboxConnectionsDomain, mailboxScansDomain };
   }
 
   async function postStart(app: ReturnType<typeof buildApp>, authorization?: string) {
@@ -227,6 +296,24 @@ describe("mailbox routes — real registration through buildApp", () => {
       url: `/api/v1/tenants/${TENANT_ID}/mailbox-connections/google/start`,
       headers: authorization !== undefined ? { authorization } : {},
       payload: startPayload(),
+    });
+  }
+
+  async function postScheduledScan(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/connections/${CONNECTION_ID}/scheduled-scans`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: { tenantId: TENANT_ID, requestId: randomUUID() },
+    });
+  }
+
+  async function postFinalize(app: ReturnType<typeof buildApp>, authorization?: string) {
+    return app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/scan-runs/${randomUUID()}/finalize`,
+      headers: authorization !== undefined ? { authorization } : {},
+      payload: { outcome: "succeeded" },
     });
   }
 
@@ -381,6 +468,159 @@ describe("mailbox routes — real registration through buildApp", () => {
         `Bearer ${await brokerToken({ subject: "custom-broker-subject" })}`,
       );
       expect(accepted.statusCode).toBe(200);
+    });
+  });
+
+  describe("internal connections/:connectionId/scheduled-scans (Task 3 fix round 1)", () => {
+    async function workerToken(overrides: Partial<SignOptions> = {}): Promise<string> {
+      return signToken({
+        key: serviceKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: WORKER_SUBJECT,
+        scopes: ["mailbox:discover"],
+        tokenType: "service",
+        ...overrides,
+      });
+    }
+
+    it("is reachable with the worker's own validly-signed service principal", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const response = await postScheduledScan(app, `Bearer ${await workerToken()}`);
+      expect(response.statusCode).toBe(200);
+      expect(mailboxScansDomain.startScheduledScan).toHaveBeenCalledOnce();
+    });
+
+    it("rejects a request with no token", async () => {
+      const { app } = createTestApp();
+      expect((await postScheduledScan(app)).statusCode).toBe(401);
+    });
+
+    it("rejects a validly-signed tenant token (wrong issuer/audience/token type)", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await signToken({ key: tenantKeys.privateKey });
+      const response = await postScheduledScan(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(401);
+      expect(mailboxScansDomain.startScheduledScan).not.toHaveBeenCalled();
+    });
+
+    it("rejects a service token signed by the wrong issuer", async () => {
+      const { app } = createTestApp();
+      const token = await workerToken({ issuer: "https://attacker-issuer.test" });
+      expect((await postScheduledScan(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a service token signed for the wrong audience", async () => {
+      const { app } = createTestApp();
+      const token = await workerToken({ audience: "some-other-audience" });
+      expect((await postScheduledScan(app, `Bearer ${token}`)).statusCode).toBe(401);
+    });
+
+    it("rejects a service token signed by an attacker holding a different key", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await signToken({
+        key: attackerKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: WORKER_SUBJECT,
+        scopes: ["mailbox:discover"],
+        tokenType: "service",
+      });
+      expect((await postScheduledScan(app, `Bearer ${token}`)).statusCode).toBe(401);
+      expect(mailboxScansDomain.startScheduledScan).not.toHaveBeenCalled();
+    });
+
+    it("rejects the broker's own correctly-issued token (wrong subject)", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await workerToken({ subject: BROKER_SUBJECT, scopes: ["mailbox:write"] });
+      const response = await postScheduledScan(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(403);
+      expect(mailboxScansDomain.startScheduledScan).not.toHaveBeenCalled();
+    });
+
+    it("rejects the correct subject missing the required scope", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await workerToken({ scopes: [] });
+      const response = await postScheduledScan(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(403);
+      expect(mailboxScansDomain.startScheduledScan).not.toHaveBeenCalled();
+    });
+
+    it("honors a configured mailboxWorkerServiceSubject override", async () => {
+      const { app } = createTestApp({ CLERK_MAILBOX_WORKER_SUBJECT: "custom-worker-subject" });
+
+      const rejected = await postScheduledScan(app, `Bearer ${await workerToken()}`);
+      expect(rejected.statusCode).toBe(403);
+
+      const accepted = await postScheduledScan(
+        app,
+        `Bearer ${await workerToken({ subject: "custom-worker-subject" })}`,
+      );
+      expect(accepted.statusCode).toBe(200);
+    });
+  });
+
+  describe("internal scan-runs/:scanRunId/finalize (Task 3 fix round 1)", () => {
+    async function workerToken(overrides: Partial<SignOptions> = {}): Promise<string> {
+      return signToken({
+        key: serviceKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: WORKER_SUBJECT,
+        scopes: ["mailbox:discover"],
+        tokenType: "service",
+        ...overrides,
+      });
+    }
+
+    it("is reachable with the worker's own validly-signed service principal", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const response = await postFinalize(app, `Bearer ${await workerToken()}`);
+      expect(response.statusCode).toBe(200);
+      expect(mailboxScansDomain.finalizeScanRun).toHaveBeenCalledOnce();
+    });
+
+    it("rejects a request with no token", async () => {
+      const { app } = createTestApp();
+      expect((await postFinalize(app)).statusCode).toBe(401);
+    });
+
+    it("rejects a validly-signed tenant token (wrong issuer/audience/token type)", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await signToken({ key: tenantKeys.privateKey });
+      const response = await postFinalize(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(401);
+      expect(mailboxScansDomain.finalizeScanRun).not.toHaveBeenCalled();
+    });
+
+    it("rejects a service token signed by an attacker holding a different key", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await signToken({
+        key: attackerKeys.privateKey,
+        issuer: SERVICE_ISSUER,
+        audience: SERVICE_AUDIENCE,
+        subject: WORKER_SUBJECT,
+        scopes: ["mailbox:discover"],
+        tokenType: "service",
+      });
+      expect((await postFinalize(app, `Bearer ${token}`)).statusCode).toBe(401);
+      expect(mailboxScansDomain.finalizeScanRun).not.toHaveBeenCalled();
+    });
+
+    it("rejects the broker's own correctly-issued token (wrong subject)", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await workerToken({ subject: BROKER_SUBJECT, scopes: ["mailbox:write"] });
+      const response = await postFinalize(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(403);
+      expect(mailboxScansDomain.finalizeScanRun).not.toHaveBeenCalled();
+    });
+
+    it("rejects the correct subject missing the required scope", async () => {
+      const { app, mailboxScansDomain } = createTestApp();
+      const token = await workerToken({ scopes: [] });
+      const response = await postFinalize(app, `Bearer ${token}`);
+      expect(response.statusCode).toBe(403);
+      expect(mailboxScansDomain.finalizeScanRun).not.toHaveBeenCalled();
     });
   });
 });

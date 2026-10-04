@@ -1,4 +1,4 @@
-import { createAppApiClient, type DuplicateResolutionAction, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
+import { createAppApiClient, type DuplicateResolutionAction, type MailboxCandidateClassification, type Scope, type SuggestionResolveRequest } from "@expense-tax/contracts";
 import type { OfficeSession } from "./session";
 import { getAppAuthorization, type ClerkGetToken } from "./clerk";
 
@@ -677,6 +677,154 @@ export async function fetchOwnPersonalProfile(
     throw new MailboxConnectionError("Personal profile lookup unavailable", result.response?.status);
   }
   return result.data.profile;
+}
+
+// ------------------------------------------------------------------ //
+// Mailbox scan history + manual trigger (Phase 3D-B Task 5)
+// ------------------------------------------------------------------ //
+
+/**
+ * Fetches recent scan runs for a connection (`GET .../scans`, already
+ * built in Phase 3D-B Task 2/3 but never called from Office until this
+ * task). Most-recent-first, server-capped at 50.
+ */
+export async function fetchMailboxScanRuns(
+  session: OfficeSession,
+  connectionId: string,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/scans", {
+    params: { path: { tenantId: session.tenantId, connectionId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Scan history unavailable", result.response?.status);
+  }
+  return result.data.items;
+}
+
+/**
+ * Starts a manual scan (`POST .../scans`). A single-flight lease means an
+ * overlapping scan returns HTTP 409 with the *existing* run's body -- the
+ * generated client only exposes `.data` for the 2xx case, so a 409 here
+ * is reported as `"skipped_overlap"` without needing the body: the caller
+ * should re-fetch scan runs to see the run that is already active.
+ */
+export async function startMailboxScan(
+  session: OfficeSession,
+  connectionId: string,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.POST("/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/scans", {
+    params: { path: { tenantId: session.tenantId, connectionId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+    body: { requestId: crypto.randomUUID() },
+  });
+  if (result.response?.status === 409) {
+    return { status: "skipped_overlap" as const };
+  }
+  if (!result.data) {
+    throw new MailboxConnectionError("Could not start scan", result.response?.status);
+  }
+  return result.data;
+}
+
+// ------------------------------------------------------------------ //
+// Mailbox candidate review queue (Phase 3D-B Task 5)
+// ------------------------------------------------------------------ //
+
+export class MailboxCandidateError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(status === 401 || status === 403 ? "Office authorization required" : message);
+    this.name = "MailboxCandidateError";
+  }
+}
+
+export type MailboxCandidateReviewAction = "ingest" | "skip" | "not_receipt" | "retry";
+
+export interface FetchMailboxCandidatesOptions {
+  readonly classification?: MailboxCandidateClassification;
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+/**
+ * Lists a connection's candidates, one classification group at a time
+ * (mockup decision: each group maintains its own cursor/"Load more" --
+ * see plans/mockups/office-mailbox-review/NOTES.md).
+ */
+export async function fetchMailboxCandidates(
+  session: OfficeSession,
+  connectionId: string,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  options: FetchMailboxCandidatesOptions = {},
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET(
+    "/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/candidates",
+    {
+      params: {
+        path: { tenantId: session.tenantId, connectionId },
+        query: {
+          ...(options.classification === undefined ? {} : { classification: options.classification }),
+          ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+          ...(options.limit === undefined ? {} : { limit: options.limit }),
+        },
+      },
+      headers: await getAppAuthorization(getToken, organizationId),
+    },
+  );
+  if (!result.data) {
+    throw new MailboxCandidateError("Mailbox candidates unavailable", result.response?.status);
+  }
+  return result.data;
+}
+
+/**
+ * Resolves a candidate review action. `scope` is required by the server
+ * only for `action: "ingest"`; omit it for skip/not_receipt/retry.
+ */
+export async function resolveMailboxCandidate(
+  session: OfficeSession,
+  connectionId: string,
+  candidateId: string,
+  action: MailboxCandidateReviewAction,
+  expectedCandidateVersion: number,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  scope?: Scope,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.POST(
+    "/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/candidates/{candidateId}/resolve",
+    {
+      params: { path: { tenantId: session.tenantId, connectionId, candidateId } },
+      headers: await getAppAuthorization(getToken, organizationId),
+      body: {
+        action,
+        ...(scope ? { scope } : {}),
+        expectedCandidateVersion,
+        requestId: crypto.randomUUID(),
+      },
+    },
+  );
+  if (!result.data) {
+    const status = result.response?.status;
+    throw new MailboxCandidateError(
+      status === 409 ? "This candidate changed. Refreshing review list." : "Resolution unavailable",
+      status,
+    );
+  }
+  return result.data;
 }
 
 // ------------------------------------------------------------------ //
