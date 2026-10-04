@@ -329,4 +329,18 @@ export interface MailboxDiscoveryProviderAdapter {
   discover(input: DiscoveryInput): Promise<DiscoveryPageV1>;
 }
 
+/**
+ * Phase 3D-C ruling -- canonicalized here (moved from
+ * services/mailbox-broker/src/app-client.ts, where Phase 3D-B Task 4 fix
+ * round 1 deliberately declared it as a broker-local interface because "the
+ * plan's canonical contracts block never names a client method for this
+ * route"). Phase 3D-C's MailboxIngestionAppClient
+ * (./mailbox-ingestion.ts) needs to extend it directly, so it is canonical
+ * now; the broker's app-client.ts imports this instead of declaring its
+ * own copy. Shape is unchanged.
+ */
+export interface MailboxBrokerMaterializeAppClient {
+  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
+}
+
 export type { MailboxScope };

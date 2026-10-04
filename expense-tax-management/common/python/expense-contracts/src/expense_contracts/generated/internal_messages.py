@@ -16,6 +16,7 @@ class WorkflowType(StrEnum):
     ForwardedReceiptWorkflow = "ForwardedReceiptWorkflow"
     ExpenseEnrichmentWorkflow = "ExpenseEnrichmentWorkflow"
     MailboxScanWorkflow = "MailboxScanWorkflow"
+    MailboxOcrReceiptWorkflow = "MailboxOcrReceiptWorkflow"
 
 
 class JobReferenceV1(BaseModel):

@@ -35,6 +35,7 @@ export {
   EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION,
   MAILBOX_SCAN_WORKFLOW_TYPE,
   MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   WorkflowResultSchema,
   WorkflowTypeSchema,
   type WorkflowResult,
@@ -143,6 +144,7 @@ export * from "./duplicate-matches.js";
 export * from "./enrichment.js";
 export * from "./mailbox.js";
 export * from "./mailbox-discovery.js";
+export * from "./mailbox-ingestion.js";
 export {
   IdempotencyKeyHeaderSchema,
   PersonalProfileSchema,

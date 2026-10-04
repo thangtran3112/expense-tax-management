@@ -564,9 +564,10 @@ export interface ExpenseSourceTable {
   readonly personal_profile_id: string | null;
   readonly business_id: string | null;
   readonly expense_id: string;
-  readonly source_type: "manual_upload" | "forwarded_email";
+  readonly source_type: "manual_upload" | "forwarded_email" | "connected_mailbox";
   readonly source_file_id: string | null;
   readonly inbound_email_id: string | null;
+  readonly mailbox_candidate_id: string | null;
   readonly metadata: JsonValue;
   readonly created_at: GeneratedTimestamp;
 }
@@ -852,6 +853,27 @@ export interface MailboxScanPageOutcomeTable {
   updated_at: GeneratedTimestamp;
 }
 
+export interface MailboxIngestionOperationTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly connection_id: string;
+  readonly candidate_id: string;
+  readonly operation_kind:
+    | "issue_upload_grant"
+    | "upload_attachment"
+    | "submit_structured_result"
+    | "materialize_candidate";
+  readonly operation_key: string;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
+  status: "pending" | "started" | "completed" | "failed";
+  version: Generated<number>;
+  error_code: NullableText;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
 export interface AppDatabase {
   readonly "app.service_metadata": ServiceMetadataTable;
   readonly "app.users": UserTable;
@@ -911,4 +933,5 @@ export interface AppDatabase {
   readonly "app.mailbox_scan_runs": MailboxScanRunTable;
   readonly "app.mailbox_candidates": MailboxCandidateTable;
   readonly "app.mailbox_scan_page_outcomes": MailboxScanPageOutcomeTable;
+  readonly "app.mailbox_ingestion_operations": MailboxIngestionOperationTable;
 }

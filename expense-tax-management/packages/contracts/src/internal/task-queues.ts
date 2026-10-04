@@ -46,6 +46,21 @@ export const MAILBOX_SCAN_WORKFLOW_TYPE = "MailboxScanWorkflow";
  * enum, so this constant has no reason to widen that enum.
  */
 export const MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE = "MailboxScheduledScanTriggerWorkflow";
+/**
+ * Phase 3D-C mailbox ingestion workflow. TypeScript-only, same reasoning as
+ * MAILBOX_SCAN_WORKFLOW_TYPE above: no Python implementation and never will
+ * have one (plan Global Constraints: "This plan's workflows run only on the
+ * TypeScript services/workflow-worker"). Ruling (Phase 3D-C controller
+ * progress.md): started directly against TARGET_TEMPORAL_NAMESPACE /
+ * AI_WORKER_TASK_QUEUE, bypassing the generation-fenced
+ * app.temporal_dispatch_routing path entirely (not just until an operator
+ * runs `advance`) -- unlike legacy job types (OcrReceiptWorkflow/
+ * ForwardedReceiptWorkflow/ExpenseEnrichmentWorkflow), which reuse the
+ * generic job pipeline and are safe to generation-route because Stage A is
+ * a no-op until `advance`. A later task refuses to dispatch this workflow
+ * when MAILBOX_FEATURE_ENABLED is false.
+ */
+export const MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE = "MailboxOcrReceiptWorkflow";
 
 export const WorkflowTypeSchema = z.enum([
   FOUNDATION_ECHO_WORKFLOW_TYPE,
@@ -53,6 +68,7 @@ export const WorkflowTypeSchema = z.enum([
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
   MAILBOX_SCAN_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
 ]);
 export type WorkflowType = z.infer<typeof WorkflowTypeSchema>;
 

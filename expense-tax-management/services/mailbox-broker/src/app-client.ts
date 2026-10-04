@@ -27,6 +27,7 @@ import type {
   MailboxBrokerCandidateBindingV1,
   MailboxBrokerConnectionAppClient,
   MailboxBrokerDiscoveryAppClient,
+  MailboxBrokerMaterializeAppClient,
   MailboxBrokerScanBindingV1,
   MailboxCandidateMetadataStagingResultV1,
   MailboxCandidateMetadataStagingV1,
@@ -166,19 +167,12 @@ export interface MailboxAppClientOptions {
   >;
 }
 
-/**
- * Phase 3D-B Task 4 Step 3a (fix round 1, review Important #4) -- the
- * plan's exact wording: the broker-binding route is "authenticated as
- * mailbox-broker-app with mailbox:materialize". Not part of any
- * `@expense-tax/contracts` canonical client interface (the plan's
- * canonical contracts block never names a client method for this route,
- * only the wire shape `MailboxBrokerCandidateBindingV1`), so it is its
- * own small interface here rather than an addition to
- * `MailboxBrokerConnectionAppClient`/`MailboxBrokerDiscoveryAppClient`.
- */
-export interface MailboxBrokerMaterializeAppClient {
-  loadCandidateBinding(candidateId: string): Promise<MailboxBrokerCandidateBindingV1>;
-}
+// Phase 3D-B Task 4 Step 3a (fix round 1, review Important #4) -- the
+// plan's exact wording: the broker-binding route is "authenticated as
+// mailbox-broker-app with mailbox:materialize". MailboxBrokerMaterializeAppClient
+// is canonicalized in @expense-tax/contracts (./mailbox-discovery.ts) as of
+// Phase 3D-C Task 1, so Phase 3D-C's MailboxIngestionAppClient can extend
+// it directly; imported above rather than declared locally.
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) throw signal.reason;
