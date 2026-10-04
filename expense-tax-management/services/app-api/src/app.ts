@@ -256,6 +256,7 @@ function createDisabledMailboxScansDomain(): MailboxScansDomain {
     loadScanBinding: disabled,
     loadCandidateBinding: disabled,
     recordCandidateMetadata: disabled,
+    finalizeScanRun: disabled,
   };
 }
 

@@ -21,6 +21,7 @@ function fakeClient(overrides: Partial<MailboxAppApiClient> = {}): MailboxAppApi
     requestBroker: vi.fn(),
     discoverPage: vi.fn(),
     startScheduledScan: vi.fn(),
+    finalizeScan: vi.fn(),
     ...overrides,
   };
 }
@@ -121,5 +122,45 @@ describe("activities/mailbox.ts mailbox_start_scheduled_scan", () => {
     expect(error).toBeInstanceOf(ApplicationFailure);
     expect((error as ApplicationFailure).nonRetryable).toBe(true);
     expect((error as ApplicationFailure).type).toBe("MailboxScheduledScanNonRetryable");
+  });
+});
+
+describe("activities/mailbox.ts mailbox_finalize_scan", () => {
+  it("forwards scanRunId/outcome and returns nothing", async () => {
+    const finalizeScan = vi.fn().mockResolvedValue({
+      scanRunId: SCAN_RUN_ID,
+      status: "completed",
+      leaseReleased: true,
+    });
+    const activities = createMailboxActivities({ mailboxClient: fakeClient({ finalizeScan }) });
+
+    await expect(
+      activities.mailbox_finalize_scan({ scanRunId: SCAN_RUN_ID, outcome: "succeeded" }),
+    ).resolves.toBeUndefined();
+    expect(finalizeScan).toHaveBeenCalledWith({ scanRunId: SCAN_RUN_ID, outcome: "succeeded" });
+  });
+
+  it("maps a transient MailboxClientError to a retryable ApplicationFailure", async () => {
+    const finalizeScan = vi.fn().mockRejectedValue(new MailboxClientError("timeout"));
+    const activities = createMailboxActivities({ mailboxClient: fakeClient({ finalizeScan }) });
+
+    const error = await activities
+      .mailbox_finalize_scan({ scanRunId: SCAN_RUN_ID, outcome: "failed" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApplicationFailure);
+    expect((error as ApplicationFailure).nonRetryable).toBe(false);
+    expect((error as ApplicationFailure).type).toBe("MailboxFinalizeTransient");
+  });
+
+  it("maps a permanent MailboxClientError to a non-retryable ApplicationFailure", async () => {
+    const finalizeScan = vi.fn().mockRejectedValue(new MailboxClientError("not_found", 404));
+    const activities = createMailboxActivities({ mailboxClient: fakeClient({ finalizeScan }) });
+
+    const error = await activities
+      .mailbox_finalize_scan({ scanRunId: SCAN_RUN_ID, outcome: "failed" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApplicationFailure);
+    expect((error as ApplicationFailure).nonRetryable).toBe(true);
+    expect((error as ApplicationFailure).type).toBe("MailboxFinalizeNonRetryable");
   });
 });

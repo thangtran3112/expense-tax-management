@@ -8,15 +8,20 @@
  * routes/mailbox-connections.ts's internal routes.
  *
  * Phase 3D-B Task 3 (beyond the task-3 brief's literal file list --
- * ruling, see task-3-report.md) adds a third, worker-facing route: a
- * native Temporal Schedule's action args are fixed at creation time, so
- * the daily-schedule's trigger workflow cannot carry a real `scanRunId`
- * (App API mints that only when the schedule fires). This route is the
- * one App-reachable entry point that lets the trigger workflow's own
- * activity mint it, guarded by the worker's own service principal
- * (subject "workflow-worker-mailbox", scope "mailbox:discover" -- the
- * exact subject/scope pair 3D-A Task 5 already provisioned for this
- * worker identity, never the broker's).
+ * ruling, see task-3-report.md) adds two worker-facing routes, both
+ * guarded by the worker's own service principal (subject
+ * "workflow-worker-mailbox", scope "mailbox:discover" -- the exact
+ * subject/scope pair 3D-A Task 5 already provisioned for this worker
+ * identity, never the broker's):
+ * - scheduled-scans: a native Temporal Schedule's action args are fixed
+ *   at creation time, so the daily-schedule's trigger workflow cannot
+ *   carry a real `scanRunId` (App API mints that only when the schedule
+ *   fires). This is the one App-reachable entry point that lets the
+ *   trigger workflow's own activity mint it.
+ * - finalize (Task 3 fix round 1): the terminal callback
+ *   `MailboxScanWorkflow` calls on success, non-retryable failure, and
+ *   cancellation -- marks the scan run completed/failed and releases the
+ *   connection's scan lease, only if this run still holds it.
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -116,6 +121,16 @@ const ScheduledScanBodySchema = z.strictObject({
 const ScheduledScanResponseSchema = z.strictObject({
   status: z.enum(["started", "skipped_overlap"]),
   scanRunId: z.uuid(),
+});
+
+const FinalizeScanBodySchema = z.strictObject({
+  outcome: z.enum(["succeeded", "failed"]),
+});
+
+const FinalizeScanResponseSchema = z.strictObject({
+  scanRunId: z.uuid(),
+  status: z.string(),
+  leaseReleased: z.boolean(),
 });
 
 export async function registerMailboxInternalRoutes(
@@ -222,6 +237,31 @@ export async function registerMailboxInternalRoutes(
         requestId: request.body.requestId,
       });
       return { status: result.status, scanRunId: result.scanRun.id };
+    },
+  );
+
+  typedApp.post(
+    "/internal/v1/mailbox/scan-runs/:scanRunId/finalize",
+    {
+      preHandler: workerGuard,
+      schema: {
+        hide: true,
+        params: ScanRunIdParamsSchema,
+        body: FinalizeScanBodySchema,
+        security: [{ serviceBearer: [] }],
+        response: { 200: FinalizeScanResponseSchema, ...errors },
+      },
+    },
+    async (request) => {
+      const result = await options.mailboxScansDomain.finalizeScanRun({
+        scanRunId: request.params.scanRunId,
+        outcome: request.body.outcome,
+      });
+      return {
+        scanRunId: result.scanRun.id,
+        status: result.scanRun.status,
+        leaseReleased: result.leaseReleased,
+      };
     },
   );
 }

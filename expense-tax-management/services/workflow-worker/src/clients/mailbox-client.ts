@@ -90,6 +90,18 @@ const StartScheduledScanResultSchema = z.object({
   scanRunId: z.string(),
 });
 
+export interface FinalizeScanResult {
+  readonly scanRunId: string;
+  readonly status: string;
+  readonly leaseReleased: boolean;
+}
+
+const FinalizeScanResultSchema = z.object({
+  scanRunId: z.string(),
+  status: z.string(),
+  leaseReleased: z.boolean(),
+});
+
 export interface MailboxAppApiClient {
   /** Mints (and caches) a Clerk M2M token scoped to the worker's mailbox identity, audience = App API. */
   mintAppToken(): Promise<string>;
@@ -118,6 +130,15 @@ export interface MailboxAppApiClient {
     readonly connectionId: string;
     readonly requestId: string;
   }): Promise<StartScheduledScanResult>;
+  /**
+   * Phase 3D-B Task 3 fix round 1. Opaque terminal callback -- no content,
+   * just a bare succeeded/failed outcome -- `MailboxScanWorkflow` calls on
+   * success, non-retryable failure, and cancellation.
+   */
+  finalizeScan(input: {
+    readonly scanRunId: string;
+    readonly outcome: "succeeded" | "failed";
+  }): Promise<FinalizeScanResult>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -278,6 +299,14 @@ export function createMailboxAppApiClient(
         method: "POST",
         responseSchema: StartScheduledScanResultSchema,
         body: { tenantId, requestId },
+      });
+    },
+    finalizeScan({ scanRunId, outcome }) {
+      return client.requestAppApi({
+        path: `/internal/v1/mailbox/scan-runs/${scanRunId}/finalize`,
+        method: "POST",
+        responseSchema: FinalizeScanResultSchema,
+        body: { outcome },
       });
     },
   };

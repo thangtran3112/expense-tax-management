@@ -10,7 +10,13 @@
  *   no outstanding retries (the broker resolves connectionId/cursor/fence
  *   state itself via App API's `loadScanBinding`; none of it ever
  *   reaches this workflow or Temporal history). A page-count safety cap
- *   mirrors the spec's 100-message hard maximum per scan.
+ *   mirrors the spec's 100-message hard maximum per scan. Fix round 1:
+ *   always calls the opaque `mailbox_finalize_scan` terminal callback
+ *   exactly once -- succeeded on a clean finish, failed on the page-limit
+ *   error and on cancellation (run in a non-cancellable scope, the
+ *   Temporal TS SDK's documented cleanup-during-cancellation pattern, so
+ *   the callback itself can't be aborted by the same cancellation it's
+ *   reacting to).
  *
  * - `MailboxScheduledScanTriggerWorkflow(input)` -- the daily Temporal
  *   Schedule's target. A Schedule's action args are fixed at creation
@@ -24,6 +30,7 @@
  */
 import {
   ApplicationFailure,
+  CancellationScope,
   executeChild,
   proxyActivities,
   workflowInfo,
@@ -53,6 +60,13 @@ interface MailboxScheduleActivities {
   }): Promise<{ status: "started" | "skipped_overlap"; scanRunId: string }>;
 }
 
+interface MailboxFinalizeActivities {
+  mailbox_finalize_scan(input: {
+    scanRunId: string;
+    outcome: "succeeded" | "failed";
+  }): Promise<void>;
+}
+
 const { mailbox_discover_page } = proxyActivities<MailboxDiscoveryActivities>({
   startToCloseTimeout: "30 seconds",
   retry: { maximumAttempts: 5 },
@@ -63,6 +77,11 @@ const { mailbox_start_scheduled_scan } = proxyActivities<MailboxScheduleActiviti
   retry: { maximumAttempts: 3 },
 });
 
+const { mailbox_finalize_scan } = proxyActivities<MailboxFinalizeActivities>({
+  startToCloseTimeout: "30 seconds",
+  retry: { maximumAttempts: 5 },
+});
+
 /** Spec: initial sync caps at 100 messages; one page call is one unit of
  * (opaque) discovery progress, so this bounds total pages the same way. */
 const MAX_DISCOVERY_PAGES = 100;
@@ -71,11 +90,31 @@ export function mailboxScanWorkflowId(scanRunId: string): string {
   return `mailbox-scan-${scanRunId}`;
 }
 
+async function finalizeScan(scanRunId: string, outcome: "succeeded" | "failed"): Promise<void> {
+  // Non-cancellable: this callback must still run (and can't itself be
+  // aborted) when it's being called BECAUSE the workflow was cancelled.
+  await CancellationScope.nonCancellable(() => mailbox_finalize_scan({ scanRunId, outcome }));
+}
+
 export async function MailboxScanWorkflow(input: MailboxScanExecutionInputV1): Promise<void> {
-  for (let page = 0; page < MAX_DISCOVERY_PAGES; page += 1) {
-    const result = await mailbox_discover_page({ scanRunId: input.scanRunId });
-    if (result.candidateCount === 0 && result.retryCount === 0) return;
+  try {
+    for (let page = 0; page < MAX_DISCOVERY_PAGES; page += 1) {
+      const result = await mailbox_discover_page({ scanRunId: input.scanRunId });
+      if (result.candidateCount === 0 && result.retryCount === 0) {
+        await finalizeScan(input.scanRunId, "succeeded");
+        return;
+      }
+    }
+  } catch (error) {
+    // Covers both a discover-page activity failure and cancellation --
+    // either way this run never reached a clean finish, so it finalizes
+    // failed and rethrows the original error (cancellation included)
+    // unchanged.
+    await finalizeScan(input.scanRunId, "failed");
+    throw error;
   }
+
+  await finalizeScan(input.scanRunId, "failed");
   throw ApplicationFailure.nonRetryable(
     "mailbox scan exceeded the maximum discovery page count",
     "MailboxScanPageLimitExceeded",

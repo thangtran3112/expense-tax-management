@@ -22,9 +22,18 @@
  * dispatch -- and its "bypass the Task 7 generation fence" ruling -- in
  * the one place that already imports the Temporal starter.
  *
- * Four domain functions beyond lease/scan-run bookkeeping:
+ * Five domain functions beyond lease/scan-run bookkeeping:
  * - loadScanBinding: the broker's read of "where does this scan currently
  *   stand" (connection version + cursor fence + next expected page).
+ * - finalizeScanRun (Phase 3D-B Task 3 fix round 1): the worker-only
+ *   terminal callback. Marks the scan run completed/failed (no content,
+ *   no Gmail error body -- just a bare succeeded/failed outcome) and
+ *   releases the connection's scan lease, but ONLY if this run still
+ *   holds it (same run-identity fence as loadScanBinding/
+ *   recordCandidateMetadata -- a stale run whose lease was already
+ *   stolen by a successor must never clear that successor's lease).
+ *   Idempotent: a run that is already terminal returns its current state
+ *   without re-updating or attempting a second (harmless, no-op) release.
  * - loadCandidateBinding (Phase 3D-B Task 4): the broker-authenticated
  *   `POST .../candidates/:candidateId/broker-binding` read -- returns a
  *   candidate's connectionId/version/provider message+thread IDs so the
@@ -141,6 +150,23 @@ export interface StartScanResult {
   readonly status: "started" | "skipped_overlap";
 }
 
+export interface FinalizeScanRunInput {
+  readonly scanRunId: string;
+  readonly outcome: "succeeded" | "failed";
+}
+
+export interface FinalizeScanRunResult {
+  readonly scanRun: MailboxScanRunV1;
+  readonly leaseReleased: boolean;
+}
+
+const TERMINAL_SCAN_RUN_STATUSES = new Set<MailboxScanRunV1["status"]>([
+  "completed",
+  "partial",
+  "failed",
+  "skipped",
+]);
+
 export interface ListScanRunsInput {
   readonly actorUserId: string;
   readonly tenantId: string;
@@ -158,6 +184,7 @@ export interface MailboxScansDomain {
   recordCandidateMetadata(
     input: MailboxCandidateMetadataStagingV1,
   ): Promise<MailboxCandidateMetadataStagingResultV1>;
+  finalizeScanRun(input: FinalizeScanRunInput): Promise<FinalizeScanRunResult>;
 }
 
 export interface MailboxScansDomainOptions {
@@ -419,6 +446,56 @@ export function createMailboxScansDomain(
         providerMessageId: candidate.provider_message_id,
         providerThreadId: candidate.provider_thread_id,
       };
+    },
+
+    async finalizeScanRun(input) {
+      return database.transaction().execute(async (transaction) => {
+        const scanRun = await transaction
+          .selectFrom("app.mailbox_scan_runs")
+          .selectAll()
+          .where("id", "=", input.scanRunId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!scanRun) throw DomainError.notFound();
+
+        const now = new Date();
+        const alreadyTerminal = TERMINAL_SCAN_RUN_STATUSES.has(
+          scanRun.status as MailboxScanRunV1["status"],
+        );
+        const finalRun = alreadyTerminal
+          ? scanRun
+          : await transaction
+              .updateTable("app.mailbox_scan_runs")
+              .set({
+                status: input.outcome === "succeeded" ? "completed" : "failed",
+                started_at: scanRun.started_at ?? now,
+                completed_at: now,
+              })
+              .where("id", "=", input.scanRunId)
+              .returningAll()
+              .executeTakeFirstOrThrow();
+
+        // Release the connection's scan lease ONLY if this run still
+        // holds it -- a stale/superseded run (lease already stolen by a
+        // later run) must never clear that successor's active lease.
+        // Harmless no-op (0 rows updated) on a second/idempotent call.
+        const released = await transaction
+          .updateTable("app.mailbox_connections")
+          .set({
+            active_scan_run_id: null,
+            active_scan_lease_expires_at: null,
+            updated_at: now,
+          })
+          .where("id", "=", scanRun.connection_id)
+          .where("active_scan_run_id", "=", input.scanRunId)
+          .returning(["id"])
+          .executeTakeFirst();
+
+        return {
+          scanRun: toMailboxScanRunV1(finalRun),
+          leaseReleased: released !== undefined,
+        };
+      });
     },
 
     async recordCandidateMetadata(input) {

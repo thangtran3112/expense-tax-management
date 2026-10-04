@@ -78,6 +78,7 @@ function createFakeDomain(): MailboxScansDomain & {
       candidateIds: [randomUUID()],
       counts: { discovered: 1, staged: 1, review: 0, failed: 0 },
     })),
+    finalizeScanRun: vi.fn(),
   };
 }
 

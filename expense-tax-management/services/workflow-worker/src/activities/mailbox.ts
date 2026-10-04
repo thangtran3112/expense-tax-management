@@ -61,5 +61,15 @@ export function createMailboxActivities({ mailboxClient }: MailboxActivityDepend
         );
       }
     },
+    async mailbox_finalize_scan(input: {
+      scanRunId: string;
+      outcome: "succeeded" | "failed";
+    }): Promise<void> {
+      try {
+        await mailboxClient.finalizeScan(input);
+      } catch (error) {
+        throwApplicationFailure(error, "MailboxFinalizeTransient", "MailboxFinalizeNonRetryable");
+      }
+    },
   };
 }
