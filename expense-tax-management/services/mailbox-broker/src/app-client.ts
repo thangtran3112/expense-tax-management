@@ -122,6 +122,8 @@ const ScanBindingResponseSchema = z.strictObject({
   currentCursorDigest: z.string(),
   preFenceToken: z.string(),
   nextPageSequence: z.number().int(),
+  preFenceHistoryId: z.string().nullable(),
+  historyPageToken: z.string().nullable(),
 });
 
 // Phase 3D-B Task 4 Step 3a -- mirrors routes/mailbox-internal.ts's
@@ -450,6 +452,8 @@ export function createMailboxAppClient(
           preFenceToken: input.preFenceToken,
           pageSequence: input.pageSequence,
           nextHistoryId: input.nextHistoryId,
+          nextPreFenceHistoryId: input.nextPreFenceHistoryId,
+          nextHistoryPageToken: input.nextHistoryPageToken,
           messages: input.messages,
           idempotencyKey: input.idempotencyKey,
         },

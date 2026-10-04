@@ -28,13 +28,35 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   // Opaque to App beyond CAS/ordering: current_history_id/current_cursor_
   // digest/pre_fence_token are broker-minted opaque values; App only
   // compares them for fencing and never interprets Gmail semantics.
+  //
+  // Phase 3D-B Task 4 fix round 2 (in-place edit: migration 019 is
+  // unreleased, same precedent as Task 5's own in-place trigger edit
+  // below): pre_fence_history_id/history_page_token replace the broker's
+  // original unsafe approach of overloading current_history_id with a
+  // string-tagged marker (fix round 1 re-review Critical #1 -- a real
+  // opaque Gmail historyId could collide with the tag prefix). Explicit,
+  // dedicated, nullable columns:
+  // - pre_fence_history_id: non-null for exactly as long as a full-sync's
+  //   bounded list + its history.list replay are in progress. Durable
+  //   storage makes a crash between capturing it and finishing the replay
+  //   recoverable -- the next discover() call reads this same value back
+  //   instead of re-capturing a newer (wrong) fence.
+  // - history_page_token: Gmail's own history.list continuation token
+  //   (fix round 1 re-review Critical #2 -- the broker must never advance
+  //   current_history_id while Gmail reports more history pages remain).
+  // Both are written unconditionally on every fenced page (recordCandidate
+  // Metadata), unlike current_history_id's append-only-when-non-null
+  // semantics, since they represent "currently in flight," not a forward-
+  // only cursor; a settled page writes both back to null.
   // ------------------------------------------------------------------ //
   await sql`
     ALTER TABLE app.mailbox_connections
       ADD COLUMN current_history_id text,
       ADD COLUMN current_cursor_digest text,
       ADD COLUMN pre_fence_token text,
-      ADD COLUMN next_page_sequence integer NOT NULL DEFAULT 1
+      ADD COLUMN next_page_sequence integer NOT NULL DEFAULT 1,
+      ADD COLUMN pre_fence_history_id text,
+      ADD COLUMN history_page_token text
   `.execute(database);
   await sql`
     ALTER TABLE app.mailbox_connections

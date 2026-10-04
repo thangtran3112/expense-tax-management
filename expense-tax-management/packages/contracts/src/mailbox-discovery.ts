@@ -250,6 +250,30 @@ export interface MailboxBrokerScanBindingV1 {
   readonly currentCursorDigest: string;
   readonly preFenceToken: string;
   readonly nextPageSequence: number;
+  /**
+   * Phase 3D-B Task 4 fix round 2 (review Critical #1) -- the Gmail
+   * profile historyId captured *before* a full-sync/404-recovery list
+   * began. Non-null for exactly as long as that full-sync's bounded list
+   * and its history.list replay are in progress; explicit App-owned
+   * storage (migration 019, in-place edit) replaces the broker's original
+   * unsafe `pending-replay:` string-tag overload of the opaque
+   * `currentHistoryId` column, which the fix round 1 re-review correctly
+   * flagged as collision-prone. A crash between capturing this value and
+   * finishing the replay is recoverable: the next `discover()` call reads
+   * this same persisted value back and resumes the replay from it, never
+   * re-capturing a newer (incorrect) fence.
+   */
+  readonly preFenceHistoryId: string | null;
+  /**
+   * Phase 3D-B Task 4 fix round 2 (review Critical #2) -- Gmail's own
+   * `history.list` continuation token for whichever history walk is
+   * currently in progress (ordinary incremental sync, or the pre-fence
+   * replay above). Non-null exactly when a prior `discover()` call
+   * received more history than fit in one Gmail API page and did not yet
+   * reach the end -- the cursor is never advanced while this is set, and
+   * the next call resumes Gmail's own pagination from exactly this token.
+   */
+  readonly historyPageToken: string | null;
 }
 
 export interface MailboxCandidateMetadataStagingV1 {
@@ -261,6 +285,10 @@ export interface MailboxCandidateMetadataStagingV1 {
   readonly preFenceToken: string;
   readonly pageSequence: number;
   readonly nextHistoryId: string | null;
+  /** Mirrors `MailboxBrokerScanBindingV1.preFenceHistoryId` -- the broker's intended value for the connection row after this page (null clears it, settling the sync). */
+  readonly nextPreFenceHistoryId: string | null;
+  /** Mirrors `MailboxBrokerScanBindingV1.historyPageToken` -- the broker's intended value for the connection row after this page (null means this history walk reached its end). */
+  readonly nextHistoryPageToken: string | null;
   readonly messages: readonly {
     receivedAt: string;
     senderAddress: string;

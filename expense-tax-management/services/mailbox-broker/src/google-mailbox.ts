@@ -169,43 +169,6 @@ function mapGoogleApiError(error: unknown): never {
   throw new GmailApiError("unknown");
 }
 
-/** Bounds the internal page-token walk in `listHistoryPaginated` below -- same spirit as every other hard cap in this module. */
-const MAX_HISTORY_PAGE_FETCHES = 20;
-
-export interface GmailHistoryListPage {
-  readonly historyId?: string | null;
-  readonly nextPageToken?: string | null;
-  readonly addedMessageIds: readonly { readonly id: string; readonly threadId: string | null }[];
-}
-
-/**
- * Fix round 1 (review Critical #2) -- exhausts Gmail's own
- * `nextPageToken` internally before returning, bounded by `maxResults`
- * total ids and `MAX_HISTORY_PAGE_FETCHES` page fetches, so
- * discovery.ts's `GmailDiscoveryClientLike.listHistory` never sees a
- * partial history walk. Exported (and the real `gmail.users.history.list`
- * call shape pushed behind the injected `fetchPage`) so this aggregation
- * logic is directly unit-testable with a multi-page fake -- no real
- * Google network access, per task constraints.
- */
-export async function listHistoryPaginated(
-  fetchPage: (pageToken: string | undefined) => Promise<GmailHistoryListPage>,
-  maxResults: number,
-): Promise<{ readonly historyId: string | undefined; readonly ids: readonly { id: string; threadId: string | null }[] }> {
-  const ids: { id: string; threadId: string | null }[] = [];
-  let historyId: string | undefined;
-  let pageToken: string | undefined;
-  let pageFetches = 0;
-  do {
-    const page = await fetchPage(pageToken);
-    historyId = page.historyId ?? historyId;
-    ids.push(...page.addedMessageIds);
-    pageToken = page.nextPageToken ?? undefined;
-    pageFetches += 1;
-  } while (pageToken && ids.length < maxResults && pageFetches < MAX_HISTORY_PAGE_FETCHES);
-  return { historyId, ids: ids.slice(0, maxResults) };
-}
-
 function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
   const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
 
@@ -255,29 +218,31 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
     },
 
     async listHistory(input) {
+      // Fix round 2 (review Critical #2, re-review) -- exactly one raw
+      // Gmail API page per call: `pageToken` resumes a prior call,
+      // `nextPageToken` is surfaced (never aggregated/truncated
+      // internally), so discovery.ts decides whether to continue and
+      // never advances the cursor while one remains.
       try {
-        const result = await listHistoryPaginated(async (pageToken) => {
-          const response = await gmail.users.history.list({
-            userId: "me",
-            startHistoryId: input.startHistoryId,
-            historyTypes: ["messageAdded"],
-            ...(pageToken ? { pageToken } : {}),
-          });
-          const addedMessageIds: { id: string; threadId: string | null }[] = [];
-          for (const entry of response.data.history ?? []) {
-            for (const added of entry.messagesAdded ?? []) {
-              if (added.message?.id) {
-                addedMessageIds.push({ id: added.message.id, threadId: added.message.threadId ?? null });
-              }
+        const response = await gmail.users.history.list({
+          userId: "me",
+          startHistoryId: input.startHistoryId,
+          historyTypes: ["messageAdded"],
+          ...(input.pageToken ? { pageToken: input.pageToken } : {}),
+        });
+        const ids: { id: string; threadId: string | null }[] = [];
+        for (const entry of response.data.history ?? []) {
+          for (const added of entry.messagesAdded ?? []) {
+            if (added.message?.id) {
+              ids.push({ id: added.message.id, threadId: added.message.threadId ?? null });
             }
           }
-          return {
-            historyId: response.data.historyId ?? null,
-            nextPageToken: response.data.nextPageToken ?? null,
-            addedMessageIds,
-          };
-        }, input.maxResults);
-        return { historyId: result.historyId ?? input.startHistoryId, ids: result.ids };
+        }
+        return {
+          historyId: response.data.historyId ?? input.startHistoryId,
+          ids,
+          nextPageToken: response.data.nextPageToken ?? null,
+        };
       } catch (error) {
         mapGoogleApiError(error);
       }

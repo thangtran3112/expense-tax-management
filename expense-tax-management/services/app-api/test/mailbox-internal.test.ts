@@ -63,6 +63,8 @@ function createFakeDomain(): MailboxScansDomain & {
       currentCursorDigest: "a".repeat(64),
       preFenceToken: "b".repeat(64),
       nextPageSequence: 1,
+      preFenceHistoryId: null,
+      historyPageToken: null,
     })),
     loadCandidateBinding: vi.fn(async (candidateId: string) => ({
       candidateId,
@@ -216,6 +218,8 @@ describe("routes/mailbox-internal.ts", () => {
       preFenceToken: "b".repeat(64),
       pageSequence: 1,
       nextHistoryId: null,
+      nextPreFenceHistoryId: null,
+      nextHistoryPageToken: null,
       messages: [
         {
           receivedAt: "2026-10-03T00:00:00.000Z",
@@ -268,6 +272,8 @@ describe("routes/mailbox-internal.ts", () => {
         preFenceToken: "b".repeat(64),
         pageSequence: 1,
         nextHistoryId: null,
+        nextPreFenceHistoryId: null,
+        nextHistoryPageToken: null,
         messages: [],
         idempotencyKey: "page-1",
       },

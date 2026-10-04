@@ -398,6 +398,8 @@ describe.skipIf(!requested)(
         preFenceToken: "",
         pageSequence: 1,
         nextHistoryId: null,
+        nextPreFenceHistoryId: null,
+        nextHistoryPageToken: null,
         messages: [
           {
             receivedAt: "2026-10-03T00:00:00.000Z",
@@ -496,6 +498,77 @@ describe.skipIf(!requested)(
       );
       expect(page2.pageSequence).toBe(2);
       expect(page2.counts).toEqual({ discovered: 1, staged: 1, review: 0, failed: 0 });
+    });
+
+    it("fix round 2 (review Critical #1/#2): persists/clears pre_fence_history_id and history_page_token exactly as the broker reports them, surfaced back through loadScanBinding", async () => {
+      const domain = createDomain();
+      const connectionId = createActiveConnection();
+      const started = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      const binding1 = await domain.loadScanBinding(started.scanRun.id);
+      expect(binding1.preFenceHistoryId).toBeNull();
+      expect(binding1.historyPageToken).toBeNull();
+
+      // Page 1: a full sync is in progress (backlog not yet exhausted) --
+      // the broker reports its captured pre-fence, no history page token yet.
+      await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding1.expectedConnectionVersion,
+          cursorBeforeDigest: binding1.currentCursorDigest,
+          preFenceToken: binding1.preFenceToken,
+          pageSequence: 1,
+          nextHistoryId: null,
+          nextPreFenceHistoryId: "captured-pre-fence",
+          nextHistoryPageToken: null,
+        }),
+      );
+      const binding2 = await domain.loadScanBinding(started.scanRun.id);
+      expect(binding2.preFenceHistoryId).toBe("captured-pre-fence");
+      expect(binding2.historyPageToken).toBeNull();
+      expect(binding2.currentHistoryId).toBeNull(); // not settled yet
+
+      // Page 2: backlog exhausted, replay's own Gmail pagination still has
+      // more pages -- the broker reports a history page token, fence
+      // still pending.
+      await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding2.expectedConnectionVersion,
+          cursorBeforeDigest: binding2.currentCursorDigest,
+          preFenceToken: binding2.preFenceToken,
+          pageSequence: 2,
+          nextHistoryId: null,
+          nextPreFenceHistoryId: "captured-pre-fence",
+          nextHistoryPageToken: "gmail-replay-page-2",
+        }),
+      );
+      const binding3 = await domain.loadScanBinding(started.scanRun.id);
+      expect(binding3.preFenceHistoryId).toBe("captured-pre-fence");
+      expect(binding3.historyPageToken).toBe("gmail-replay-page-2");
+      expect(binding3.currentHistoryId).toBeNull();
+
+      // Page 3: replay fully exhausted -- settles for real, both fields clear.
+      await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding3.expectedConnectionVersion,
+          cursorBeforeDigest: binding3.currentCursorDigest,
+          preFenceToken: binding3.preFenceToken,
+          pageSequence: 3,
+          nextHistoryId: "settled-history-id",
+          nextPreFenceHistoryId: null,
+          nextHistoryPageToken: null,
+        }),
+      );
+      const binding4 = await domain.loadScanBinding(started.scanRun.id);
+      expect(binding4.preFenceHistoryId).toBeNull();
+      expect(binding4.historyPageToken).toBeNull();
+      expect(binding4.currentHistoryId).toBe("settled-history-id");
     });
 
     it("rejects a stale cursorBeforeDigest without moving the cursor (VERSION_CONFLICT)", async () => {

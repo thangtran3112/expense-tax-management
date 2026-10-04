@@ -194,6 +194,8 @@ describe("app-client.ts createMailboxAppClient", () => {
           currentCursorDigest: "a".repeat(64),
           preFenceToken: "b".repeat(64),
           nextPageSequence: 1,
+          preFenceHistoryId: null,
+          historyPageToken: null,
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -233,6 +235,8 @@ describe("app-client.ts createMailboxAppClient", () => {
       preFenceToken: "b".repeat(64),
       pageSequence: 1,
       nextHistoryId: null,
+      nextPreFenceHistoryId: null,
+      nextHistoryPageToken: null,
       messages: [
         {
           receivedAt: "2026-10-03T00:00:00.000Z",

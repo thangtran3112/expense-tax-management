@@ -64,6 +64,8 @@ const BrokerBindingResponseSchema = z.strictObject({
   currentCursorDigest: z.string(),
   preFenceToken: z.string(),
   nextPageSequence: z.number().int(),
+  preFenceHistoryId: z.string().nullable(),
+  historyPageToken: z.string().nullable(),
 });
 
 const StagingMessageSchema = z.strictObject({
@@ -87,6 +89,8 @@ const CandidatePagesBodySchema = z.strictObject({
   preFenceToken: z.string(),
   pageSequence: z.number().int().positive(),
   nextHistoryId: z.string().nullable(),
+  nextPreFenceHistoryId: z.string().nullable(),
+  nextHistoryPageToken: z.string().nullable(),
   messages: z.array(StagingMessageSchema),
   idempotencyKey: z.string().trim().min(1).max(500),
 });
@@ -211,6 +215,8 @@ export async function registerMailboxInternalRoutes(
         preFenceToken: request.body.preFenceToken,
         pageSequence: request.body.pageSequence,
         nextHistoryId: request.body.nextHistoryId,
+        nextPreFenceHistoryId: request.body.nextPreFenceHistoryId,
+        nextHistoryPageToken: request.body.nextHistoryPageToken,
         messages: request.body.messages,
         idempotencyKey: request.body.idempotencyKey,
       });

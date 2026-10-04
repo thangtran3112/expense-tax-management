@@ -1,23 +1,25 @@
 /**
- * Phase 3D-B Task 4 — discovery.ts: classification, bounded retry, and
+ * Phase 3D-B Task 4 — discovery.ts: bounded retry, and
  * createDiscoveryEngine's full/incremental/404-recovery orchestration.
+ * Classification itself is Task 5's `classification.ts` catalog
+ * (classification.test.ts); this file only proves discovery.ts wires it
+ * in (one `attachment_oversize` override test).
  *
  * No real Google network access anywhere in this file: every Gmail call
  * goes through a locally-defined `GmailDiscoveryClientLike` fake. The
  * fake `MailboxBrokerDiscoveryAppClient` tracks just enough connection
- * state (cursor digest/pre-fence token/next page sequence/history ID) to
- * exercise multi-page sequencing the same way the real App API domain
- * (domain/mailbox-scans.ts, Task 2) would advance it -- not a reimplementation
- * of its fencing rules, which are already covered by mailbox-scans.test.ts.
+ * state (cursor digest/pre-fence token/page sequence/history ID/pre-fence
+ * history ID/history page token) to exercise multi-page sequencing the
+ * same way the real App API domain (domain/mailbox-scans.ts) advances it
+ * -- not a reimplementation of its fencing rules, which are already
+ * covered by mailbox-scans.test.ts.
  */
 import { randomUUID } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  classifyMessage,
   createDiscoveryEngine,
-  DEFAULT_DISCOVERY_PAGE_SIZE,
   DEFAULT_LOOKBACK_DAYS,
   GmailApiError,
   MAX_INITIAL_SYNC_MESSAGES,
@@ -47,6 +49,8 @@ interface FakeConnectionState {
   preFenceToken: string;
   nextPageSequence: number;
   historyId: string | null;
+  preFenceHistoryId: string | null;
+  historyPageToken: string | null;
 }
 
 /** Tracks one connection's cursor fence the same way App API's real domain advances it after each accepted page. */
@@ -60,6 +64,8 @@ function createFakeDiscoveryAppClient(initial: Partial<FakeConnectionState> = {}
     preFenceToken: "pre-fence-token",
     nextPageSequence: 1,
     historyId: null,
+    preFenceHistoryId: null,
+    historyPageToken: null,
     ...initial,
   };
   const stagedPages: MailboxCandidateMetadataStagingV1[] = [];
@@ -76,6 +82,8 @@ function createFakeDiscoveryAppClient(initial: Partial<FakeConnectionState> = {}
         currentCursorDigest: state.cursorDigest,
         preFenceToken: state.preFenceToken,
         nextPageSequence: state.nextPageSequence,
+        preFenceHistoryId: state.preFenceHistoryId,
+        historyPageToken: state.historyPageToken,
       };
     },
     async stageCandidateMetadata(
@@ -94,6 +102,8 @@ function createFakeDiscoveryAppClient(initial: Partial<FakeConnectionState> = {}
       state.cursorDigest = `cursor-${input.pageSequence}`;
       state.nextPageSequence = input.pageSequence + 1;
       if (input.nextHistoryId !== null) state.historyId = input.nextHistoryId;
+      state.preFenceHistoryId = input.nextPreFenceHistoryId;
+      state.historyPageToken = input.nextHistoryPageToken;
       return {
         schemaVersion: 1,
         scanRunId: input.scanRunId,
@@ -129,7 +139,7 @@ function fakeGmailClient(overrides: Partial<GmailDiscoveryClientLike> = {}): Gma
     listHistory: vi.fn(async (input) => {
       calls.listHistory += 1;
       if (overrides.listHistory) return overrides.listHistory(input);
-      return { historyId: "history-1", ids: [] };
+      return { historyId: "history-1", ids: [], nextPageToken: null };
     }) as GmailDiscoveryClientLike["listHistory"],
     getMessage: vi.fn(async (id) => {
       calls.getMessage += 1;
@@ -140,48 +150,6 @@ function fakeGmailClient(overrides: Partial<GmailDiscoveryClientLike> = {}): Gma
     getProfileHistoryId: overrides.getProfileHistoryId ?? vi.fn(async () => "history-final"),
   };
 }
-
-describe("discovery.ts classifyMessage", () => {
-  it("classifies a receipt keyword + accepted attachment as receipt, high confidence", () => {
-    const result = classifyMessage({
-      subject: "Your receipt from Acme",
-      senderAddress: "billing@acme.test",
-      attachmentManifest: [{ mimeType: "application/pdf" }],
-    });
-    expect(result.classification).toBe("receipt");
-    expect(result.confidence).toBeGreaterThan(0.5);
-    expect(result.evidence.some((entry) => entry.startsWith("subject_keyword:"))).toBe(true);
-    expect(result.evidence.some((entry) => entry.startsWith("accepted_attachment:"))).toBe(true);
-  });
-
-  it("classifies a keyword with no attachment as ambiguous", () => {
-    const result = classifyMessage({
-      subject: "Your invoice is ready",
-      senderAddress: "billing@acme.test",
-      attachmentManifest: [],
-    });
-    expect(result.classification).toBe("ambiguous");
-  });
-
-  it("classifies an attachment with no keyword as ambiguous", () => {
-    const result = classifyMessage({
-      subject: "Hello there",
-      senderAddress: "friend@example.test",
-      attachmentManifest: [{ mimeType: "image/png" }],
-    });
-    expect(result.classification).toBe("ambiguous");
-  });
-
-  it("classifies plain text with neither signal as not_receipt", () => {
-    const result = classifyMessage({
-      subject: "Lunch tomorrow?",
-      senderAddress: "friend@example.test",
-      attachmentManifest: [],
-    });
-    expect(result.classification).toBe("not_receipt");
-    expect(result.evidence).toEqual(["no_signal"]);
-  });
-});
 
 describe("discovery.ts withGoogleRetry", () => {
   it("retries a rate_limited error and succeeds once the operation stops failing", async () => {
@@ -231,7 +199,7 @@ describe("discovery.ts withGoogleRetry", () => {
 });
 
 describe("discovery.ts createDiscoveryEngine", () => {
-  it("full pre-fence: captures the profile history ID BEFORE listing, queries the default 30-day bounded lookback, and does not settle the cursor until replay completes", async () => {
+  it("full pre-fence: captures the profile history ID BEFORE listing, persists it as explicit App-owned state, and does not settle the cursor until replay completes", async () => {
     const appClient = createFakeDiscoveryAppClient();
     const messages = [gmailMessage(), gmailMessage()];
     const callOrder: string[] = [];
@@ -247,7 +215,7 @@ describe("discovery.ts createDiscoveryEngine", () => {
       getMessage: async (id) => messages.find((message) => message.id === id) as GmailMessageDetail,
       listHistory: async (input) => {
         expect(input.startHistoryId).toBe("pre-sync-fence-id"); // replay starts from the captured pre-sync fence
-        return { historyId: "post-replay-history-id", ids: [] };
+        return { historyId: "post-replay-history-id", ids: [], nextPageToken: null };
       },
     });
     const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
@@ -261,12 +229,14 @@ describe("discovery.ts createDiscoveryEngine", () => {
     expect(page1.candidateCount).toBe(2);
     // Backlog list is fully staged but not yet replayed -- the cursor must
     // not settle yet (spec: "Persist post-replay history ID only after...").
-    expect(appClient.state.historyId).not.toBe("post-replay-history-id");
-    expect(appClient.state.historyId).not.toBeNull();
+    // Explicit App-owned state (not a parsed tag) carries the fence forward.
+    expect(appClient.state.historyId).toBeNull();
+    expect(appClient.state.preFenceHistoryId).toBe("pre-sync-fence-id");
 
     const page2 = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
     expect(page2.candidateCount).toBe(0); // nothing arrived during this fake sync
     expect(appClient.state.historyId).toBe("post-replay-history-id"); // settled only after replay
+    expect(appClient.state.preFenceHistoryId).toBeNull(); // cleared once settled
   });
 
   it("full pre-fence replay: a message that arrives during the full sync is caught by the history.list replay before the cursor settles", async () => {
@@ -278,7 +248,7 @@ describe("discovery.ts createDiscoveryEngine", () => {
       listMessageIds: async () => ({ ids: [{ id: backlogMessage.id, threadId: null }] }),
       listHistory: async (input) => {
         expect(input.startHistoryId).toBe("pre-sync-fence-id");
-        return { historyId: "post-replay-history-id", ids: [{ id: lateArrival.id, threadId: null }] };
+        return { historyId: "post-replay-history-id", ids: [{ id: lateArrival.id, threadId: null }], nextPageToken: null };
       },
       getMessage: async (id) => [backlogMessage, lateArrival].find((message) => message.id === id) as GmailMessageDetail,
     });
@@ -291,6 +261,67 @@ describe("discovery.ts createDiscoveryEngine", () => {
     expect(page2.candidateCount).toBe(1);
     expect(appClient.stagedPages[1]?.messages[0]?.providerMessageId).toBe(lateArrival.id);
     expect(appClient.state.historyId).toBe("post-replay-history-id");
+  });
+
+  it("crash after fence capture resumes: a fresh engine instance (different process) reads the persisted pre-fence back instead of re-capturing a newer one", async () => {
+    const appClient = createFakeDiscoveryAppClient();
+    const backlogMessage = gmailMessage();
+
+    // "Process A": captures the pre-fence, stages the backlog, then
+    // "crashes" (never calls discover() again on this engine instance).
+    const clientA = fakeGmailClient({
+      getProfileHistoryId: async () => "original-pre-fence",
+      listMessageIds: async () => ({ ids: [{ id: backlogMessage.id, threadId: null }] }),
+      getMessage: async () => backlogMessage,
+    });
+    const engineA = createDiscoveryEngine({ appClient, getGmailClient: async () => clientA, now: () => FIXED_NOW });
+    await engineA.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+    expect(appClient.state.preFenceHistoryId).toBe("original-pre-fence");
+
+    // "Process B": a brand new engine/client pair (simulating resumption
+    // on a different broker replica after the crash). Its own
+    // getProfileHistoryId must NEVER be called -- resuming must read the
+    // durably persisted fence back, not capture a newer one.
+    const getProfileHistoryIdB = vi.fn(async () => "wrong-newer-fence");
+    const clientB = fakeGmailClient({
+      getProfileHistoryId: getProfileHistoryIdB,
+      listMessageIds: async () => ({ ids: [{ id: backlogMessage.id, threadId: null }] }), // same backlog, idempotent re-list
+      listHistory: async (input) => {
+        expect(input.startHistoryId).toBe("original-pre-fence");
+        return { historyId: "settled-after-resume", ids: [], nextPageToken: null };
+      },
+      getMessage: async () => backlogMessage,
+    });
+    const engineB = createDiscoveryEngine({ appClient, getGmailClient: async () => clientB, now: () => FIXED_NOW });
+    const resumed = await engineB.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(getProfileHistoryIdB).not.toHaveBeenCalled();
+    expect(resumed.candidateCount).toBe(0); // replay found nothing new
+    expect(appClient.state.historyId).toBe("settled-after-resume");
+    expect(appClient.state.preFenceHistoryId).toBeNull();
+  });
+
+  it("no tag parsing remains: a real opaque historyId that happens to look like the old string-tag format is never misinterpreted", async () => {
+    // Regression for the fix round 1 re-review's exact collision concern:
+    // a settled, ordinary incremental connection whose real Gmail
+    // historyId coincidentally contains "pending-replay:" must be treated
+    // as a plain incremental cursor, never as in-flight full-sync state.
+    const appClient = createFakeDiscoveryAppClient({
+      historyId: "pending-replay:not-actually-a-tag",
+      preFenceHistoryId: null,
+    });
+    const client = fakeGmailClient({
+      listHistory: async (input) => {
+        expect(input.startHistoryId).toBe("pending-replay:not-actually-a-tag");
+        return { historyId: "history-after", ids: [], nextPageToken: null };
+      },
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(client.listHistory).toHaveBeenCalledTimes(1); // ordinary incremental path, not a full-sync/replay restart
+    expect(appClient.state.historyId).toBe("history-after");
   });
 
   it("bounded lookback: an override above the 90-day hard maximum is clamped to 90 days", async () => {
@@ -329,28 +360,42 @@ describe("discovery.ts createDiscoveryEngine", () => {
     expect(totalCandidates).toBe(MAX_INITIAL_SYNC_MESSAGES);
   });
 
-  it("incremental pagination: pages through history.list results in fixed-size slices until the last page", async () => {
+  it("incremental pagination: history larger than one Gmail API page is fully staged across calls; the cursor never advances while a page remains (review Critical #2)", async () => {
     const appClient = createFakeDiscoveryAppClient({ historyId: "history-start" });
-    const ids = Array.from({ length: DEFAULT_DISCOVERY_PAGE_SIZE + 5 }, () => ({
-      id: randomUUID(),
-      threadId: null,
-    }));
+    const pageOneIds = [
+      { id: randomUUID(), threadId: null },
+      { id: randomUUID(), threadId: null },
+    ];
+    const pageTwoIds = [{ id: randomUUID(), threadId: null }];
     const client = fakeGmailClient({
-      listHistory: async (input) => {
-        expect(input.startHistoryId).toBe("history-start");
-        return { historyId: "history-after-incremental", ids };
-      },
+      listHistory: vi.fn(async (input) => {
+        expect(input.startHistoryId).toBe("history-start"); // same start on every call -- cursor never moved
+        if (!input.pageToken) {
+          return { historyId: "history-start", ids: pageOneIds, nextPageToken: "gmail-page-2" };
+        }
+        expect(input.pageToken).toBe("gmail-page-2"); // resumes exactly where the prior call left off
+        return { historyId: "history-after-incremental", ids: pageTwoIds, nextPageToken: null };
+      }),
       getMessage: async (id) => gmailMessage({ id }),
     });
     const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
 
     const first = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
-    expect(first.candidateCount).toBe(DEFAULT_DISCOVERY_PAGE_SIZE);
-    expect(appClient.state.historyId).toBe("history-start"); // not the last page yet
+    expect(first.candidateCount).toBe(2);
+    // More history remains (nextPageToken set) -- the cursor must NOT
+    // advance yet (this is exactly the breakage the re-review flagged).
+    expect(appClient.state.historyId).toBe("history-start");
+    expect(appClient.state.historyPageToken).toBe("gmail-page-2");
 
     const second = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
-    expect(second.candidateCount).toBe(5);
-    expect(appClient.state.historyId).toBe("history-after-incremental"); // last page persists the fence
+    expect(second.candidateCount).toBe(1);
+    expect(appClient.state.historyId).toBe("history-after-incremental"); // settled only once Gmail reports no more pages
+    expect(appClient.state.historyPageToken).toBeNull();
+
+    const allStagedProviderMessageIds = appClient.stagedPages.flatMap((page) =>
+      page.messages.map((message) => message.providerMessageId),
+    );
+    expect(allStagedProviderMessageIds).toEqual([...pageOneIds, ...pageTwoIds].map((entry) => entry.id));
   });
 
   it("404 full-sync recovery: an expired history ID falls back to the same pre-fence/full-sync/replay sequence as initial sync", async () => {
@@ -361,7 +406,7 @@ describe("discovery.ts createDiscoveryEngine", () => {
       listHistory: async (input) => {
         if (input.startHistoryId === "history-stale") throw new GmailApiError("not_found");
         expect(input.startHistoryId).toBe("fresh-pre-sync-fence"); // replay uses the freshly captured fence
-        return { historyId: "post-recovery-history-id", ids: [] };
+        return { historyId: "post-recovery-history-id", ids: [], nextPageToken: null };
       },
       listMessageIds: async () => ({ ids: fullSyncIds }),
       getMessage: async (id) => gmailMessage({ id }),
@@ -373,11 +418,59 @@ describe("discovery.ts createDiscoveryEngine", () => {
       expect.objectContaining({ query: `after:${epochSecondsAfterDays(DEFAULT_LOOKBACK_DAYS)}` }),
     );
     expect(page1.candidateCount).toBe(1);
-    expect(appClient.state.historyId).not.toBe("post-recovery-history-id"); // not settled yet -- replay still pending
+    // current_history_id is append-only-when-non-null (same real-domain
+    // rule as recordCandidateMetadata): the stale value lingers until the
+    // replay settles it for real -- preFenceHistoryId is the actual
+    // "full sync/replay in progress" signal, not current_history_id.
+    expect(appClient.state.historyId).toBe("history-stale");
+    expect(appClient.state.preFenceHistoryId).toBe("fresh-pre-sync-fence");
 
     const page2 = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID }); // replay
     expect(page2.candidateCount).toBe(0);
     expect(appClient.state.historyId).toBe("post-recovery-history-id"); // settled only after replay
+    expect(appClient.state.preFenceHistoryId).toBeNull();
+  });
+
+  it("replay larger than one Gmail API page is fully staged across calls; the cursor never settles while a replay page remains", async () => {
+    const appClient = createFakeDiscoveryAppClient();
+    const backlogMessage = gmailMessage();
+    const replayPageOne = gmailMessage({ subject: "Your receipt (arrival 1)" });
+    const replayPageTwo = gmailMessage({ subject: "Your receipt (arrival 2)" });
+    const client = fakeGmailClient({
+      getProfileHistoryId: async () => "pre-sync-fence-id",
+      listMessageIds: async () => ({ ids: [{ id: backlogMessage.id, threadId: null }] }),
+      listHistory: vi.fn(async (input) => {
+        expect(input.startHistoryId).toBe("pre-sync-fence-id");
+        if (!input.pageToken) {
+          return { historyId: "pre-sync-fence-id", ids: [{ id: replayPageOne.id, threadId: null }], nextPageToken: "replay-page-2" };
+        }
+        expect(input.pageToken).toBe("replay-page-2");
+        return { historyId: "post-replay-history-id", ids: [{ id: replayPageTwo.id, threadId: null }], nextPageToken: null };
+      }),
+      getMessage: async (id) =>
+        [backlogMessage, replayPageOne, replayPageTwo].find((message) => message.id === id) as GmailMessageDetail,
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page1 = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID }); // backlog
+    expect(page1.candidateCount).toBe(1);
+
+    const page2 = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID }); // replay page 1 of 2
+    expect(page2.candidateCount).toBe(1);
+    expect(appClient.state.historyId).toBeNull(); // more replay pages remain -- never settle
+    expect(appClient.state.preFenceHistoryId).toBe("pre-sync-fence-id");
+    expect(appClient.state.historyPageToken).toBe("replay-page-2");
+
+    const page3 = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID }); // replay page 2 of 2
+    expect(page3.candidateCount).toBe(1);
+    expect(appClient.state.historyId).toBe("post-replay-history-id"); // settled only once replay fully exhausted
+    expect(appClient.state.preFenceHistoryId).toBeNull();
+    expect(appClient.state.historyPageToken).toBeNull();
+
+    const allStagedProviderMessageIds = appClient.stagedPages.flatMap((page) =>
+      page.messages.map((message) => message.providerMessageId),
+    );
+    expect(allStagedProviderMessageIds).toEqual([backlogMessage.id, replayPageOne.id, replayPageTwo.id]);
   });
 
   it("401 reauth: a reauth-required Gmail error propagates immediately, never retried", async () => {

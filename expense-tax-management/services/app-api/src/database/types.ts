@@ -739,6 +739,10 @@ export interface MailboxConnectionTable {
   current_cursor_digest: string | null;
   pre_fence_token: string | null;
   next_page_sequence: Generated<number>;
+  /** Fix round 2 -- explicit pre-fence/replay-in-progress state (replaces the string-tag overload of current_history_id). */
+  pre_fence_history_id: string | null;
+  /** Fix round 2 -- Gmail's own history.list continuation token; non-null means more history pages remain, cursor must not advance. */
+  history_page_token: string | null;
   readonly created_at: GeneratedTimestamp;
   updated_at: GeneratedTimestamp;
   revoked_at: NullableTimestamp;

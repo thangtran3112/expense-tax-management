@@ -13,55 +13,74 @@
  * retryCount) crosses back to the worker -- never a cursor, history ID,
  * provider message ID, sender, subject, or attachment.
  *
- * Fix round 1 (review Critical #1) -- pre-fence + replay, per the spec's
- * "Gmail Discovery and Cursor Semantics": a full sync (initial, or a
- * 404-recovery bounded full sync) captures the current Gmail profile
- * historyId *before* listing (the "pre-sync fence"), stages the bounded
- * lookback list across as many pages as needed, and only then replays
- * `history.list(preSyncFence)` -- staged as one additional page -- to
+ * Fix round 2 (review Critical #1, re-review: fix round 1's approach was
+ * rejected) -- pre-fence + replay, per the spec's "Gmail Discovery and
+ * Cursor Semantics": a full sync (initial, or a 404-recovery bounded full
+ * sync) captures the current Gmail profile historyId *before* listing
+ * (the "pre-sync fence"), stages the bounded lookback list across as many
+ * pages as needed, and only then replays `history.list(preSyncFence)` to
  * catch messages that arrived during the full sync, before the final
- * (real) historyId is persisted. Because the broker is stateless across
- * HTTP calls, the pre-sync fence is carried forward between pages inside
- * `app.mailbox_connections.current_history_id` itself (opaque to App --
- * migration 019's header: "App only compares them for fencing," and
- * recordCandidateMetadata never compares historyId for equality, only
- * stores whatever the broker reports) using a tagged-string marker
- * (`tagPendingReplay`/`parsePendingReplay`) that distinguishes "full
- * sync/replay in progress for this fence" from "settled, ordinary
- * incremental cursor." Once the replay page completes, the connection
- * holds Gmail's own real, untagged historyId and is a plain incremental
- * connection going forward.
+ * (real) historyId is persisted. Fix round 1 carried this fence across
+ * stateless broker calls by overloading the opaque `current_history_id`
+ * column with a string-tag prefix; the re-review correctly rejected that
+ * (a real opaque Gmail value could collide with the tag). This round
+ * instead uses explicit, dedicated App-owned storage --
+ * `MailboxBrokerScanBindingV1.preFenceHistoryId` (migration 019's new
+ * `pre_fence_history_id` column, in-place edit since 019 is unreleased)
+ * -- non-null for exactly as long as the full-sync/replay is in flight. A
+ * crash between capturing it and finishing the replay is recoverable: the
+ * next `discover()` call reads this same persisted value back (never
+ * re-captures a newer, wrong fence).
  *
- * Fix round 1 (review Critical #2) -- `GmailDiscoveryClientLike.
- * listHistory` is specified (google-mailbox.ts's real implementation) to
- * fully exhaust Gmail's own `nextPageToken` internally before returning,
- * so this module never sees a partial history page.
+ * Fix round 2 (review Critical #2, re-review: fix round 1's internal
+ * 20-page/100-id aggregation cap was itself new breakage -- it silently
+ * truncated history and then advanced the cursor as if everything were
+ * consumed) -- `GmailDiscoveryClientLike.listHistory` now returns exactly
+ * one raw Gmail API page (`nextPageToken` surfaced, never aggregated
+ * internally). The engine persists that token in
+ * `MailboxBrokerScanBindingV1.historyPageToken` (migration 019's new
+ * `history_page_token` column) and -- critically -- `nextHistoryId` is
+ * only ever non-null (settling/advancing the cursor) on the page where
+ * Gmail itself reports no further `nextPageToken`. Any page with more
+ * history remaining never advances the cursor; the next `discover()` call
+ * resumes Gmail's own pagination from exactly the stored token. The same
+ * single-page-per-call discipline now applies uniformly to ordinary
+ * incremental sync and to the pre-fence replay walk -- one `history.list`
+ * call per `discover()` invocation, never more.
  *
- * Stateless-broker pagination (unchanged from the original report):
- * Gmail's own bounded list results are re-fetched in full on every call
- * (bounded to the spec's 100-message cap) and sliced by
- * `(pageSequence - 1) * pageSize`, rather than persisting a Gmail list
- * page token anywhere.
+ * Stateless-broker pagination for the bounded *list* (not history) phase
+ * is unchanged: Gmail's own bounded `messages.list` results (capped at
+ * the spec's own 100-message maximum, which is also the per-call request
+ * cap, so one API call always returns the complete bounded set) are
+ * re-fetched in full on every call and sliced by
+ * `(pageSequence - 1) * pageSize`, rather than persisting a separate list
+ * page token.
  *
  * Transient Gmail failures (429/5xx) are retried a bounded number of
  * times in-process (`withGoogleRetry`, honoring a Gmail `Retry-After`
- * hint when present -- review Important #6); if retries are exhausted,
- * the error propagates to the caller (the broker's HTTP route), which
- * maps it to a 429/503 the worker's own activity retry policy
- * (`activities/mailbox.ts`, unmodified -- already retries
- * `rate_limited`/`unavailable`) already handles. `DiscoveryPageV1.
- * retryCount` is therefore always 0 on a successful return here: a page
- * that could not complete throws instead of returning a partial/degraded
- * page, so no separate persisted retry-count bookkeeping was invented
- * beyond what migration 019's `mailbox_scan_page_outcomes` already
- * tracks at the DB layer once the page is durably staged.
+ * hint when present); if retries are exhausted, the error propagates to
+ * the caller (the broker's HTTP route), which maps it to a 429/503 the
+ * worker's own activity retry policy (`activities/mailbox.ts`,
+ * unmodified -- already retries `rate_limited`/`unavailable`) already
+ * handles. `DiscoveryPageV1.retryCount` is therefore always 0 on a
+ * successful return here: a page that could not complete throws instead
+ * of returning a partial/degraded page, so no separate persisted
+ * retry-count bookkeeping was invented beyond what migration 019's
+ * `mailbox_scan_page_outcomes` already tracks at the DB layer once the
+ * page is durably staged.
  *
- * Fix round 1 (review Important #5) -- an attachment whose Gmail-reported
- * size exceeds `MAX_UPLOAD_BYTES` (25 MiB) is never downloaded (no
- * partial parsing) and is excluded from the manifest; its message is
- * forced to at least `ambiguous` (never auto-staged as `receipt`) with
- * `attachment_oversize` evidence, per the spec's "Exceeding a limit
- * creates typed review/skip outcome, never partial parsing."
+ * An attachment whose Gmail-reported size exceeds `MAX_UPLOAD_BYTES` (25
+ * MiB) is never downloaded (no partial parsing) and is excluded from the
+ * manifest; its message is forced to at least `ambiguous` (never
+ * auto-staged as `receipt`) with `attachment_oversize` evidence, per the
+ * spec's "Exceeding a limit creates typed review/skip outcome, never
+ * partial parsing."
+ *
+ * Fix round 2 item 3 -- classification now delegates to Task 5's
+ * standalone, approved reason-code catalog (`classification.ts`'s
+ * `classifyCandidateEvidence`) instead of this module's own ad hoc
+ * keyword rule, so staged candidates carry the catalog's documented
+ * reason codes as evidence.
  */
 import { createHash } from "node:crypto";
 
@@ -73,9 +92,11 @@ import {
   type DiscoveryPageV1,
   type FileContentType,
   type MailboxBrokerDiscoveryAppClient,
-  type MailboxCandidateClassification,
+  type MailboxBrokerScanBindingV1,
   type MailboxCandidateMetadataStagingV1,
 } from "@expense-tax/contracts";
+
+import { classifyCandidateEvidence } from "./classification.js";
 
 type StagingMessage = MailboxCandidateMetadataStagingV1["messages"][number];
 
@@ -90,15 +111,6 @@ const ACCEPTED_ATTACHMENT_MIME_TYPES = new Set<string>([
   "image/webp",
   "application/pdf",
 ]);
-
-const RECEIPT_SUBJECT_KEYWORDS = [
-  "receipt",
-  "invoice",
-  "order confirmation",
-  "payment confirmation",
-  "purchase confirmation",
-  "your order",
-];
 
 export type GmailApiErrorCode = "not_found" | "reauth_required" | "rate_limited" | "unavailable" | "unknown";
 
@@ -154,62 +166,42 @@ export interface GmailMessageDetail {
  * Tests substitute a fake; no real Google network access (per task
  * constraints). `listHistory` rejects with `GmailApiError("not_found")`
  * for Gmail's own HTTP 404 (history ID outside retained window).
+ *
+ * Fix round 2 (review Critical #2) -- `listHistory` returns exactly one
+ * raw Gmail API page: `pageToken` (input, optional) resumes a prior
+ * call's continuation; `nextPageToken` (output) is non-null exactly when
+ * more history pages remain. No internal multi-page aggregation here --
+ * the caller (discovery.ts) decides whether to continue, and never
+ * advances the cursor while `nextPageToken` is present.
  */
 export interface GmailDiscoveryClientLike {
   listMessageIds(input: { readonly query: string; readonly maxResults: number }): Promise<{
     readonly ids: readonly GmailMessageId[];
   }>;
-  listHistory(input: { readonly startHistoryId: string; readonly maxResults: number }): Promise<{
+  listHistory(input: {
+    readonly startHistoryId: string;
+    readonly maxResults: number;
+    readonly pageToken?: string;
+  }): Promise<{
     readonly historyId: string;
     readonly ids: readonly GmailMessageId[];
+    readonly nextPageToken: string | null;
   }>;
   getMessage(id: string): Promise<GmailMessageDetail>;
   getAttachment(input: { readonly messageId: string; readonly attachmentId: string }): Promise<Buffer>;
   getProfileHistoryId(): Promise<string>;
 }
 
-export interface ClassificationResult {
-  readonly classification: MailboxCandidateClassification;
-  readonly confidence: number;
-  readonly evidence: readonly string[];
-}
-
 /**
- * Deterministic, versioned classification rule (no LLM, per the plan's
- * global constraint). Own design: the brief's "deterministic classification"
- * language names the requirement, not the exact rule -- this is a simple,
- * explainable signal (subject/sender keyword + accepted-attachment
- * presence) that a later task can refine without changing this module's
- * shape. An accepted attachment and a keyword match together are the
- * only `receipt` (auto-stageable) outcome; either alone is `ambiguous`
- * (review); neither is `not_receipt` (discovered-only, never persisted
- * -- domain/mailbox-scans.ts already enforces that split).
+ * Fix round 2 item 3 -- no retailer-domain catalog exists anywhere in
+ * 3D-B's scope (classification.ts's `senderDomainKnownRetailer` input is
+ * an external signal it deliberately does not compute itself); always
+ * `false` until a later task adds one. Does not change which messages
+ * reach `review` vs `receipt` on its own -- it only ever adds supporting
+ * evidence/sender-domain-unverified context within `ambiguous`.
  */
-export function classifyMessage(input: {
-  readonly subject: string;
-  readonly senderAddress: string;
-  readonly attachmentManifest: readonly { readonly mimeType: string }[];
-  /** An attachment exceeded MAX_UPLOAD_BYTES and was excluded (review Important #5): never auto-stage, always at least `ambiguous`. */
-  readonly hasOversizeAttachment?: boolean;
-}): ClassificationResult {
-  const subjectLower = input.subject.toLowerCase();
-  const matchedKeyword = RECEIPT_SUBJECT_KEYWORDS.find((keyword) => subjectLower.includes(keyword));
-  const hasAcceptedAttachment = input.attachmentManifest.length > 0;
-
-  const evidence: string[] = [];
-  if (matchedKeyword) evidence.push(`subject_keyword:${matchedKeyword}`);
-  if (hasAcceptedAttachment) {
-    evidence.push(`accepted_attachment:${input.attachmentManifest[0]?.mimeType}`);
-  }
-  if (input.hasOversizeAttachment) evidence.push("attachment_oversize");
-
-  if (matchedKeyword && hasAcceptedAttachment && !input.hasOversizeAttachment) {
-    return { classification: "receipt", confidence: 0.9, evidence };
-  }
-  if (matchedKeyword || hasAcceptedAttachment || input.hasOversizeAttachment) {
-    return { classification: "ambiguous", confidence: 0.5, evidence };
-  }
-  return { classification: "not_receipt", confidence: 0.05, evidence: ["no_signal"] };
+function senderDomainKnownRetailer(): boolean {
+  return false;
 }
 
 function sha256Hex(data: Buffer | string): string {
@@ -277,23 +269,12 @@ function boundedLookbackAfterSeconds(now: Date, lookbackDays: number): number {
   return Math.floor(now.getTime() / 1000) - clamped * 24 * 60 * 60;
 }
 
-/**
- * Fix round 1 (review Critical #1) -- carries a captured pre-sync fence
- * across stateless broker calls inside the opaque `current_history_id`
- * column. `null`/unparseable values mean "no sync has ever started, or
- * this is a settled, ordinary incremental cursor" (handled by the
- * `discover` branches below); a tagged value means "full-sync listing or
- * its replay is still in progress for this fence."
- */
-const PENDING_REPLAY_PREFIX = "pending-replay:";
-
-function tagPendingReplay(preSyncHistoryId: string): string {
-  return `${PENDING_REPLAY_PREFIX}${preSyncHistoryId}`;
-}
-
-function parsePendingReplay(value: string | null): string | null {
-  if (value === null || !value.startsWith(PENDING_REPLAY_PREFIX)) return null;
-  return value.slice(PENDING_REPLAY_PREFIX.length);
+/** This page's outcome before message detail/classification: what Gmail ids to fetch, and the connection-state fields to persist alongside them. */
+interface HistoryWalkPage {
+  readonly ids: readonly GmailMessageId[];
+  readonly nextHistoryId: string | null;
+  readonly nextPreFenceHistoryId: string | null;
+  readonly nextHistoryPageToken: string | null;
 }
 
 export function createDiscoveryEngine(options: DiscoveryEngineOptions): DiscoveryEngine {
@@ -311,36 +292,72 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
   }
 
   /**
+   * One raw `history.list` page, resuming from `pageToken` when given.
+   * Fix round 2 (review Critical #2): never aggregates multiple Gmail
+   * pages -- `nextHistoryId`/settling only happens on the page where
+   * Gmail itself reports no further `nextPageToken`; otherwise the
+   * caller persists the returned token and the cursor stays put.
+   */
+  async function historyWalkPage(
+    client: GmailDiscoveryClientLike,
+    startHistoryId: string,
+    pageToken: string | null,
+  ): Promise<{ readonly ids: readonly GmailMessageId[]; readonly historyId: string; readonly nextPageToken: string | null }> {
+    const page = await withGoogleRetry(
+      () =>
+        client.listHistory({
+          startHistoryId,
+          maxResults: MAX_INITIAL_SYNC_MESSAGES,
+          ...(pageToken !== null ? { pageToken } : {}),
+        }),
+      retry,
+    );
+    return page;
+  }
+
+  /**
    * One page of the bounded-lookback backlog list, or -- once that list is
    * fully paged through (tracked purely by recomputing it and comparing
-   * against `nextPageSequence`, no extra state needed) -- the replay step
-   * itself: `history.list(preSyncHistoryId)` (already fully paginated
-   * internally, Critical #2), staged as one final page, persisting the
-   * real historyId it returns. Spec: "After durable staging, replay
-   * users.history.list from pre-sync fence to catch messages arriving
-   * during full sync... Persist post-replay history ID only after every
-   * discovered message ID has a durable candidate or durable retry
-   * record" -- the backlog pages (`nextHistoryId` still tagged) never
-   * settle the cursor; only the replay page does.
+   * against `nextPageSequence`, no extra state needed) -- one page of the
+   * replay step itself: `history.list(preSyncHistoryId)`, resuming from
+   * `historyPageToken` when a prior replay page left one. Spec: "After
+   * durable staging, replay users.history.list from pre-sync fence to
+   * catch messages arriving during full sync... Persist post-replay
+   * history ID only after every discovered message ID has a durable
+   * candidate or durable retry record" -- the backlog pages (and any
+   * non-final replay page) never settle the cursor; only the replay's
+   * final page (no `nextPageToken`) does.
    */
   async function fullSyncOrReplayPage(
     client: GmailDiscoveryClientLike,
-    nextPageSequence: number,
+    binding: Pick<MailboxBrokerScanBindingV1, "nextPageSequence" | "historyPageToken">,
     preSyncHistoryId: string,
-  ): Promise<{ readonly ids: readonly GmailMessageId[]; readonly nextHistoryId: string }> {
+  ): Promise<HistoryWalkPage> {
     const backlogIds = await listBoundedFullSync(client);
-    const offset = (nextPageSequence - 1) * pageSize;
+    const offset = (binding.nextPageSequence - 1) * pageSize;
     if (offset < backlogIds.length) {
       return {
         ids: backlogIds.slice(offset, offset + pageSize),
-        nextHistoryId: tagPendingReplay(preSyncHistoryId),
+        nextHistoryId: null,
+        nextPreFenceHistoryId: preSyncHistoryId, // still pending -- backlog not yet exhausted
+        nextHistoryPageToken: null, // replay walk hasn't started yet
       };
     }
-    const replay = await withGoogleRetry(
-      () => client.listHistory({ startHistoryId: preSyncHistoryId, maxResults: MAX_INITIAL_SYNC_MESSAGES }),
-      retry,
-    );
-    return { ids: replay.ids, nextHistoryId: replay.historyId };
+    const replay = await historyWalkPage(client, preSyncHistoryId, binding.historyPageToken);
+    if (replay.nextPageToken !== null) {
+      return {
+        ids: replay.ids,
+        nextHistoryId: null, // more replay pages remain -- never settle yet
+        nextPreFenceHistoryId: preSyncHistoryId,
+        nextHistoryPageToken: replay.nextPageToken,
+      };
+    }
+    return {
+      ids: replay.ids,
+      nextHistoryId: replay.historyId, // replay fully exhausted -- settle for real
+      nextPreFenceHistoryId: null,
+      nextHistoryPageToken: null,
+    };
   }
 
   return {
@@ -348,30 +365,35 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
       const binding = await options.appClient.loadScanBinding(input.scanRunId);
       const client = await options.getGmailClient(binding.connectionId);
 
-      const pendingFence = parsePendingReplay(binding.currentHistoryId);
+      let page: HistoryWalkPage;
 
-      let pageIds: readonly GmailMessageId[];
-      let nextHistoryId: string | null;
-
-      if (binding.currentHistoryId === null || pendingFence !== null) {
-        const preSyncHistoryId = pendingFence ?? (await withGoogleRetry(() => client.getProfileHistoryId(), retry));
-        const page = await fullSyncOrReplayPage(client, binding.nextPageSequence, preSyncHistoryId);
-        pageIds = page.ids;
-        nextHistoryId = page.nextHistoryId;
+      if (binding.currentHistoryId === null || binding.preFenceHistoryId !== null) {
+        // A full sync (initial, or an in-progress 404 recovery) is
+        // underway for this connection. `preFenceHistoryId`, once
+        // captured, is durable App-owned state (migration 019's
+        // pre_fence_history_id) -- read it back rather than re-capturing
+        // a newer value, so a crash between capture and replay completion
+        // resumes correctly from the ORIGINAL fence.
+        const preSyncHistoryId =
+          binding.preFenceHistoryId ?? (await withGoogleRetry(() => client.getProfileHistoryId(), retry));
+        page = await fullSyncOrReplayPage(client, binding, preSyncHistoryId);
       } else {
         try {
-          const history = await withGoogleRetry(
-            () =>
-              client.listHistory({
-                startHistoryId: binding.currentHistoryId as string,
-                maxResults: MAX_INITIAL_SYNC_MESSAGES,
-              }),
-            retry,
-          );
-          const offset = (binding.nextPageSequence - 1) * pageSize;
-          pageIds = history.ids.slice(offset, offset + pageSize);
-          const isLastPage = offset + pageSize >= history.ids.length;
-          nextHistoryId = isLastPage ? history.historyId : null;
+          const history = await historyWalkPage(client, binding.currentHistoryId, binding.historyPageToken);
+          page =
+            history.nextPageToken !== null
+              ? {
+                  ids: history.ids,
+                  nextHistoryId: null, // more history remains -- cursor must not advance (review Critical #2)
+                  nextPreFenceHistoryId: null,
+                  nextHistoryPageToken: history.nextPageToken,
+                }
+              : {
+                  ids: history.ids,
+                  nextHistoryId: history.historyId,
+                  nextPreFenceHistoryId: null,
+                  nextHistoryPageToken: null,
+                };
         } catch (error) {
           if (!(error instanceof GmailApiError) || error.code !== "not_found") throw error;
           // Expired/unretained history ID: bounded full-sync recovery,
@@ -380,15 +402,13 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
           // Existing unique message IDs make recovery idempotent
           // (recordCandidateMetadata's onConflict-mismatch-checked skip).
           const preSyncHistoryId = await withGoogleRetry(() => client.getProfileHistoryId(), retry);
-          const page = await fullSyncOrReplayPage(client, binding.nextPageSequence, preSyncHistoryId);
-          pageIds = page.ids;
-          nextHistoryId = page.nextHistoryId;
+          page = await fullSyncOrReplayPage(client, binding, preSyncHistoryId);
         }
       }
 
       const messages: StagingMessage[] = [];
 
-      for (const { id } of pageIds) {
+      for (const { id } of page.ids) {
         const detail = await withGoogleRetry(() => client.getMessage(id), retry);
 
         const attachmentManifest: AttachmentManifestV1[] = [];
@@ -421,12 +441,21 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
         }
 
         const senderDomain = detail.senderAddress.split("@")[1]?.toLowerCase() ?? "";
-        const { classification, confidence, evidence } = classifyMessage({
+        // Fix round 2 item 3 -- Task 5's approved reason-code catalog,
+        // not this module's own ad hoc keyword rule.
+        const catalogResult = classifyCandidateEvidence({
           subject: detail.subject,
-          senderAddress: detail.senderAddress,
-          attachmentManifest,
-          hasOversizeAttachment,
+          hasAcceptedAttachment: attachmentManifest.length > 0,
+          senderDomainKnownRetailer: senderDomainKnownRetailer(),
         });
+        const evidence: string[] = hasOversizeAttachment
+          ? [...catalogResult.evidence, "attachment_oversize"]
+          : [...catalogResult.evidence];
+        // An oversize attachment is never auto-stageable, regardless of
+        // what other evidence the message carries (review Important #5).
+        const classification = hasOversizeAttachment && catalogResult.classification === "receipt"
+          ? "ambiguous"
+          : catalogResult.classification;
 
         messages.push({
           receivedAt: detail.receivedAt,
@@ -436,7 +465,7 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
           contentHash: sha256Hex(`${detail.id}:${detail.subject}:${detail.receivedAt}`),
           attachmentManifest,
           classification,
-          confidence,
+          confidence: catalogResult.confidence,
           evidence,
           providerMessageId: detail.id,
           providerThreadId: detail.threadId,
@@ -451,7 +480,9 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
         cursorBeforeDigest: binding.currentCursorDigest,
         preFenceToken: binding.preFenceToken,
         pageSequence: binding.nextPageSequence,
-        nextHistoryId,
+        nextHistoryId: page.nextHistoryId,
+        nextPreFenceHistoryId: page.nextPreFenceHistoryId,
+        nextHistoryPageToken: page.nextHistoryPageToken,
         messages,
         idempotencyKey: `${binding.connectionId}:discover-page:${input.scanRunId}:${binding.nextPageSequence}`,
       });

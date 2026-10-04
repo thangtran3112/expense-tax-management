@@ -429,6 +429,8 @@ export function createMailboxScansDomain(
         currentCursorDigest: connection.current_cursor_digest as string,
         preFenceToken: connection.pre_fence_token as string,
         nextPageSequence: connection.next_page_sequence,
+        preFenceHistoryId: connection.pre_fence_history_id,
+        historyPageToken: connection.history_page_token,
       };
     },
 
@@ -507,6 +509,8 @@ export function createMailboxScansDomain(
         preFenceToken: input.preFenceToken,
         pageSequence: input.pageSequence,
         nextHistoryId: input.nextHistoryId,
+        nextPreFenceHistoryId: input.nextPreFenceHistoryId,
+        nextHistoryPageToken: input.nextHistoryPageToken,
         messages: input.messages,
       });
 
@@ -711,6 +715,13 @@ export function createMailboxScansDomain(
             ...(input.nextHistoryId !== null
               ? { current_history_id: input.nextHistoryId }
               : {}),
+            // Fix round 2 (review Critical #1/#2) -- written
+            // unconditionally every page (unlike current_history_id's
+            // append-only-when-non-null rule above): these two represent
+            // "what's currently in flight," so a settled page explicitly
+            // writes both back to null rather than leaving a stale value.
+            pre_fence_history_id: input.nextPreFenceHistoryId,
+            history_page_token: input.nextHistoryPageToken,
             updated_at: now,
           })
           .where("id", "=", input.connectionId)
