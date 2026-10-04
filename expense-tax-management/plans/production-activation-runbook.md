@@ -238,18 +238,21 @@ and does not depend on Phase 3 at all.
 
 **Prerequisites / known gaps to resolve before Step 6 below:**
 
-- `.github/workflows/expense-tax-deploy.yml`'s "Transfer production runtime"
-  step only `scp`s `docker-compose.yml`, `deploy.sh`, `health-check.sh`, and
-  the env file to `/tmp/expense-tax-deploy/` — **it never transfers
-  `docker-compose.mailbox.yml`**. `deploy.sh` resolves
-  `MAILBOX_COMPOSE_FILE="$SCRIPT_DIR/docker-compose.mailbox.yml"` relative to
-  its own installed location (`/opt/expense-tax-management/app/`). Before any
-  deploy with `MAILBOX_FEATURE_ENABLED=true` can succeed, an operator must
-  manually place that file at
-  `/opt/expense-tax-management/app/docker-compose.mailbox.yml` (e.g. one
-  `scp` from the release commit) and **keep it in sync on every subsequent
-  release** until the workflow is fixed to transfer it automatically
-  (recommended follow-up, not performed here).
+- **Fixed** (commit `bf4489c`, `ci(deploy): transfer and install
+  docker-compose.mailbox.yml on the VPS`): `.github/workflows/expense-tax-deploy.yml`'s
+  "Transfer production runtime" step now also `scp`s
+  `expense-tax-management/deploy/production/docker-compose.mailbox.yml` to
+  `/tmp/expense-tax-deploy/`, and "Deploy over dedicated SSH identity" now
+  also installs it as
+  `/opt/expense-tax-management/app/docker-compose.mailbox.yml` (root-owned,
+  mode `0644`, same pattern as `docker-compose.yml`) before invoking
+  `deploy.sh`. "Clean remote staging" already removes the whole
+  `/tmp/expense-tax-deploy` directory, so no separate cleanup line was
+  needed. Asserted by a new test in
+  `test/integration/production-deployment-boundaries.test.ts` ("transfers
+  and installs docker-compose.mailbox.yml beside docker-compose.yml"), wired
+  into `pnpm ci:test` via `check:temporal-infrastructure`. No manual
+  placement or per-release sync is required anymore.
 - `sync-production-secret.sh` does not yet contain the four
   exact-value lock lines for `CLERK_MAILBOX_SERVICE_AUDIENCE` /
   `CLERK_MAILBOX_APP_API_SUBJECT` / `CLERK_MAILBOX_WORKER_SUBJECT` /
@@ -262,7 +265,7 @@ and does not depend on Phase 3 at all.
 
 | # | Where | Step |
 |---|---|---|
-| 1 | VPS | **Vault bootstrap** (operator-only, never part of normal deploy): `POSTGRES_CONTAINER=family-app-postgres POSTGRES_SUPERUSER_PASSWORD=<shared cluster password> MAILBOX_VAULT_MIGRATOR_DB_PASSWORD=<new> MAILBOX_VAULT_RUNTIME_DB_PASSWORD=<new> deploy/production/bootstrap-mailbox-vault-db.sh`. **Note the default `POSTGRES_CONTAINER` in this script is `expense-tax-postgres`, not the real shared-cluster container `family-app-postgres` — always pass it explicitly** (confirm with `docker ps` first). Creates database `mailbox_vault`, roles `mailbox_vault_migrator` (DDL) and `mailbox_vault_runtime` (DML-only). |
+| 1 | VPS | First confirm the real container name — **do not assume it**: `docker ps --format '{{.Names}}'` (the repo's own `infrastructure/vps/steps/30-postgres.sh` names it `family-app-postgres`, but this is not guaranteed for every host and is not changed by this runbook). **Vault bootstrap** (operator-only, never part of normal deploy): `POSTGRES_CONTAINER=<name confirmed above> POSTGRES_SUPERUSER_PASSWORD=<shared cluster password> MAILBOX_VAULT_MIGRATOR_DB_PASSWORD=<new> MAILBOX_VAULT_RUNTIME_DB_PASSWORD=<new> deploy/production/bootstrap-mailbox-vault-db.sh`. The script's own default (`expense-tax-postgres`) is almost certainly wrong for this cluster — **always pass `POSTGRES_CONTAINER` explicitly**; the default is intentionally left unchanged here since the real production container name is not determinable from this repository. Creates database `mailbox_vault`, roles `mailbox_vault_migrator` (DDL) and `mailbox_vault_runtime` (DML-only). |
 | 2 | Clerk dashboard (production instance) | **Clerk mailbox identities** — create three machine identities: `app-api-mailbox`, `workflow-worker-mailbox`, `mailbox-broker-app`. Record each machine secret key and the exact subject strings (`workflow-worker-mailbox` is the required exact value for `CLERK_MAILBOX_WORKER_SUBJECT` per `services/mailbox-broker/README.md`). Then add the four lock lines described in Prerequisites above. |
 | 3 | Google Cloud Console | **Google OAuth client** — scope exactly `https://www.googleapis.com/auth/gmail.readonly` (`plans/PLAN.md` Remaining-Phase Constraints). Redirect URI derived from Cloudflare config (Step 5 below): `https://expense-mailbox.tobytran.dev/oauth/google/callback` (`services/mailbox-broker/src/routes/oauth.ts`, `infrastructure/cloudflare/expense-tax/main.tf` line 65). Record client ID/secret into the operator's `~/.zshrc`-sourced shell environment that `sync-production-secret.sh` reads. |
 | 4 | operator machine | **Secret bundle with `MAILBOX_FEATURE_ENABLED=true`**: set `MAILBOX_FEATURE_ENABLED=true` plus every required shell/database/Clerk-runtime key in the operator shell (`infrastructure/gcp/expense-tax/sync-production-secret.sh`'s inline required-variable checks), ensure `.keys/ovh/postgres-vps.env` (or the real `$DATABASE_ENV_PATH`) also carries `MAILBOX_BROKER_DATABASE_URL`/`MAILBOX_BROKER_MIGRATION_DATABASE_URL` pointing at the roles from Step 1, then run `infrastructure/gcp/expense-tax/sync-production-secret.sh`. |
@@ -327,7 +330,7 @@ tooling in this repo).
 | `expense-tax-management/plans/sub-plans/runtime-typescript-temporal-migration.md` | Check off the remaining Task 7 Stage B/Stage C boxes as each is actually observed. |
 | `infrastructure/gcp/expense-tax/sync-production-secret.sh` | Add the four Clerk-mailbox exact-value lock lines once the real machine IDs exist (Phase 4 Step 2) — a source commit, not just a config change. |
 | `infrastructure/README.md` | Note the activation date under "Shared Temporal Activation" once complete. |
-| `.github/workflows/expense-tax-deploy.yml` | Recommended follow-up (not done here): transfer `docker-compose.mailbox.yml` automatically, so Phase 4's manual-placement gap doesn't recur on every future release. |
+| `.github/workflows/expense-tax-deploy.yml` | Done (commit `bf4489c`): now transfers and installs `docker-compose.mailbox.yml` automatically; no further action needed. |
 
 ---
 
