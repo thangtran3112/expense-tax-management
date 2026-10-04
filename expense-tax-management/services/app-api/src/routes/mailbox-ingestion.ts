@@ -30,7 +30,12 @@
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { ErrorResponseSchema } from "@expense-tax/contracts";
+import {
+  CurrencySchema,
+  DateOnlySchema,
+  DecimalMoneySchema,
+  ErrorResponseSchema,
+} from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
 import type { MailboxIngestionDomain } from "../domain/mailbox-ingestion.js";
@@ -95,10 +100,10 @@ const StructuredResultBodySchema = z.strictObject({
     connectionId: z.uuid(),
     candidateVersion: z.number().int(),
     merchant: z.string().trim().min(1).max(200),
-    amount: z.string(),
-    currency: z.string(),
-    incurredOn: z.string(),
-    orderNumber: z.string().nullable(),
+    amount: DecimalMoneySchema,
+    currency: CurrencySchema,
+    incurredOn: DateOnlySchema,
+    orderNumber: z.string().trim().min(1).max(200).nullable(),
     notes: z.string().nullable(),
     evidence: z.array(z.string()),
     idempotencyKey: z.string().trim().min(1).max(500),

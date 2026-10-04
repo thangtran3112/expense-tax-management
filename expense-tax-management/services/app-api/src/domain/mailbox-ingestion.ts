@@ -38,6 +38,9 @@ import { randomUUID } from "node:crypto";
 
 import {
   AI_WORKER_TASK_QUEUE,
+  CurrencySchema,
+  DateOnlySchema,
+  DecimalMoneySchema,
   MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   TARGET_TEMPORAL_NAMESPACE,
@@ -51,6 +54,7 @@ import {
   type MailboxStructuredReceiptCallbackV1,
 } from "@expense-tax/contracts";
 import { type Kysely, type Selectable, type Transaction } from "kysely";
+import { z } from "zod";
 
 import type { AppDatabase } from "../database/types.js";
 import type { TemporalWorkflowStarter } from "../temporal/client.js";
@@ -62,6 +66,7 @@ import {
   buildMatchIdempotencyKey,
   findDeterministicCandidates,
 } from "./deduplication.js";
+import { createEnrichmentJobInTransaction } from "./enrichment-jobs.js";
 // Not processing-jobs.ts's createJobInTransaction: importing it here would
 // create a 3-node ESM cycle (processing-jobs -> ocr -> mailbox-ingestion ->
 // processing-jobs) on top of the existing 2-node processing-jobs <-> ocr
@@ -72,6 +77,45 @@ import { insertExpenseInTransaction } from "./expenses.js";
 import type { FileScope, FilesDomain } from "./files.js";
 import { hashNormalizedRequest, toJsonValue } from "./idempotency.js";
 import type { PlansDomain } from "./plans.js";
+
+/**
+ * Task 4 -- the structured-HTML path is attacker-influenced (a crafted
+ * schema.org receipt in an email the mailbox owner did not write) and
+ * must never be trusted blindly: re-validates merchant/amount/currency/
+ * date with the exact canonical schemas OcrExtractionResultV1Schema
+ * already enforces for the attachment-OCR path (processing-jobs.ts's
+ * submitResult), so both materialization paths share one trust bar. A
+ * failure here throws before any side effect -- the candidate stays
+ * `queued` so a separate attachment-OCR upload for the same candidate
+ * (if any) can still materialize it; this function creates no "failed"
+ * ledger row because the failure is deterministic (a retry with
+ * identical input would fail the same way).
+ */
+const StructuredReceiptFieldsSchema = z.strictObject({
+  merchant: z.string().trim().min(1).max(200),
+  amount: DecimalMoneySchema,
+  currency: CurrencySchema,
+  incurredOn: DateOnlySchema,
+  orderNumber: z.string().trim().min(1).max(200).nullable(),
+});
+
+function validateStructuredReceiptFields(result: MailboxStructuredReceiptCallbackV1["result"]): {
+  readonly merchant: string;
+  readonly amount: string;
+  readonly currency: string;
+  readonly incurredOn: string;
+  readonly orderNumber: string | null;
+} {
+  const parsed = StructuredReceiptFieldsSchema.safeParse({
+    merchant: result.merchant,
+    amount: result.amount,
+    currency: result.currency,
+    incurredOn: result.incurredOn,
+    orderNumber: result.orderNumber,
+  });
+  if (!parsed.success) throw DomainError.validation();
+  return parsed.data;
+}
 
 type CandidateRow = Selectable<AppDatabase["app.mailbox_candidates"]>;
 type ConnectionRow = Selectable<AppDatabase["app.mailbox_connections"]>;
@@ -164,6 +208,14 @@ export async function recordConnectedMailboxEvidenceInTransaction(
     readonly processingJobId: string | null;
     readonly requestedByUserId: string | null;
     readonly requestId: string;
+    /**
+     * Structured-HTML parser evidence (e.g. "schema_type:Order",
+     * "field:totalPrice") -- this parser's own vocabulary (Task 2's
+     * report), always short names, never raw HTML/text. The
+     * attachment-OCR path (ocr.ts's applyMailboxOcrExtraction) has no
+     * such evidence and passes an empty array.
+     */
+    readonly evidence: readonly string[];
   },
 ): Promise<{
   readonly status: "processed" | "duplicate";
@@ -210,9 +262,30 @@ export async function recordConnectedMailboxEvidenceInTransaction(
       source_file_id: null,
       inbound_email_id: null,
       mailbox_candidate_id: candidate.id,
-      metadata: toJsonValue(input.orderNumber ? { orderNumber: input.orderNumber } : {}),
+      metadata: toJsonValue({
+        ...(input.orderNumber ? { orderNumber: input.orderNumber } : {}),
+        ...(input.evidence.length > 0 ? { evidence: input.evidence } : {}),
+      }),
     })
     .execute();
+
+  // Phase 3C enrichment, created transactionally like every other
+  // source (applyOcrExtraction's own unconditional post-insert call) --
+  // regardless of the dedup outcome below: enrichment and dedup are
+  // independent concerns, same precedent as the legacy OCR path (where
+  // enrichment runs in this same transaction while dedup evidence is
+  // recorded separately by the ai-worker after the job succeeds).
+  await createEnrichmentJobInTransaction(transaction, {
+    tenantId: candidate.tenant_id,
+    scope:
+      scope.kind === "personal"
+        ? { personalProfileId: scope.profileId }
+        : { businessId: scope.businessId },
+    expenseId: expense.id,
+    expectedExpenseVersion: expense.version,
+    requestedByUserId: actorUserId,
+    requestId: input.requestId,
+  });
 
   const fingerprint = buildDeduplicationFingerprint({
     merchant: input.merchant,
@@ -842,6 +915,14 @@ export function createMailboxIngestionDomain(
           throw DomainError.validation();
         }
 
+        // Never trust structured data blindly: the broker's parser already
+        // validates these fields (Task 2), but this is the actual App-side
+        // trust boundary -- a crafted/buggy payload must not reach
+        // insertExpenseInTransaction. Throws before any side effect; the
+        // candidate stays `queued` so an attachment-OCR upload for the same
+        // candidate can still materialize it independently.
+        const fields = validateStructuredReceiptFields(input.result);
+
         const connection = await transaction
           .selectFrom("app.mailbox_connections")
           .selectAll()
@@ -852,15 +933,16 @@ export function createMailboxIngestionDomain(
         const materialized = await recordConnectedMailboxEvidenceInTransaction(transaction, {
           candidate: locked,
           connection,
-          merchant: input.result.merchant,
-          amount: input.result.amount,
-          currency: input.result.currency,
-          incurredOn: input.result.incurredOn,
-          orderNumber: input.result.orderNumber,
+          merchant: fields.merchant,
+          amount: fields.amount,
+          currency: fields.currency,
+          incurredOn: fields.incurredOn,
+          orderNumber: fields.orderNumber,
           notes: input.result.notes,
           processingJobId: null,
           requestedByUserId: actor.kind === "user" ? actor.requestedByUserId : null,
           requestId: input.idempotencyKey,
+          evidence: input.result.evidence,
         });
 
         const result: MailboxMaterializationResultV1 = {
@@ -925,6 +1007,7 @@ export function createMailboxIngestionDomain(
           processingJobId: locked.processing_job_id,
           requestedByUserId: actor.kind === "user" ? actor.requestedByUserId : null,
           requestId: input.requestId,
+          evidence: [],
         });
         return {
           schemaVersion: 1 as const,

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
+import { EXPENSE_ENRICHMENT_WORKFLOW_TYPE, MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -36,6 +36,7 @@ import {
 } from "../src/domain/files.js";
 import {
   createMailboxIngestionDomain,
+  recordConnectedMailboxEvidenceInTransaction,
   type MailboxIngestionDomain,
 } from "../src/domain/mailbox-ingestion.js";
 import type { PlansDomain } from "../src/domain/plans.js";
@@ -896,6 +897,270 @@ describe.skipIf(!requested)(
         .where("operation_kind", "=", "upload_attachment")
         .executeTakeFirstOrThrow();
       expect(Number(claimCount.count)).toBe(1);
+    });
+
+    // ------------------------------------------------------------ //
+    // Task 4 -- structured receipt transaction and shared dedup evidence.
+    //
+    // Added to this file's existing live-Postgres harness rather than new
+    // mailbox-structured-receipt.test.ts/mailbox-deduplication.test.ts
+    // files (brief's illustrative list): both would otherwise duplicate
+    // this file's ~350-line Docker/Postgres bootstrap wholesale for no
+    // behavior gap -- same "no file change without a behavior gap"
+    // precedent Tasks 1-3 already applied repeatedly to the brief's own
+    // file lists.
+    // ------------------------------------------------------------ //
+
+    async function connectionIdFor(candidateId: string): Promise<string> {
+      return (
+        await database!
+          .selectFrom("app.mailbox_candidates")
+          .select("connection_id")
+          .where("id", "=", candidateId)
+          .executeTakeFirstOrThrow()
+      ).connection_id;
+    }
+
+    it("never trusts a structured receipt blindly -- rejects invalid merchant/amount/currency/date before any side effect, leaving the candidate queued for an OCR fallback", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+      const base = {
+        schemaVersion: 1 as const,
+        candidateId,
+        connectionId,
+        candidateVersion: 1,
+        merchant: "Shopwave Co",
+        amount: "42.50",
+        currency: "USD",
+        incurredOn: "2026-09-01",
+        orderNumber: null,
+        notes: null,
+        evidence: [] as readonly string[],
+      };
+      const invalidCases: Array<[string, Partial<typeof base>]> = [
+        ["empty merchant", { merchant: "   " }],
+        ["non-decimal amount", { amount: "not-a-number" }],
+        ["lowercase currency", { currency: "usd" }],
+        ["non-ISO date", { incurredOn: "09/01/2026" }],
+      ];
+      for (const [label, overrides] of invalidCases) {
+        await expect(
+          domain.submitStructuredReceipt({
+            result: { ...base, ...overrides, idempotencyKey: `invalid-${label}` },
+            idempotencyKey: `invalid-${label}`,
+          }),
+          label,
+        ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+      }
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+      expect(candidateRow.expense_id).toBeNull();
+    });
+
+    it("creates a Phase 3C enrichment job transactionally with the materialized expense, same as every other source", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+
+      const result = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId, connectionId, candidateVersion: 1,
+          merchant: "Enrichment Co", amount: "15.00", currency: "USD", incurredOn: "2026-09-03",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "enrich-1",
+        },
+        idempotencyKey: "enrich-1",
+      });
+
+      const jobs = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("target_aggregate_id", "=", result.expenseId as string)
+        .where("workflow_type", "=", EXPENSE_ENRICHMENT_WORKFLOW_TYPE)
+        .execute();
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.status).toBe("PENDING");
+      expect(jobs[0]?.expected_aggregate_version).toBe(1);
+      expect(jobs[0]?.personal_profile_id).toBe(PROFILE_ID);
+
+      const outbox = await database!
+        .selectFrom("app.processing_job_dispatch_outbox").selectAll()
+        .where("processing_job_id", "=", jobs[0]!.id).execute();
+      expect(outbox).toHaveLength(1);
+    });
+
+    it("stores structured-receipt evidence as bounded names in expense_sources.metadata, never raw HTML/text", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+
+      const result = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId, connectionId, candidateVersion: 1,
+          merchant: "Evidence Co", amount: "9.99", currency: "USD", incurredOn: "2026-09-04",
+          orderNumber: "ORD-9", notes: null,
+          evidence: ["schema_type:Order", "field:totalPrice"],
+          idempotencyKey: "evidence-1",
+        },
+        idempotencyKey: "evidence-1",
+      });
+
+      const source = await database!
+        .selectFrom("app.expense_sources").selectAll()
+        .where("id", "=", result.sourceId as string).executeTakeFirstOrThrow();
+      expect(source.metadata).toEqual({
+        orderNumber: "ORD-9",
+        evidence: ["schema_type:Order", "field:totalPrice"],
+      });
+    });
+
+    it("records a Phase 3B pending duplicate match on a repeat fingerprint, with evidence identical in shape to the legacy dedup path", async () => {
+      const { domain } = createDomain();
+      const first = seedQueuedCandidate({ attachmentSha256: [] });
+      const firstConnectionId = await connectionIdFor(first.candidateId);
+      const firstResult = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId: first.candidateId, connectionId: firstConnectionId,
+          candidateVersion: 1,
+          merchant: "Repeat Co", amount: "20.00", currency: "USD", incurredOn: "2026-09-05",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "repeat-1",
+        },
+        idempotencyKey: "repeat-1",
+      });
+      expect(firstResult.status).toBe("processed");
+
+      const second = seedQueuedCandidate({ attachmentSha256: [] });
+      const secondConnectionId = await connectionIdFor(second.candidateId);
+      const secondResult = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId: second.candidateId, connectionId: secondConnectionId,
+          candidateVersion: 1,
+          // Same merchant/amount/currency/date -> same fingerprint hash.
+          merchant: "Repeat Co", amount: "20.00", currency: "USD", incurredOn: "2026-09-05",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "repeat-2",
+        },
+        idempotencyKey: "repeat-2",
+      });
+
+      expect(secondResult.status).toBe("duplicate");
+      expect(secondResult.duplicateMatchId).not.toBeNull();
+
+      const match = await database!
+        .selectFrom("app.expense_duplicate_matches").selectAll()
+        .where("id", "=", secondResult.duplicateMatchId as string).executeTakeFirstOrThrow();
+      expect(match.existing_expense_id).toBe(firstResult.expenseId);
+      expect(match.candidate_expense_id).toBe(secondResult.expenseId);
+      expect(match.match_type).toBe("fingerprint");
+      expect(match.status).toBe("pending");
+      // Exact shape findDeterministicCandidates' fingerprint branch
+      // always produces -- the same shape the legacy inbound/OCR
+      // recordEvidence dedup path (deduplication.ts) writes for a
+      // fingerprint match, since both call the same addMatch/
+      // findDeterministicCandidates primitives.
+      expect(match.evidence).toEqual({ fingerprintHash: expect.any(String) });
+      // Never auto-merged: both expenses remain independently queryable.
+      expect(firstResult.expenseId).not.toBe(secondResult.expenseId);
+    });
+
+    it("replays the exact same materialization result on a retried submitStructuredReceipt call instead of re-materializing", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+      const request = {
+        result: {
+          schemaVersion: 1 as const, candidateId, connectionId, candidateVersion: 1,
+          merchant: "Replay Co", amount: "5.00", currency: "USD", incurredOn: "2026-09-06",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "replay-1",
+        },
+        idempotencyKey: "replay-1",
+      };
+
+      const first = await domain.submitStructuredReceipt(request);
+      const second = await domain.submitStructuredReceipt(request);
+      expect(second).toEqual(first);
+
+      const expenseCount = await database!
+        .selectFrom("app.expenses")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("id", "=", first.expenseId as string)
+        .executeTakeFirstOrThrow();
+      expect(Number(expenseCount.count)).toBe(1);
+    });
+
+    it("rolls back the expense, connected provenance, dedup fingerprint, and enrichment job together if the transaction aborts after materialization", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      let capturedExpenseId: string | undefined;
+
+      await expect(
+        database!.transaction().execute(async (transaction) => {
+          const candidate = await transaction
+            .selectFrom("app.mailbox_candidates").selectAll()
+            .where("id", "=", candidateId).forUpdate().executeTakeFirstOrThrow();
+          const connection = await transaction
+            .selectFrom("app.mailbox_connections").selectAll()
+            .where("id", "=", candidate.connection_id).executeTakeFirstOrThrow();
+          const materialized = await recordConnectedMailboxEvidenceInTransaction(transaction, {
+            candidate, connection,
+            merchant: "Rollback Co", amount: "10.00", currency: "USD", incurredOn: "2026-09-07",
+            orderNumber: null, notes: null, processingJobId: null,
+            requestedByUserId: null, requestId: "rollback-1", evidence: [],
+          });
+          capturedExpenseId = materialized.expenseId;
+          throw new Error("forced rollback after materialization, before commit");
+        }),
+      ).rejects.toThrow("forced rollback");
+
+      const expenseRow = await database!
+        .selectFrom("app.expenses").selectAll()
+        .where("id", "=", capturedExpenseId as string).executeTakeFirst();
+      expect(expenseRow).toBeUndefined();
+
+      const jobRow = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("target_aggregate_id", "=", capturedExpenseId as string).executeTakeFirst();
+      expect(jobRow).toBeUndefined();
+
+      const sourceRow = await database!
+        .selectFrom("app.expense_sources").selectAll()
+        .where("mailbox_candidate_id", "=", candidateId).executeTakeFirst();
+      expect(sourceRow).toBeUndefined();
+
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+    });
+
+    it("the database itself rejects a second connected-provenance row for an already-materialized candidate (connected source constraint)", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+      const result = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId, connectionId, candidateVersion: 1,
+          merchant: "Constraint Co", amount: "7.00", currency: "USD", incurredOn: "2026-09-08",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "constraint-1",
+        },
+        idempotencyKey: "constraint-1",
+      });
+      expect(result.sourceId).not.toBeNull();
+
+      // A second connected-mailbox provenance row for the SAME candidate
+      // (even pointing at a different expense) must be rejected by
+      // migration 020's own partial unique index
+      // (expense_sources_mailbox_candidate_unique), not merely by
+      // application-level status checks.
+      expect(() =>
+        runtimeSql(`
+          INSERT INTO app.expense_sources (
+            id, tenant_id, personal_profile_id, expense_id, source_type, mailbox_candidate_id
+          ) VALUES (
+            '${randomUUID()}', '${TENANT_ID}', '${PROFILE_ID}', '${result.expenseId}',
+            'connected_mailbox', '${candidateId}'
+          );
+        `),
+      ).toThrow();
     });
   },
 );

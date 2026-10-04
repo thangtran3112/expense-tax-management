@@ -235,6 +235,7 @@ export async function applyMailboxOcrExtraction(
     processingJobId: job.id,
     requestedByUserId,
     requestId: input.requestId,
+    evidence: [],
   });
 
   return materialized.expenseId;
