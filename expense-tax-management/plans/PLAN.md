@@ -1,6 +1,6 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D-A implemented and phase-verified on `feature/phase-3d`, not yet merged or deployed, operator activation pending; 3D-B/3D-C not started.
+> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-5 merged; Task 6 shared Temporal source in PR review. Phase 3C implemented on `dev`; Phase 3D-A/3D-B/3D-C all implemented and phase-verified on `feature/phase-3d-c`, not yet merged or deployed, operator activation pending.
 > **Last updated:** 2026-10-02
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 
@@ -69,7 +69,7 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 | 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
 | 2 | **3D-A - Mailbox broker and connection lifecycle** | Implemented on `dev` branch (worktree `feature/phase-3d`, Tasks 1-6 complete and phase-verified against real PostgreSQL); not merged, not deployed; operator activation pending | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
 | 3 | **3D-B - Mailbox discovery and review** | Implemented on `feature/phase-3d-b` (Tasks 1-6 complete and phase-verified against real PostgreSQL); not merged, not deployed; production use additionally requires runtime migration Task 7 cutover since 3D workflows run only on the TypeScript worker | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
-| 4 | **3D-C - Mailbox ingestion and provenance** | Blocked by 3D-B | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
+| 4 | **3D-C - Mailbox ingestion and provenance** | Implemented on `feature/phase-3d-c` (Tasks 1-7 complete and phase-verified against real PostgreSQL); not merged, not deployed; production use additionally requires runtime migration Task 7 cutover and 3D-A activation | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
 | Later | **6A/6B/6C - SQL, semantic, and AI search** | Deferred; replan before execution | `plans/sub-plans/phase-6*.md` |
 | Later | **9A/9B/9C - Graph foundation, ingestion, and search** | Deferred; replan before execution | `plans/sub-plans/phase-9*.md` |
 | Later | **12A/12B/12C - Mobile application** | Deferred; framework decision pending | `plans/sub-plans/phase-12*.md` |
@@ -99,6 +99,14 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 ### 3D-B Operator Activation (additional, after the 3D-A list above)
 
 3D-B's scheduled scans do not start themselves: nothing calls `ensureMailboxSchedule` automatically (by design — reconciliation over import-time creation). After `MAILBOX_FEATURE_ENABLED` is turned on and runtime migration Task 7 cutover has happened, an operator must run `node dist/temporal/mailbox-schedule-reconcile.js reconcile` (`services/app-api/src/temporal/mailbox-schedule-reconcile.ts`) once to create the daily `02:00` Temporal Schedule for every existing active/scan-enabled connection; re-running it later is safe (idempotent) and is how a newly-connected mailbox's schedule gets created going forward until a startup hook replaces this manual step.
+
+### 3D-C Operator Activation (additional, after the 3D-A/3D-B lists above)
+
+3D-C source is feature-complete and phase-verified against real PostgreSQL (`test/integration/app-domain-3d-c-mailbox.test.ts`, gated `PHASE_3D_C_T7_INTEGRATION=1`, wired into the zero-skip CI chain), but production ingestion stays inert until, in addition to the 3D-A/3D-B activation steps above:
+
+1. **Runtime migration Task 7 cutover** has happened — `MailboxMaterializeWorkflow`/`MailboxOcrReceiptWorkflow` run only on the TypeScript `services/workflow-worker`, never the legacy Python worker.
+2. **3D-A activation is complete** (real Clerk mailbox identities, token-vault bootstrap, Google OAuth client, `MAILBOX_FEATURE_ENABLED=true` secret bundle) and **3D-B's schedule reconcile** has run — 3D-C's `ingest` approval is the consumer of a `queued` candidate that only an active, scheduled scan ever produces.
+3. **Real Gmail test-account verification** (plan Task 7 Step 6, `test/e2e/connected-mailbox.e2e.test.ts`) — operator-gated, run against a provisioned test Google account and the production-shaped VPS Compose stack before enabling the feature for real tenants; never run in CI.
 
 ## Remaining-Phase Constraints
 
