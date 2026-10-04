@@ -38,6 +38,19 @@ import { fileURLToPath } from "node:url";
  * .superpowers/sdd/runtime-typescript-temporal-migration/
  * task-7a-report.md "Fix Round 1") and the resolved database host is
  * always the Compose service itself, never operator-suppliable.
+ *
+ * Fix round 1 (credential-safety hardening): the host process running
+ * this script must NEVER hold a real credential value in memory, not
+ * even transiently. Concretely:
+ *   - This script never runs `docker compose config --format json` (that
+ *     resolves and prints every service's real environment, secrets
+ *     included, into one JSON blob the host would then parse). The only
+ *     `config` invocation left is `config --quiet`, a syntax-only
+ *     validation that prints nothing.
+ *   - Clerk credential presence and database-host checks instead run
+ *     *inside* a one-off container (the exact credential-bearing service
+ *     image itself), which prints only variable NAMES or a bare
+ *     hostname -- never a secret value -- back to the host's stdout.
  */
 
 export const SMOKE_CONFIRMATION = "I-understand-local-worker-smoke";
@@ -63,6 +76,8 @@ export function isExecutionConfirmed(
  * or still carries the repo's documented not-configured placeholder
  * (docker-compose.yml's `${VAR:-default}` fallback or .env.example's own
  * placeholder), i.e. Development Clerk M2M credentials were never loaded.
+ * Single source of truth: also used (via clerkCredentialCheckScript) to
+ * generate the in-container check, so there is exactly one sentinel list.
  */
 const CLERK_CREDENTIAL_CHECKS = [
   {
@@ -85,6 +100,13 @@ const CLERK_CREDENTIAL_CHECKS = [
   },
 ];
 
+/**
+ * Pure logic, unit-tested in isolation against a fake object -- never
+ * called by runLocalWorkerSmoke() against a real environment. The real
+ * check runs this exact logic *inside* a container via
+ * clerkCredentialCheckScript(); this export exists so the matching logic
+ * itself has direct test coverage without Docker.
+ */
 export function missingClerkCredentials(serviceEnvironment = {}) {
   return CLERK_CREDENTIAL_CHECKS.filter(({ key, placeholders }) => {
     const value = serviceEnvironment[key];
@@ -95,21 +117,68 @@ export function missingClerkCredentials(serviceEnvironment = {}) {
 }
 
 /**
- * Refuses any database URL whose host is not the local Compose
- * "postgres" service -- the one thing `.env` could misconfigure to point
- * this disposable, data-mutating smoke at a non-local database.
+ * Refuses any hostname that is not the local Compose "postgres" service.
+ * Takes a bare hostname (never a connection string) -- the caller must
+ * extract it *inside* a container (checkDatabaseHostname), so a real
+ * database password is never constructed on, or held by, the host.
  */
-export function assertLocalDatabaseUrl(url, label) {
-  let hostname;
-  try {
-    hostname = new URL(url).hostname;
-  } catch {
-    throw new Error(`${label}: not a valid database URL`);
-  }
+export function assertLocalDatabaseHost(hostname, label) {
   if (hostname !== "postgres") {
     throw new Error(
       `${label}: refusing to run against non-local database host "${hostname}" ` +
         `(expected the local Compose "postgres" service)`,
+    );
+  }
+}
+
+/**
+ * Refuses to run unless Docker itself is local: a `postgres`-hostname
+ * connection string is only actually local if the Docker daemon being
+ * driven is local too -- otherwise "postgres" resolves inside someone
+ * else's remote Docker network. Checks two independent signals: an
+ * explicit DOCKER_HOST override, and the active Docker context's own
+ * endpoint (`docker context inspect`, `Endpoints.docker.Host`). Neither
+ * value is a credential; both are safe to read directly on the host.
+ */
+export function assertLocalDockerEndpoint(
+  env = process.env,
+  currentContextEndpoint = currentDockerContextEndpoint,
+) {
+  const dockerHost = env.DOCKER_HOST;
+  if (dockerHost && !dockerHost.startsWith("unix://")) {
+    throw new Error(
+      `refusing to run: DOCKER_HOST is set to a non-local endpoint "${dockerHost}"`,
+    );
+  }
+  const endpoint = currentContextEndpoint();
+  if (!endpoint.startsWith("unix://")) {
+    throw new Error(
+      `refusing to run: current Docker context endpoint "${endpoint}" is not a local unix socket`,
+    );
+  }
+}
+
+/**
+ * Refuses to proceed unless dispatch routing is still at its legacy
+ * generation 1 (namespace "default" / queue "expense-tax-ai-worker").
+ * Without this, a rerun after a prior smoke already advanced routing
+ * would create "generation 1"'s job at generation 2+, so it would never
+ * actually exercise the Python ai-worker's legacy-routing path, and the
+ * second `advance` call would also fail the CLI's own stale-generation
+ * guard. `status`'s fields carry no secrets (generation/namespace/queue
+ * only), so this is safe to assert on the host.
+ */
+export function assertGeneration1Routing(status) {
+  if (
+    status.generation !== 1 ||
+    status.namespace !== "default" ||
+    status.taskQueue !== "expense-tax-ai-worker"
+  ) {
+    throw new Error(
+      `refusing to run: dispatch routing is already at generation ${status.generation} ` +
+        `(namespace ${status.namespace} / queue ${status.taskQueue}), not the expected ` +
+        `legacy generation 1 (namespace default / queue expense-tax-ai-worker). Reset the ` +
+        `disposable local stack first: ./scripts/compose.sh down -v`,
     );
   }
 }
@@ -121,14 +190,17 @@ export function servicesToStart(alreadyRunning, desired) {
 export function buildSmokePlan() {
   return [
     "guard:execution-confirmed",
+    "guard:docker-endpoint-local",
+    "guard:compose-config-valid",
+    "guard:migration-database-host-local",
+    "guard:runtime-database-host-local",
     "guard:clerk-credentials-present",
-    "guard:local-database-target",
     "compose:start-generation-1-services",
     "database:run-app-api-migrations",
     "temporal:bootstrap-expense-tax-namespace",
+    "dispatch-routing:assert-generation-1",
     "job:create-generation-1",
     "job:await-python-worker-callback",
-    "dispatch-routing:status-generation-1",
     "dispatch-routing:advance-to-generation-2",
     "compose:start-workflow-worker",
     "job:create-generation-2",
@@ -152,6 +224,15 @@ const bootstrapNamespacesScript = path.join(
   "temporal",
   "bootstrap-namespaces.sh",
 );
+
+function currentDockerContextEndpoint() {
+  const raw = execFileSync("docker", ["context", "inspect"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const [context] = JSON.parse(raw);
+  return context?.Endpoints?.docker?.Host ?? "";
+}
 
 /**
  * `infrastructure/temporal/bootstrap-namespaces.sh` (Task 6) idempotently
@@ -183,21 +264,74 @@ function runCompose(args, options = {}) {
   });
 }
 
-function composeConfig() {
-  return JSON.parse(
-    runCompose(
-      composeArgs(["config", "--format", "json"], {
-        profiles: [WORKFLOW_WORKER_SERVICE, "phase-0i-migrations"],
-      }),
-    ),
-  );
-}
-
 function runningServices() {
   return runCompose(["ps", "--services", "--filter", "status=running"])
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+/**
+ * Runs `scriptSource` with `node --input-type=module -e` inside a
+ * one-off, dependency-free (`--no-deps`) container of `service` -- the
+ * exact image/environment the real compose service would get, so the
+ * script sees the service's real resolved env vars, but ONLY inside the
+ * container's own process. Whatever the script prints to stdout is all
+ * the host ever receives.
+ */
+function runContainerCheck(service, scriptSource) {
+  return runCompose([
+    "run",
+    "--rm",
+    "-T",
+    "--no-deps",
+    service,
+    "node",
+    "--input-type=module",
+    "-e",
+    scriptSource,
+  ]).trim();
+}
+
+/**
+ * Generated from CLERK_CREDENTIAL_CHECKS (the same list
+ * missingClerkCredentials uses) so there is exactly one sentinel list;
+ * only the (non-secret) sentinel placeholders are embedded, never a real
+ * credential. Prints a JSON array of missing variable NAMES only.
+ */
+function clerkCredentialCheckScript() {
+  return `
+const CHECKS = ${JSON.stringify(CLERK_CREDENTIAL_CHECKS)};
+const missing = CHECKS.filter(({ key, placeholders }) => {
+  const value = process.env[key];
+  return value === undefined || value === "" || placeholders.includes(value);
+}).map(({ key }) => key);
+console.log(JSON.stringify(missing));
+`;
+}
+
+/**
+ * Runs inside workflow-worker's own image: it is the only compose
+ * service that already declares all four CLERK_*_MACHINE_SECRET_KEY /
+ * issuer / jwks vars this smoke needs to check (ai-worker declares the
+ * same four but is a Python image with no Node; app-api/foundry-service
+ * only hold audience/subject, not the machine secret keys).
+ */
+function checkClerkCredentials() {
+  return JSON.parse(
+    runContainerCheck(WORKFLOW_WORKER_SERVICE, clerkCredentialCheckScript()),
+  );
+}
+
+/**
+ * Prints only the hostname portion of `envVarName` (never the full
+ * connection string, so the password never leaves the container).
+ */
+function checkDatabaseHostname(service, envVarName) {
+  return runContainerCheck(
+    service,
+    `console.log(new URL(process.env.${envVarName}).hostname);`,
+  );
 }
 
 /**
@@ -329,6 +463,11 @@ function createJobAndAwaitCompletion(runKey) {
   return JSON.parse(lastLine);
 }
 
+/**
+ * Prints only {generation, namespace, taskQueue, ...non-terminal counts}
+ * -- routing metadata, never a credential -- so this output is safe to
+ * parse and assert on here on the host (see getDispatchRoutingStatus).
+ */
 function dispatchRoutingCommand(...commandArgs) {
   const output = runCompose([
     "run",
@@ -353,25 +492,30 @@ export async function runLocalWorkerSmoke() {
     );
   }
 
-  const config = composeConfig();
-  const migratorEnvironment =
-    config.services["app-api-migrate"]?.environment ?? {};
-  assertLocalDatabaseUrl(
-    migratorEnvironment.APP_MIGRATION_DATABASE_URL,
+  assertLocalDockerEndpoint();
+  log("PASS guard: Docker endpoint is a local unix socket");
+
+  // Syntax/reference validation only -- never resolves or prints values.
+  runCompose(["config", "--quiet"]);
+  log("PASS guard: compose config is valid");
+
+  assertLocalDatabaseHost(
+    checkDatabaseHostname("app-api-migrate", "APP_MIGRATION_DATABASE_URL"),
     "APP_MIGRATION_DATABASE_URL",
   );
-  const runtimeEnvironment = config.services["app-api"]?.environment ?? {};
-  assertLocalDatabaseUrl(runtimeEnvironment.APP_DATABASE_URL, "APP_DATABASE_URL");
-
-  const missing = missingClerkCredentials(
-    config.services["ai-worker"]?.environment ?? {},
+  assertLocalDatabaseHost(
+    checkDatabaseHostname("app-api", "APP_DATABASE_URL"),
+    "APP_DATABASE_URL",
   );
+  log("PASS guard: database host is the local Compose postgres service");
+
+  const missing = checkClerkCredentials();
   if (missing.length > 0) {
     throw new Error(
       `missing Development Clerk M2M credentials (never printing values): ${missing.join(", ")}`,
     );
   }
-  log("PASS guards (confirmation, Clerk credentials present, local database target)");
+  log("PASS guard: Development Clerk M2M credentials present");
 
   const baseline = runningServices();
   const startedServices = [];
@@ -390,6 +534,10 @@ export async function runLocalWorkerSmoke() {
     bootstrapExpenseTaxNamespace();
     log('PASS Temporal namespace "expense-tax" bootstrapped (idempotent)');
 
+    const initialStatus = dispatchRoutingCommand("status");
+    assertGeneration1Routing(initialStatus);
+    log("PASS dispatch routing confirmed at generation 1 (namespace default / queue expense-tax-ai-worker)");
+
     const runKey1 = randomUUID().slice(0, 8);
     const generation1 = createJobAndAwaitCompletion(runKey1);
     if (generation1.status !== "SUCCEEDED") {
@@ -397,10 +545,8 @@ export async function runLocalWorkerSmoke() {
     }
     log(`PASS generation 1 job ${generation1.jobId} SUCCEEDED (Python ai-worker callback)`);
 
-    const status = dispatchRoutingCommand("status");
-    log(`PASS dispatch-routing status: generation ${status.generation}`);
-    dispatchRoutingCommand("advance", "--from-generation", String(status.generation));
-    log(`PASS dispatch-routing advance --from-generation ${status.generation}`);
+    dispatchRoutingCommand("advance", "--from-generation", String(initialStatus.generation));
+    log(`PASS dispatch-routing advance --from-generation ${initialStatus.generation}`);
 
     const workflowWorkerAlreadyRunning = runningServices().includes(
       WORKFLOW_WORKER_SERVICE,
