@@ -14,6 +14,7 @@
 - Merge only through a pull request to protected `dev`; required quality CI must pass. Integration CI is advisory and must be reported when red.
 - `main` remains production-only. Merges to `dev` never deploy production.
 - Read `expense-tax-management/AGENTS.md` before implementation.
+- Ordered owner runbook for activating everything below in production: [production-activation-runbook.md](production-activation-runbook.md).
 
 ## Product Goal
 

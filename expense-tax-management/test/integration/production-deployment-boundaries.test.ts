@@ -318,6 +318,25 @@ esac
     expect(plan).toContain("Task 8 remains an explicit operator-only step");
   });
 
+  it("transfers and installs docker-compose.mailbox.yml beside docker-compose.yml", () => {
+    const workflow = readFileSync(
+      path.join(repoRoot, "../.github/workflows/expense-tax-deploy.yml"),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "expense-tax-management/deploy/production/docker-compose.mailbox.yml",
+    );
+    expect(workflow).toContain(
+      "sudo install -o root -g root -m 0644 /tmp/expense-tax-deploy/docker-compose.mailbox.yml /opt/expense-tax-management/app/docker-compose.mailbox.yml",
+    );
+
+    // Same staging directory that already gets wholesale-removed by "Clean
+    // remote staging" -- the new file needs no separate cleanup line.
+    const remoteCleanupIndex = workflow.indexOf("rm -rf /dev/shm/expense-tax-docker-config-* /tmp/expense-tax-deploy");
+    expect(remoteCleanupIndex).toBeGreaterThan(-1);
+  });
+
   it("pins uv builder and requires frozen lockfile sync", () => {
     const dockerfile = readFileSync(
       path.join(repoRoot, "services/ai-worker/Dockerfile"),
