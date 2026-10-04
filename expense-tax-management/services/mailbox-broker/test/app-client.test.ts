@@ -545,6 +545,131 @@ describe("app-client.ts createMailboxAppClient", () => {
     2000,
   );
 
+  // Phase 3D-C Task 2 fix round 2 (re-review Important #1, NOT ADDRESSED in
+  // round 1) -- round 1's `target.readable.cancel()` throws (silently
+  // swallowed) once an external consumer has already locked the stream
+  // with its own reader, and `writer.abort()` alone can hang when that
+  // reader never reads. Each test below proves BOTH that `uploadAttachment`
+  // itself settles within a bounded timeout AND that the abandoned pump's
+  // `source` async generator actually gets torn down (its `finally` runs) --
+  // not just that the outer promise happens to resolve while the
+  // underlying stream/source leaks forever in the background.
+  it(
+    "uploadAttachment settles within a bounded timeout AND tears down the source when the consumer locks the body but never reads it",
+    async () => {
+      const { createClient } = await setup();
+      const client = createClient((url, init) => {
+        const body = init.body as ReadableStream<Uint8Array>;
+        body.getReader(); // locks the stream; deliberately never calls .read()
+        return new Response(JSON.stringify({ error: { code: "INVALID_REQUEST" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      let sourceCleanedUp = false;
+      async function* source(): AsyncIterable<Buffer> {
+        try {
+          yield Buffer.from("%PDF-1.4\nfirst chunk padding to clear the twelve byte magic header", "latin1");
+          yield Buffer.from("second chunk that must never need to be fully delivered", "latin1");
+        } finally {
+          sourceCleanedUp = true;
+        }
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-7",
+          },
+          source(),
+        ),
+      ).rejects.toSatisfy((error: unknown) => error instanceof MailboxAppClientError && error.code === "invalid_request");
+
+      // Bounded settle window for the abandoned pump's own cleanup to run.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(sourceCleanedUp).toBe(true);
+    },
+    2000,
+  );
+
+  it(
+    "uploadAttachment settles within a bounded timeout AND tears down the source when the consumer cancels the body mid-stream",
+    async () => {
+      const { createClient } = await setup();
+      const client = createClient(async (url, init) => {
+        const body = init.body as ReadableStream<Uint8Array>;
+        const reader = body.getReader();
+        await reader.read();
+        await reader.cancel(new Error("simulated mid-stream consumer failure"));
+        throw new Error("network failure after partial read");
+      });
+
+      let sourceCleanedUp = false;
+      async function* source(): AsyncIterable<Buffer> {
+        try {
+          yield Buffer.from("%PDF-1.4\nfirst chunk padding to clear the twelve byte magic header", "latin1");
+          yield Buffer.from("second chunk that must never need to be fully delivered", "latin1");
+        } finally {
+          sourceCleanedUp = true;
+        }
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-8",
+          },
+          source(),
+        ),
+      ).rejects.toThrow();
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(sourceCleanedUp).toBe(true);
+    },
+    2000,
+  );
+
+  it(
+    "uploadAttachment settles within a bounded timeout when fetchImplementation fails after reading the first chunk",
+    async () => {
+      const { createClient } = await setup();
+      const client = createClient(async (url, init) => {
+        const body = init.body as ReadableStream<Uint8Array>;
+        const reader = body.getReader();
+        await reader.read();
+        throw new Error("network failure after first chunk");
+      });
+
+      async function* source(): AsyncIterable<Buffer> {
+        yield Buffer.from("%PDF-1.4\nfirst chunk padding to clear the twelve byte magic header", "latin1");
+        yield Buffer.from("second chunk", "latin1");
+      }
+
+      await expect(
+        client.uploadAttachment(
+          {
+            candidateId: "99999999-9999-4999-8999-999999999999",
+            attachmentIndex: 0,
+            uploadGrantId: "grant-1",
+            expectedCandidateVersion: 1,
+            idempotencyKey: "idem-upload-9",
+          },
+          source(),
+        ),
+      ).rejects.toThrow();
+    },
+    2000,
+  );
+
   it("submitStructuredResult posts the callback payload and parses the materialization result", async () => {
     const { createClient } = await setup();
     const candidateId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

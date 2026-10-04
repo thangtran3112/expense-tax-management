@@ -35,6 +35,7 @@ import {
   DateOnlySchema,
   DecimalMoneySchema,
   mailboxIdempotencyKey,
+  TimestampSchema,
   type MailboxErrorCodeV1,
   type StructuredReceiptResultV1,
 } from "@expense-tax/contracts";
@@ -478,15 +479,30 @@ function normalizeCurrency(raw: unknown): string | null {
   return result.success ? result.data : null;
 }
 
+/**
+ * Fix round 2 (re-review Important #2, round 1 NOT ADDRESSED) -- round 1
+ * accepted a full ISO datetime by slicing the first 10 characters and
+ * validating only that prefix, so any string merely *starting with* a
+ * valid date (e.g. "2026-09-01garbage") slipped through with the
+ * trailing garbage silently discarded. The fix validates the WHOLE
+ * string as a real ISO datetime first (reusing the repo's own canonical
+ * `TimestampSchema` -- `z.string().datetime({offset:true})`,
+ * `expenses.ts` -- which already enforces a complete, valid time +
+ * offset suffix with no trailing content), and only then extracts its
+ * date portion; a date-shaped prefix followed by anything else is
+ * rejected before ever reaching `.slice()`.
+ */
 function normalizeDateOnly(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   const direct = DateOnlySchema.safeParse(trimmed);
   if (direct.success) return direct.data;
-  // JSON-LD commonly carries a full ISO datetime (e.g.
-  // "2026-09-01T10:00:00Z") where a bare date is expected; accept that
-  // shape specifically by validating just its date portion, rather than
-  // loosening DateOnlySchema itself.
+  if (!TimestampSchema.safeParse(trimmed).success) return null;
+  // TimestampSchema just validated the entire string as a well-formed
+  // ISO datetime (YYYY-MM-DDTHH:mm:ss[.sss](Z|+HH:MM|-HH:MM)) with no
+  // trailing content of any kind, so its first 10 characters are always
+  // exactly the date portion -- re-validated here rather than trusted
+  // blindly, in case TimestampSchema's own format ever changes.
   const fromDatetime = DateOnlySchema.safeParse(trimmed.slice(0, 10));
   return fromDatetime.success ? fromDatetime.data : null;
 }

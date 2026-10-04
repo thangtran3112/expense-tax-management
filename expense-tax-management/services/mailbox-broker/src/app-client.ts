@@ -278,32 +278,76 @@ function createHttpUploadTarget(): {
   readonly abort: () => Promise<void>;
   readonly close: () => Promise<void>;
 } {
-  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  // Fix round 2 (re-review Important #1, round 1 NOT ADDRESSED) -- round
+  // 1 handed the TransformStream's own readable directly to the HTTP
+  // caller as the fetch body. Once that external caller calls
+  // `getReader()` on it, the stream is "locked" from our side:
+  // `readable.cancel()` then rejects (proven by direct experiment) and
+  // `writer.abort()` alone can hang indefinitely if that external reader
+  // never reads and never releases its lock -- there is no way for this
+  // module to reach *their* reader to cancel it.
+  //
+  // Fix: never expose the real stream. `innerReader` is acquired here,
+  // once, and never shared -- this module is its permanent and only
+  // owner, so cancelling *it* can never throw "locked" regardless of
+  // what the external caller does. `relay` is a second, independent
+  // ReadableStream hbuilt on top: its `pull()` forwards exactly one
+  // `innerReader.read()` per external read (so backpressure still
+  // flows end-to-end), and its `cancel()` (called when the external
+  // caller gives up -- e.g. a real fetch() cancelling its own request
+  // body after the response already arrived) forwards into
+  // `innerReader.cancel()` too. Either direction of cancellation --
+  // ours or theirs -- reaches the one reader that actually unblocks a
+  // pending `writer.write()`.
+  const { readable: innerReadable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const writer = writable.getWriter();
-  return {
-    readable,
-    write: (chunk) => writer.write(chunk),
-    // Fix round 1 (review Important #1) -- `readable.cancel()` is the
-    // one operation proven (by direct experiment) to unblock a pending
-    // `writer.write()` in every reachable state, including when no
-    // consumer ever attached a reader at all; it also settles promptly
-    // even if the stream is already locked (rejecting fast with "stream
-    // is locked" rather than hanging), so it is safe to await.
-    // `writer.abort()` is attempted too for good hygiene, but NOT
-    // awaited: if an external consumer locked a reader and then simply
-    // stops reading without ever releasing it, `abort()` itself can
-    // hang indefinitely, and cleanup must never block on that.
-    abort: () => {
-      void writer.abort(new Error("attachment stream aborted")).catch(() => undefined);
-      return readable.cancel(new Error("attachment stream aborted")).then(
-        () => undefined,
-        () => undefined,
-      );
+  const innerReader = innerReadable.getReader();
+  let finished = false;
+
+  async function shutdown(reason: Error): Promise<void> {
+    if (finished) return;
+    finished = true;
+    // Both settle promptly once nobody else holds a conflicting lock on
+    // `innerReadable` -- proven by direct experiment against every
+    // reachable external-consumer state (never read, read-then-stop,
+    // read-to-completion).
+    await innerReader.cancel(reason).catch(() => undefined);
+    await writer.abort(reason).catch(() => undefined);
+  }
+
+  const relay = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (finished) {
+        controller.close();
+        return;
+      }
+      const { done, value } = await innerReader.read();
+      if (done) {
+        finished = true;
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
     },
+    async cancel(reason) {
+      // The external caller (the HTTP request this stream is the body
+      // of) gave up -- propagate inward so the pump's pending write
+      // unblocks instead of leaking forever.
+      await shutdown(reason instanceof Error ? reason : new Error(String(reason)));
+    },
+  });
+
+  return {
+    readable: relay,
+    write: (chunk) => writer.write(chunk),
+    abort: () => shutdown(new Error("attachment stream aborted")),
     // Closing signals EOF to the readable side (the fetch body) -- a
     // consumer's read() would otherwise hang forever waiting for more
     // data or a close that never comes.
-    close: () => writer.close(),
+    close: async () => {
+      finished = true;
+      await writer.close();
+    },
   };
 }
 

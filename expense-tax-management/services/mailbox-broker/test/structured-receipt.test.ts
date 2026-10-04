@@ -174,6 +174,28 @@ describe("parseStructuredReceipt — JSON number grammar and money/currency/date
     expect("incurredOn" in result && result.incurredOn).toBe("2026-09-01");
   });
 
+  it("accepts a full ISO datetime with a numeric offset and fractional seconds", async () => {
+    const result = await parseStructuredReceipt(
+      iterableOf(orderHtml({ ...VALID_ORDER, orderDate: "2026-09-01T10:30:00.123+05:00" })),
+      METADATA,
+    );
+    expect("incurredOn" in result && result.incurredOn).toBe("2026-09-01");
+  });
+
+  // Fix round 2 (re-review Important #2, round 1 NOT ADDRESSED) -- round
+  // 1 validated only the first 10 characters, so a date-shaped prefix
+  // followed by ANY trailing content slipped through unnoticed.
+  it.each([
+    ["trailing arbitrary text", "2026-09-01garbage"],
+    ["date followed by a bogus 'T' suffix with no time", "2026-09-01Tgarbage"],
+    ["a valid-looking time with trailing garbage after the offset", "2026-09-01T10:30:00Zgarbage"],
+    ["a valid date with a stray trailing space eaten then garbage", "2026-09-01 not-a-time"],
+    ["a second, smuggled date appended after the first", "2026-09-01 2026-09-02"],
+  ])("rejects %s as an invalid date (never a trusted date with trailing garbage silently dropped)", async (_label, orderDate) => {
+    const result = await parseStructuredReceipt(iterableOf(orderHtml({ ...VALID_ORDER, orderDate })), METADATA);
+    expect(result).toEqual({ status: "review", errorCode: "STRUCTURED_RECEIPT_INCOMPLETE" });
+  });
+
   it("never returns the literal string \"NaN\" or \"Infinity\" as amount, for any input", async () => {
     const hostileOrders = [
       { ...VALID_ORDER, totalPrice: Number.NaN },
