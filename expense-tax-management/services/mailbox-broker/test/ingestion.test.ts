@@ -344,8 +344,89 @@ describe("materializeCandidate", () => {
     expect(result.status).toBe("review");
   });
 
-  it("returns status failed when any attachment upload fails", async () => {
+  it("returns status failed when the only attachment upload fails", async () => {
     const deps = fakeDeps({ uploadStatus: "FAILED" });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(result.status).toBe("failed");
+  });
+
+  /**
+   * Phase 3D-C Task 5 fix round 3 (Critical, task-6-review.md): "mixed
+   * outcomes keep the success" -- one malware/unsupported/oversize
+   * attachment among several must never flip an otherwise-viable
+   * candidate to failed. Previously this returned "failed" on ANY single
+   * attachment failure.
+   */
+  it("returns status queued when at least one of several attachments uploads successfully, even if another is malware-blocked", async () => {
+    const deps = fakeDeps({
+      attachments: [
+        { attachmentId: "att-1", filename: "malware.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+        { attachmentId: "att-2", filename: "good.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+      ],
+    });
+    deps.appClient.uploadAttachment.mockImplementation(async (input: { attachmentIndex: number }) => ({
+      candidateId: CANDIDATE_ID,
+      attachmentIndex: input.attachmentIndex,
+      fileId: `file-${input.attachmentIndex}`,
+      status: input.attachmentIndex === 0 ? "FAILED" : "READY",
+      errorCode: input.attachmentIndex === 0 ? "MALWARE_DETECTED" : null,
+      idempotencyKey: `idem-${input.attachmentIndex}`,
+    }));
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(result.status).toBe("queued");
+  });
+
+  it("returns status failed when every attachment is malware-blocked (no viable path remains)", async () => {
+    const deps = fakeDeps({
+      attachments: [
+        { attachmentId: "att-1", filename: "malware-1.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+        { attachmentId: "att-2", filename: "malware-2.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+      ],
+    });
+    deps.appClient.uploadAttachment.mockImplementation(async (input: { attachmentIndex: number }) => ({
+      candidateId: CANDIDATE_ID,
+      attachmentIndex: input.attachmentIndex,
+      fileId: `file-${input.attachmentIndex}`,
+      status: "FAILED",
+      errorCode: "MALWARE_DETECTED",
+      idempotencyKey: `idem-${input.attachmentIndex}`,
+    }));
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(result.status).toBe("failed");
+  });
+
+  it("returns status failed when every attachment is an unsupported type (non-malware category)", async () => {
+    const deps = fakeDeps({
+      attachments: [
+        { attachmentId: "att-1", filename: "unsupported.exe", mimeType: "application/x-msdownload", sizeBytes: 10 },
+      ],
+    });
+    deps.appClient.uploadAttachment.mockImplementation(async (input: { attachmentIndex: number }) => ({
+      candidateId: CANDIDATE_ID,
+      attachmentIndex: input.attachmentIndex,
+      fileId: `file-${input.attachmentIndex}`,
+      status: "FAILED",
+      errorCode: "ATTACHMENT_SIGNATURE_REJECTED",
+      idempotencyKey: `idem-${input.attachmentIndex}`,
+    }));
 
     const result = await materializeCandidate(deps, {
       connectionId: "ignored",

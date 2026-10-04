@@ -286,7 +286,17 @@ export async function materializeCandidate(
   });
 
   const attachmentCount = Math.min(message.attachments.length, MAX_CANDIDATE_ATTACHMENTS);
-  let anyFailed = false;
+  // Phase 3D-C Task 5 fix round 3 (Critical, task-6-review.md): "mixed
+  // outcomes keep the success" -- the candidate-level materialize result
+  // is "failed" only when NO attachment produced a viable (non-FAILED)
+  // upload; one good attachment among several malware/unsupported/
+  // oversize ones still proceeds through the normal per-attachment OCR
+  // path (receiveAttachment already creates one OCR job per READY
+  // attachment, independent of its siblings' outcomes). Previously this
+  // flipped to "failed" on ANY single attachment failure, which would
+  // have blocked an otherwise-viable candidate the first time even one
+  // attachment was malware-blocked.
+  let anySucceeded = false;
   for (let index = 0; index < attachmentCount; index += 1) {
     const attachment = message.attachments[index]!;
     const bytes = await gmail.getAttachment({
@@ -308,13 +318,13 @@ export async function materializeCandidate(
       },
       singleChunk(bytes),
     );
-    if (result.status === "FAILED") anyFailed = true;
+    if (result.status !== "FAILED") anySucceeded = true;
   }
 
   return {
     schemaVersion: 1,
     candidateId: input.candidateId,
-    status: anyFailed ? "failed" : "queued",
+    status: anySucceeded ? "queued" : "failed",
     processingJobId: null,
     expenseId: null,
     sourceId: null,

@@ -243,6 +243,43 @@ describe("createMailboxMaterializeActivities (fix round 1: mailbox-scoped identi
       });
     });
 
+    /**
+     * Phase 3D-C Task 5 fix round 3 (Critical, task-6-review.md): a
+     * broker result with status "failed" (every attachment terminally
+     * blocked, no viable path) must submit the JOB as FAILED, never
+     * SUCCEEDED -- the only way app-api's
+     * maybeFailMailboxCandidateInTransaction ever runs for this job type.
+     */
+    it("submits the job as FAILED (not SUCCEEDED) when the broker's own result.status is 'failed'", async () => {
+      const mailboxJobMaterializeInput = vi.fn().mockResolvedValue({ candidateId: CANDIDATE_ID });
+      const mailboxJobResult = vi.fn().mockResolvedValue({ version: 3 });
+      const failedResult = { ...MATERIALIZATION_RESULT, status: "failed" as const };
+      const materializeCandidate = vi.fn().mockResolvedValue(failedResult);
+      const activities = createMailboxMaterializeActivities({
+        mailboxClient: {
+          mailboxJobMaterializeInput,
+          mailboxJobResult,
+          materializeCandidate,
+        } as unknown as MailboxAppApiClient,
+      });
+
+      const result = await activities.mailbox_materialize_job({
+        jobReference: JOB_REFERENCE,
+        expectedJobVersion: 2,
+      });
+
+      expect(result).toBe(3);
+      expect(mailboxJobResult).toHaveBeenCalledWith(JOB_REFERENCE.jobId, {
+        schemaVersion: 1,
+        status: "FAILED",
+        idempotencyKey: `${JOB_REFERENCE.jobId}:materialize:result:failed`,
+        expectedJobVersion: 2,
+        resultSchemaVersion: "mailbox-materialize-v1",
+        result: failedResult,
+        message: "MAILBOX_MATERIALIZE_FAILED: no viable attachment or structured receipt",
+      });
+    });
+
     it("maps a transient MailboxClientError from the materialize-input read to a retryable ApplicationFailure, never calling the broker or mailboxJobResult", async () => {
       const mailboxJobMaterializeInput = vi.fn().mockRejectedValue(new MailboxClientError("unavailable"));
       const materializeCandidate = vi.fn();

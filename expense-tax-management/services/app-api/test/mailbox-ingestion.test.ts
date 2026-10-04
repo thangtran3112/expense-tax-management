@@ -1853,12 +1853,16 @@ describe.skipIf(!requested)(
     });
 
     it("fix round 2 Important #1: a correctly-typed, internally-consistent materialize job still succeeds through getJob/recordStatusUpdate/submitResult with the flag set (the gate never breaks the legitimate path)", async () => {
-      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { candidateId, connectionId } = seedQueuedCandidate({ attachmentSha256: [] });
       const { jobId } = seedProcessingJob({
         workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
         targetAggregateType: "mailbox_candidate",
         targetAggregateId: candidateId,
-        inputParams: { mailboxCandidateId: candidateId },
+        // Fix round 3 (review Important #1): mailboxConnectionId must now
+        // also be present and match the real candidate's own
+        // connection_id -- requireMailboxMaterializeJob cross-checks it
+        // against the live app.mailbox_candidates row.
+        inputParams: { mailboxCandidateId: candidateId, mailboxConnectionId: connectionId },
       });
       const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
 
@@ -1890,6 +1894,391 @@ describe.skipIf(!requested)(
         requireMailboxMaterializeWorkflow: true,
       });
       expect(submitted.body.status).toBe("SUCCEEDED");
+    });
+
+    // ------------------------------------------------------------ //
+    // Fix round 3 (task-6-review.md, Critical): malware-blocked
+    // attachments never failed the candidate -- the materialize job was
+    // always submitted SUCCEEDED regardless of the broker's own result,
+    // so maybeFailMailboxCandidateInTransaction (FAILED-only) never ran
+    // and an all-malware candidate stayed 'queued' forever. These tests
+    // exercise the APP side of the fix directly: real receiveAttachment
+    // calls (so app.mailbox_ingestion_operations.error_code is genuinely
+    // populated by the real malware scanner/signature sniff, not a raw-
+    // SQL fixture) feeding a simulated worker submitResult call -- the
+    // EXACT shape workflow-worker's now-fixed mailbox_materialize_job
+    // activity sends (status FAILED with the broker's own "failed"
+    // result when no attachment was viable, SUCCEEDED with a "queued"
+    // result on a mixed outcome). The broker's own anySucceeded fix
+    // (mailbox-broker/test/ingestion.test.ts) and the worker activity's
+    // own status-branching fix (workflow-worker/test/mailbox-ingestion.
+    // test.ts) are covered separately; this closes the loop on
+    // processing-jobs.ts's resolveMaterializeFailureErrorCode, which only
+    // this real-PostgreSQL harness can exercise end-to-end (it reads the
+    // REAL ledger error_code column receiveAttachment wrote).
+    // ------------------------------------------------------------ //
+
+    function materializeResult(input: {
+      readonly candidateId: string;
+      readonly status: "queued" | "failed";
+    }): Record<string, unknown> {
+      return {
+        schemaVersion: 1,
+        candidateId: input.candidateId,
+        status: input.status,
+        processingJobId: null,
+        expenseId: null,
+        sourceId: null,
+        duplicateMatchId: null,
+        idempotencyKey: `materialize-result-${input.candidateId}`,
+      };
+    }
+
+    it("fix round 3 Critical: an all-malware candidate (its only attachment blocked) ends up failed/MALWARE_DETECTED, never stuck queued forever", async () => {
+      const infected = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.from(EICAR, "ascii"),
+      ]);
+      const { candidateId, connectionId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(infected)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const uploadResult = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([infected]),
+      );
+      expect(uploadResult.status).toBe("FAILED");
+      expect(uploadResult.errorCode).toBe("MALWARE_DETECTED");
+
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId, mailboxConnectionId: connectionId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      // The exact call shape the fixed mailbox_materialize_job activity
+      // now sends when the broker's own result.status is "failed".
+      const submitted = await processingJobsDomain.submitResult({
+        jobId,
+        request: {
+          schemaVersion: 1, status: "FAILED",
+          idempotencyKey: "fr3-all-malware-result", expectedJobVersion: 2,
+          resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+          result: materializeResult({ candidateId, status: "failed" }),
+          message: "MAILBOX_MATERIALIZE_FAILED: no viable attachment or structured receipt",
+        },
+        actorServicePrincipal: "workflow-worker-mailbox",
+        requestId: "fr3-all-malware-result",
+        requireMailboxMaterializeWorkflow: true,
+      });
+      expect(submitted.body.status).toBe("FAILED");
+
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("failed");
+      expect(candidateRow.error_code).toBe("MALWARE_DETECTED");
+    });
+
+    it("fix round 3 Critical: malware attachment + good attachment -- the materialize job itself still succeeds, and the candidate ends up processed once the good attachment's OCR job succeeds (mixed outcomes keep the success)", async () => {
+      const infected = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.from(EICAR, "ascii"),
+      ]);
+      const good = pngBytes();
+      const { candidateId, connectionId } = seedQueuedCandidate({
+        attachmentSha256: [sha256Hex(infected), sha256Hex(good)],
+      });
+      const { domain } = createDomain();
+
+      const grantA = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const infectedResult = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grantA.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([infected]),
+      );
+      expect(infectedResult.status).toBe("FAILED");
+      expect(infectedResult.errorCode).toBe("MALWARE_DETECTED");
+
+      const grantB = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const goodResult = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 1, uploadGrantId: grantB.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([good]),
+      );
+      expect(goodResult.status).toBe("READY");
+      const ocrJobRow = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("source_file_id", "=", goodResult.fileId).executeTakeFirstOrThrow();
+      expect(ocrJobRow.workflow_type).toBe(MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE);
+
+      const { jobId: materializeJobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId, mailboxConnectionId: connectionId },
+      });
+      // A REAL working starter (not noopTemporalStarter, which always
+      // throws) -- this test actually dispatches the good attachment's
+      // OCR job below, same as the existing "ocr-e2e" test's own local
+      // temporalStarter.
+      const workingTemporalStarter: TemporalWorkflowStarter = {
+        async start() {
+          return { runId: `run-${randomUUID()}` };
+        },
+        async close() {},
+      };
+      const processingJobsDomain = createProcessingJobsDomain(database!, workingTemporalStarter);
+
+      // The broker's own result.status is "queued" here -- one
+      // attachment succeeded -- so the fixed worker activity submits the
+      // materialize JOB as SUCCEEDED, same as before this round.
+      const materializeSubmitted = await processingJobsDomain.submitResult({
+        jobId: materializeJobId,
+        request: {
+          schemaVersion: 1, status: "SUCCEEDED",
+          idempotencyKey: "fr3-mixed-materialize-result", expectedJobVersion: 2,
+          resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+          result: materializeResult({ candidateId, status: "queued" }),
+        },
+        actorServicePrincipal: "workflow-worker-mailbox",
+        requestId: "fr3-mixed-materialize-result",
+        requireMailboxMaterializeWorkflow: true,
+      });
+      expect(materializeSubmitted.body.status).toBe("SUCCEEDED");
+
+      // The candidate must still be 'queued' -- the malware attachment's
+      // own terminal failure never surfaced onto it, because the OTHER
+      // attachment's OCR job is still outstanding (the sibling rule).
+      const stillQueued = await database!
+        .selectFrom("app.mailbox_candidates").select("status")
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(stillQueued.status).toBe("queued");
+
+      // Run the good attachment's OCR job through to SUCCEEDED (same
+      // dispatch -> RUNNING -> submitResult sequence the existing
+      // "ocr-e2e" test above already proves) -- no pre-seeded duplicate,
+      // so the candidate's final status is 'processed', not 'duplicate'.
+      // A high explicit limit: by this point in the shared-database test
+      // file, many earlier tests' own PENDING outbox rows may already
+      // exceed dispatchPendingJobs's default 25-row batch (oldest-first),
+      // which could otherwise starve this specific job out of the batch.
+      const dispatched = await processingJobsDomain.dispatchPendingJobs({ limit: 1000 });
+      expect(dispatched.dispatchedCount).toBeGreaterThanOrEqual(1);
+      const dispatchedOcrJob = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("id", "=", ocrJobRow.id).executeTakeFirstOrThrow();
+      expect(dispatchedOcrJob.status).toBe("DISPATCHED");
+
+      const ocrRunning = await processingJobsDomain.recordStatusUpdate({
+        jobId: ocrJobRow.id,
+        request: {
+          schemaVersion: 1, status: "RUNNING",
+          idempotencyKey: "fr3-mixed-ocr-running", expectedJobVersion: dispatchedOcrJob.version,
+        },
+        actorServicePrincipal: "ai-worker-app-machine",
+        requestId: "fr3-mixed-ocr-running",
+      });
+      const ocrSubmitted = await processingJobsDomain.submitResult({
+        jobId: ocrJobRow.id,
+        request: {
+          schemaVersion: 1, status: "SUCCEEDED",
+          idempotencyKey: "fr3-mixed-ocr-result", expectedJobVersion: ocrRunning.body.version,
+          resultSchemaVersion: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
+          result: {
+            schemaVersion: 1,
+            merchant: "Mixed Outcome Co", amount: "19.99", currency: "USD", incurredOn: "2026-09-15",
+            confidence: 0.95,
+          },
+        },
+        actorServicePrincipal: "ai-worker-app-machine",
+        requestId: "fr3-mixed-ocr-result",
+      });
+      expect(ocrSubmitted.body.status).toBe("SUCCEEDED");
+
+      const finalCandidate = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(finalCandidate.status).toBe("processed");
+      expect(finalCandidate.error_code).toBeNull();
+    });
+
+    it("fix round 3 Critical: an unsupported-type-only candidate (its only attachment fails signature sniffing) ends up failed/ATTACHMENT_SIGNATURE_REJECTED, not the generic MAILBOX_MATERIALIZE_FAILED", async () => {
+      const unsupported = Buffer.from("this is plain text, not any recognized image/pdf signature", "utf8");
+      const { candidateId, connectionId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(unsupported)] });
+      const { domain } = createDomain();
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const uploadResult = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([unsupported]),
+      );
+      expect(uploadResult.status).toBe("FAILED");
+      expect(uploadResult.errorCode).toBe("ATTACHMENT_SIGNATURE_REJECTED");
+
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId, mailboxConnectionId: connectionId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      const submitted = await processingJobsDomain.submitResult({
+        jobId,
+        request: {
+          schemaVersion: 1, status: "FAILED",
+          idempotencyKey: "fr3-unsupported-result", expectedJobVersion: 2,
+          resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+          result: materializeResult({ candidateId, status: "failed" }),
+          message: "MAILBOX_MATERIALIZE_FAILED: no viable attachment or structured receipt",
+        },
+        actorServicePrincipal: "workflow-worker-mailbox",
+        requestId: "fr3-unsupported-result",
+        requireMailboxMaterializeWorkflow: true,
+      });
+      expect(submitted.body.status).toBe("FAILED");
+
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("failed");
+      expect(candidateRow.error_code).toBe("ATTACHMENT_SIGNATURE_REJECTED");
+    });
+
+    // ------------------------------------------------------------ //
+    // Fix round 3 (task-5-review.md, Important #1): requireMailboxMaterializeJob
+    // now also cross-checks the REAL app.mailbox_candidates row's
+    // tenant_id/connection_id against the job's own tenant_id/
+    // input_params.mailboxConnectionId -- a job that is internally
+    // self-consistent (round 2's own check) but points at a candidate
+    // belonging to a DIFFERENT tenant or connection must still be
+    // rejected, with zero side effects.
+    // ------------------------------------------------------------ //
+
+    it("fix round 3 Important #1: rejects a self-consistent materialize job whose candidate belongs to a DIFFERENT tenant, with zero side effects", async () => {
+      const { candidateId, connectionId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const otherTenantId = randomUUID();
+      const otherOwnerId = randomUUID();
+      const otherProfileId = randomUUID();
+      runtimeSql(`
+        INSERT INTO app.tenants (id, name, slug, status) VALUES
+          ('${otherTenantId}', 'Fix Round 3 Other Tenant', 'fr3-other-tenant-${otherTenantId}', 'active');
+        INSERT INTO app.users (id, primary_email, display_name) VALUES
+          ('${otherOwnerId}', 'fr3-other-owner-${otherOwnerId}@example.test', 'FR3 Other Owner');
+        INSERT INTO app.tenant_memberships (tenant_id, user_id, role, status) VALUES
+          ('${otherTenantId}', '${otherOwnerId}', 'owner', 'active');
+        INSERT INTO app.personal_profiles (id, tenant_id, name) VALUES
+          ('${otherProfileId}', '${otherTenantId}', 'FR3 Other Profile');
+      `);
+      // A job row whose OWN fields are internally consistent (round 2's
+      // check passes: target_aggregate_id === input_params.mailboxCandidateId),
+      // but whose tenant_id is a DIFFERENT, real tenant than the
+      // referenced candidate's actual tenant_id -- the exact "self-
+      // consistent cross-tenant job" the review names.
+      const jobId = randomUUID();
+      runtimeSql(`
+        INSERT INTO app.processing_jobs (
+          id, tenant_id, personal_profile_id, business_id, workflow_type, workflow_id,
+          task_queue, run_id, status, target_aggregate_type, target_aggregate_id,
+          expected_aggregate_version, input_params, allowed_result_schema_version,
+          result, error_message, version, dispatched_at
+        ) VALUES (
+          '${jobId}', '${otherTenantId}', '${otherProfileId}', NULL, '${MAILBOX_MATERIALIZE_WORKFLOW_TYPE}', 'job-${jobId}',
+          'expense-tax-processing', NULL, 'DISPATCHED', 'mailbox_candidate', '${candidateId}',
+          NULL, '${JSON.stringify({ mailboxCandidateId: candidateId, mailboxConnectionId: connectionId })}'::jsonb,
+          '${MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION}', NULL, NULL, 2, now()
+        );
+      `);
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      await expect(
+        processingJobsDomain.getJob(jobId, { requireMailboxMaterializeWorkflow: true }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      await expect(
+        processingJobsDomain.recordStatusUpdate({
+          jobId,
+          request: {
+            schemaVersion: 1, status: "RUNNING",
+            idempotencyKey: "fr3-cross-tenant-status", expectedJobVersion: 2,
+          },
+          actorServicePrincipal: "workflow-worker-mailbox",
+          requestId: "fr3-cross-tenant-status",
+          requireMailboxMaterializeWorkflow: true,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      await expect(
+        processingJobsDomain.submitResult({
+          jobId,
+          request: {
+            schemaVersion: 1, status: "SUCCEEDED",
+            idempotencyKey: "fr3-cross-tenant-result", expectedJobVersion: 2,
+            resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+            result: materializeResult({ candidateId, status: "queued" }),
+          },
+          actorServicePrincipal: "workflow-worker-mailbox",
+          requestId: "fr3-cross-tenant-result",
+          requireMailboxMaterializeWorkflow: true,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      // Zero side effects: the job row is untouched.
+      const row = await database!
+        .selectFrom("app.processing_jobs").select(["version", "status"])
+        .where("id", "=", jobId).executeTakeFirstOrThrow();
+      expect(row.version).toBe(2);
+      expect(row.status).toBe("DISPATCHED");
+
+      // The candidate itself is untouched too (never resolved/mutated).
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").select("status")
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+    });
+
+    it("fix round 3 Important #1: rejects a self-consistent materialize job whose input_params.mailboxConnectionId disagrees with the candidate's REAL connection, with zero side effects", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const wrongConnectionId = randomUUID();
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        // Internally self-consistent (candidateId matches target_aggregate_id),
+        // but mailboxConnectionId points at a connection the candidate
+        // does NOT actually belong to.
+        inputParams: { mailboxCandidateId: candidateId, mailboxConnectionId: wrongConnectionId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      await expect(
+        processingJobsDomain.getJob(jobId, { requireMailboxMaterializeWorkflow: true }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      const row = await database!
+        .selectFrom("app.processing_jobs").select(["version", "status"])
+        .where("id", "=", jobId).executeTakeFirstOrThrow();
+      expect(row.version).toBe(2);
+      expect(row.status).toBe("DISPATCHED");
     });
   },
 );

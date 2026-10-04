@@ -9,6 +9,7 @@ import {
   type JobReferenceV1,
   type JobResultSubmitRequestV1,
   type JobStatusUpdateRequestV1,
+  type MailboxErrorCodeV1,
   type ProcessingJob,
   type ProcessingJobStatus,
   type WorkflowType,
@@ -242,36 +243,66 @@ const MAILBOX_CANDIDATE_JOB_WORKFLOW_TYPES = new Set<string>([
 const MAILBOX_CANDIDATE_TARGET_AGGREGATE_TYPE = "mailbox_candidate";
 
 /**
- * Phase 3D-C Task 5 fix round 2 (review Important #1) -- the sole gate
- * restricting the mailbox-scoped job-callback routes (materialize-input/
- * status/result) to EXACTLY the MailboxMaterializeWorkflow job each was
- * created for, never any other job the worker's bearer token happens to
- * name by id (wrong workflow type, or -- "tenant/connection consistency"
- * -- a job whose own target_aggregate_id and input_params.mailboxCandidateId
- * disagree, which would mean the row's own data integrity can't be
- * trusted to resolve the RIGHT candidate). A legitimate materialize job's
- * target_aggregate_id and input_params.mailboxCandidateId are both set,
- * in the same insert statement, from the same candidate.id (see
- * domain/mailbox-candidates.ts's ensureMaterializeJobInTransaction) --
- * they must always agree.
+ * Phase 3D-C Task 5 fix round 2 (review Important #1), extended fix round
+ * 3 (review Important #1: "a self-consistent cross-tenant job passes") --
+ * the sole gate restricting the mailbox-scoped job-callback routes
+ * (materialize-input/status/result) to EXACTLY the MailboxMaterializeWorkflow
+ * job each was created for, never any other job the worker's bearer token
+ * happens to name by id.
+ *
+ * Round 2 checked only the JOB ROW's own internal self-consistency
+ * (workflow_type, target_aggregate_type, target_aggregate_id vs.
+ * input_params.mailboxCandidateId) -- a job row that was somehow
+ * corrupted or forged to be internally consistent but stamped with the
+ * WRONG tenant_id (or pointed at a candidate belonging to a different
+ * connection) would still have passed. This round additionally loads the
+ * REAL app.mailbox_candidates row the job claims to target and requires
+ * its tenant_id/connection_id to match the job's own tenant_id and its
+ * own input_params.mailboxConnectionId -- "the authenticated mailbox
+ * scope" the job was created under (ensureMaterializeJobInTransaction
+ * stamps both tenant_id and input_params.mailboxConnectionId from the
+ * SAME candidate row, in the SAME insert statement, so for a genuine job
+ * they can never disagree). Takes an executor (plain `database` for the
+ * read-only getJob path, or the already-locked `transaction` for
+ * recordStatusUpdate/submitResult) rather than its own lock: the job's
+ * own row is already locked by the caller via requireJobForUpdate before
+ * this runs, and the candidate's identifying columns
+ * (tenant_id/connection_id) are immutable once created (migration 020's
+ * own prevent_mailbox_candidate_scope_update-style trigger family), so no
+ * separate FOR UPDATE on the candidate is needed for this consistency
+ * check specifically.
  *
  * 404 (not a type-specific error) on every failure mode here, same as an
- * outright-missing job: a wrong-type/inconsistent job id reveals nothing
- * to the caller beyond "that id is not a reachable materialize job".
+ * outright-missing job: a wrong-type/inconsistent/cross-tenant job id
+ * reveals nothing to the caller beyond "that id is not a reachable
+ * materialize job".
  */
-function requireMailboxMaterializeJob(
+async function requireMailboxMaterializeJob(
+  executor: Kysely<AppDatabase> | Transaction<AppDatabase>,
   row: Pick<
     ProcessingJobRow,
-    "workflow_type" | "target_aggregate_type" | "target_aggregate_id" | "input_params"
+    "tenant_id" | "workflow_type" | "target_aggregate_type" | "target_aggregate_id" | "input_params"
   >,
-): void {
+): Promise<void> {
   if (row.workflow_type !== MAILBOX_MATERIALIZE_WORKFLOW_TYPE) throw DomainError.notFound();
   if (row.target_aggregate_type !== MAILBOX_CANDIDATE_TARGET_AGGREGATE_TYPE) {
     throw DomainError.notFound();
   }
-  const candidateId = (row.input_params as Record<string, unknown> | null)?.mailboxCandidateId;
+  const inputParams = row.input_params as Record<string, unknown> | null;
+  const candidateId = inputParams?.mailboxCandidateId;
   if (typeof candidateId !== "string" || candidateId.length === 0) throw DomainError.notFound();
   if (candidateId !== row.target_aggregate_id) throw DomainError.notFound();
+  const connectionId = inputParams?.mailboxConnectionId;
+  if (typeof connectionId !== "string" || connectionId.length === 0) throw DomainError.notFound();
+
+  const candidate = await executor
+    .selectFrom("app.mailbox_candidates")
+    .select(["tenant_id", "connection_id"])
+    .where("id", "=", candidateId)
+    .executeTakeFirst();
+  if (!candidate) throw DomainError.notFound();
+  if (candidate.tenant_id !== row.tenant_id) throw DomainError.notFound();
+  if (candidate.connection_id !== connectionId) throw DomainError.notFound();
 }
 
 /**
@@ -311,6 +342,53 @@ function requireMailboxMaterializeJob(
  * on the exact current status in the UPDATE's own WHERE clause so a
  * concurrent resolver can never race it into double-applying.
  */
+
+/**
+ * Phase 3D-C Task 5 fix round 3 (Critical, task-6-review.md) -- a
+ * MailboxMaterializeWorkflow job's own terminal failure is, as of this
+ * round, exactly "no viable attachment (every one terminally blocked:
+ * malware/unsupported/oversize/hash-mismatch) and no structured receipt
+ * matched" (see mailbox-broker/src/ingestion.ts's materializeCandidate:
+ * "mixed outcomes keep the success", so this path is only ever reached
+ * when NOTHING succeeded). The specific per-attachment category already
+ * lives on app.mailbox_ingestion_operations.error_code -- written
+ * directly from each upload_attachment call's own result.errorCode
+ * (domain/mailbox-ingestion.ts) -- so no new field/migration/contract
+ * change is needed to surface it onto the candidate; this just reads
+ * what the attachment pipeline already persisted.
+ *
+ * Priority when attachments failed for different reasons: MALWARE_DETECTED
+ * wins outright (the most actionable, most severe signal for the owner --
+ * "fix: ... MALWARE_DETECTED when malware caused it" per the review);
+ * otherwise a single uniform code across every failed attachment is used
+ * as-is ("unsupported-only -> failed with its category"); a genuinely
+ * mixed non-malware failure set (or no upload_attachment rows at all --
+ * e.g. the Gmail refetch itself failed before any attachment was even
+ * attempted) falls back to the generic MAILBOX_MATERIALIZE_FAILED, same
+ * as every round before this one.
+ */
+async function resolveMaterializeFailureErrorCode(
+  transaction: Transaction<AppDatabase>,
+  candidateId: string,
+): Promise<MailboxErrorCodeV1> {
+  const rows = await transaction
+    .selectFrom("app.mailbox_ingestion_operations")
+    .select("error_code")
+    .where("candidate_id", "=", candidateId)
+    .where("operation_kind", "=", "upload_attachment")
+    .where("status", "=", "completed")
+    .where("error_code", "is not", null)
+    .execute();
+  const codes = rows
+    .map((row) => row.error_code)
+    .filter((code): code is string => code !== null);
+  if (codes.includes("MALWARE_DETECTED")) return "MALWARE_DETECTED";
+  const unique = new Set(codes);
+  return unique.size === 1
+    ? (codes[0] as MailboxErrorCodeV1)
+    : "MAILBOX_MATERIALIZE_FAILED";
+}
+
 async function maybeFailMailboxCandidateInTransaction(
   transaction: Transaction<AppDatabase>,
   job: Pick<ProcessingJobRow, "id" | "workflow_type" | "input_params">,
@@ -346,7 +424,7 @@ async function maybeFailMailboxCandidateInTransaction(
   if (Number(outstanding.count) > 0) return;
 
   const errorCode = job.workflow_type === MAILBOX_MATERIALIZE_WORKFLOW_TYPE
-    ? "MAILBOX_MATERIALIZE_FAILED"
+    ? await resolveMaterializeFailureErrorCode(transaction, candidateId)
     : "OCR_EXTRACTION_FAILED";
   await transaction
     .updateTable("app.mailbox_candidates")
@@ -453,7 +531,7 @@ export function createProcessingJobsDomain(
           execute: async (transaction) => {
             const job = await requireJobForUpdate(transaction, input.jobId);
             if (input.requireMailboxMaterializeWorkflow) {
-              requireMailboxMaterializeJob(job);
+              await requireMailboxMaterializeJob(transaction, job);
             }
             if (job.version !== input.request.expectedJobVersion) {
               throw DomainError.preconditionFailed();
@@ -511,7 +589,7 @@ export function createProcessingJobsDomain(
           execute: async (transaction) => {
             const job = await requireJobForUpdate(transaction, input.jobId);
             if (input.requireMailboxMaterializeWorkflow) {
-              requireMailboxMaterializeJob(job);
+              await requireMailboxMaterializeJob(transaction, job);
             }
             if (job.version !== input.request.expectedJobVersion) {
               throw DomainError.preconditionFailed();
@@ -607,7 +685,7 @@ export function createProcessingJobsDomain(
         .executeTakeFirst();
       if (!row) throw DomainError.notFound();
       if (options?.requireMailboxMaterializeWorkflow) {
-        requireMailboxMaterializeJob(row);
+        await requireMailboxMaterializeJob(database, row);
       }
       return toProcessingJob(row);
     },

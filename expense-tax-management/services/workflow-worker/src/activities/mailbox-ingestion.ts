@@ -183,14 +183,29 @@ export function createMailboxMaterializeActivities({ mailboxClient }: MailboxMat
         throwMailboxClientFailure(error, "MailboxMaterializeTransient", "MailboxMaterializeNonRetryable");
       }
 
+      // Phase 3D-C Task 5 fix round 3 (Critical, task-6-review.md): the
+      // broker's own result.status ("failed" -- every attachment
+      // terminally blocked/unsupported, no structured receipt, no
+      // viable path) must flip the JOB's own status to FAILED, never
+      // SUCCEEDED -- previously this always submitted SUCCEEDED
+      // regardless, so app-api's maybeFailMailboxCandidateInTransaction
+      // (only triggered on a FAILED submitResult) never ran and an
+      // all-malware candidate stayed 'queued' forever. The opaque
+      // result object (still no bytes/extraction fields, only the
+      // bounded MailboxMaterializationResultV1 shape) still rides along
+      // so app-api can read its own `upload_attachment` ledger for the
+      // specific failure category (see processing-jobs.ts).
       try {
         const job = await mailboxClient.mailboxJobResult(jobId, {
           schemaVersion: 1,
-          status: "SUCCEEDED",
-          idempotencyKey: `${jobId}:materialize:result:succeeded`,
+          status: result.status === "failed" ? "FAILED" : "SUCCEEDED",
+          idempotencyKey: `${jobId}:materialize:result:${result.status === "failed" ? "failed" : "succeeded"}`,
           expectedJobVersion: input.expectedJobVersion,
           resultSchemaVersion: "mailbox-materialize-v1",
           result,
+          ...(result.status === "failed"
+            ? { message: "MAILBOX_MATERIALIZE_FAILED: no viable attachment or structured receipt" }
+            : {}),
         });
         return job.version;
       } catch (error) {
