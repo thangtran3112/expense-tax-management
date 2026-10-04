@@ -14,6 +14,7 @@ import {
   ErrorResponseSchema,
   MailboxCandidateClassificationSchema,
   MailboxCandidateV1Schema,
+  MailboxIngestionBucketV1Schema,
   MailboxScopeSchema,
 } from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -50,12 +51,17 @@ const CandidateParamsSchema = z.strictObject({
 
 const ListQuerySchema = z.object({
   classification: MailboxCandidateClassificationSchema.optional(),
+  /** Fix round 1 (review finding #4) -- Office ingestion-status board
+   * section filter, independent of `classification`. */
+  bucket: MailboxIngestionBucketV1Schema.optional(),
   cursor: z.string().trim().min(1).optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });
 const ListResponseSchema = z.strictObject({
   items: z.array(MailboxCandidateV1Schema),
   nextCursor: z.string().nullable(),
+  /** Present only when `bucket` was requested. */
+  totalCount: z.number().int().nonnegative().optional(),
 });
 
 const ResolveBodySchema = z.strictObject({
@@ -89,10 +95,15 @@ export async function registerMailboxCandidateRoutes(
         tenantId: request.params.tenantId,
         connectionId: request.params.connectionId,
         ...(request.query.classification === undefined ? {} : { classification: request.query.classification }),
+        ...(request.query.bucket === undefined ? {} : { bucket: request.query.bucket }),
         ...(request.query.cursor === undefined ? {} : { cursor: request.query.cursor }),
         ...(request.query.limit === undefined ? {} : { limit: request.query.limit }),
       });
-      return { items: [...result.items], nextCursor: result.nextCursor };
+      return {
+        items: [...result.items],
+        nextCursor: result.nextCursor,
+        ...(result.totalCount === undefined ? {} : { totalCount: result.totalCount }),
+      };
     },
   );
 

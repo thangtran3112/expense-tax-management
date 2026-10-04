@@ -1,4 +1,4 @@
-import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, MailboxIngestionBucketV1, Scope } from "@expense-tax/contracts";
 
 import { fetchAuthorizedBusinesses, fetchDuplicateMatches, fetchLedger, fetchMailboxCandidates, fetchMailboxConnection, fetchMailboxScanRuns, fetchOwnPersonalProfile, fetchTags, fetchTaxReport } from "./api";
 import type { ClerkGetToken } from "./clerk";
@@ -126,21 +126,22 @@ export function loadMailboxCandidates(
 }
 
 /**
- * Phase 3D-C Task 6 -- every candidate on a connection, unfiltered by
- * classification, for the ingestion-status board (which groups by
- * ingestion *status*, not classification, and only after approval --
- * see lib/mailbox.ts's isMailboxIngestionCandidate). No backend addition
- * needed: MailboxCandidateV1 already carries status/scope/errorCode/
- * expenseId/sourceId/duplicateMatchId (see task-6-report.md Ruling 1).
+ * Phase 3D-C Task 6 fix round 1 (review finding #4) -- one ingestion-
+ * status board section (bucket), server-filtered by status + the
+ * "approved for ingestion at least once" scope-assigned rule
+ * (services/app-api/src/domain/mailbox-candidates.ts), with its own
+ * cursor and `totalCount` ("Showing N of M").
  */
 export function loadMailboxIngestionCandidates(
   session: OfficeSession,
   connectionId: string,
+  bucket: MailboxIngestionBucketV1,
   getToken: ClerkGetToken,
   organizationId: string | null | undefined,
   cursor?: string,
 ) {
   return fetchMailboxCandidates(session, connectionId, getToken, organizationId, {
+    bucket,
     ...(cursor ? { cursor } : {}),
   });
 }

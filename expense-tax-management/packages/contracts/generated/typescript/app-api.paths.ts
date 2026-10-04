@@ -2850,6 +2850,15 @@ export interface paths {
                                 id: string;
                                 /** Format: date */
                                 incurredOn: string;
+                                mailboxProvenance: {
+                                    /** Format: email */
+                                    mailboxAccountEmail: string;
+                                    pendingDuplicateReview: boolean;
+                                    /** Format: date-time */
+                                    receivedAt: string;
+                                    /** Format: email */
+                                    senderAddress: string;
+                                } | null;
                                 merchant: string;
                                 personalProfileId: string | null;
                                 projectId: string | null;
@@ -3015,6 +3024,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -3176,6 +3194,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -3462,6 +3489,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -10755,6 +10791,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
+                    bucket?: "in_progress" | "needs_attention" | "completed";
                     classification?: "receipt" | "ambiguous" | "not_receipt";
                     cursor?: string;
                     limit?: number;
@@ -10798,6 +10835,16 @@ export interface paths {
                                 /** Format: uuid */
                                 id: string;
                                 idempotencyKey: string;
+                                ingestionProgress: {
+                                    attachments: {
+                                        failed: number;
+                                        pending: number;
+                                        succeeded: number;
+                                        total: number;
+                                    };
+                                    /** @enum {string} */
+                                    phase: "materializing" | "processing_attachments";
+                                } | null;
                                 processingJobId: string | null;
                                 /** Format: date-time */
                                 receivedAt: string;
@@ -10830,6 +10877,7 @@ export interface paths {
                                 version: number;
                             }[];
                             nextCursor: string | null;
+                            totalCount?: number;
                         };
                     };
                 };
@@ -10989,6 +11037,16 @@ export interface paths {
                             /** Format: uuid */
                             id: string;
                             idempotencyKey: string;
+                            ingestionProgress: {
+                                attachments: {
+                                    failed: number;
+                                    pending: number;
+                                    succeeded: number;
+                                    total: number;
+                                };
+                                /** @enum {string} */
+                                phase: "materializing" | "processing_attachments";
+                            } | null;
                             processingJobId: string | null;
                             /** Format: date-time */
                             receivedAt: string;
@@ -12409,6 +12467,15 @@ export interface paths {
                                 id: string;
                                 /** Format: date */
                                 incurredOn: string;
+                                mailboxProvenance: {
+                                    /** Format: email */
+                                    mailboxAccountEmail: string;
+                                    pendingDuplicateReview: boolean;
+                                    /** Format: date-time */
+                                    receivedAt: string;
+                                    /** Format: email */
+                                    senderAddress: string;
+                                } | null;
                                 merchant: string;
                                 personalProfileId: string | null;
                                 projectId: string | null;
@@ -12574,6 +12641,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -12735,6 +12811,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -13021,6 +13106,15 @@ export interface paths {
                             id: string;
                             /** Format: date */
                             incurredOn: string;
+                            mailboxProvenance: {
+                                /** Format: email */
+                                mailboxAccountEmail: string;
+                                pendingDuplicateReview: boolean;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: email */
+                                senderAddress: string;
+                            } | null;
                             merchant: string;
                             personalProfileId: string | null;
                             projectId: string | null;
@@ -20764,151 +20858,6 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/internal/v1/jobs/{jobId}/materialize-input": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    jobId: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Default Response */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            /** Format: uuid */
-                            candidateId: string;
-                        };
-                    };
-                };
-                /** @description Default Response */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                401: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                412: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-                /** @description Default Response */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            error: {
-                                code: string;
-                                message: string;
-                                requestId: string;
-                            };
-                        };
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;

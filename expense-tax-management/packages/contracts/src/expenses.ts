@@ -40,6 +40,22 @@ export const ExpenseSourceSchema = z.enum([
 ]);
 export type ExpenseSource = z.infer<typeof ExpenseSourceSchema>;
 
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #6) -- connected-mailbox
+ * provenance for the Office expense-detail "Source" block. Metadata
+ * only: sender address, received date, the mailbox account it arrived
+ * through, and whether it is still pending Phase 3B duplicate review --
+ * never message body/attachment bytes/other provider content. Present
+ * (non-null) only when `source === "connected_mailbox"`.
+ */
+export const ExpenseMailboxProvenanceV1Schema = z.strictObject({
+  senderAddress: z.email().max(320),
+  receivedAt: TimestampSchema,
+  mailboxAccountEmail: z.email().max(320),
+  pendingDuplicateReview: z.boolean(),
+});
+export type ExpenseMailboxProvenanceV1 = z.infer<typeof ExpenseMailboxProvenanceV1Schema>;
+
 const ExpenseScopeFields = {
   personalProfileId: z.uuid().nullable().optional(),
   businessId: z.uuid().nullable().optional(),
@@ -87,6 +103,7 @@ export const ExpenseSchema = z.strictObject({
   incurredOn: DateOnlySchema,
   taxYear: z.number().int().min(1_900).max(9_999),
   source: ExpenseSourceSchema,
+  mailboxProvenance: ExpenseMailboxProvenanceV1Schema.nullable(),
   status: ExpenseStatusSchema,
   version: VersionSchema,
   createdAt: TimestampSchema,

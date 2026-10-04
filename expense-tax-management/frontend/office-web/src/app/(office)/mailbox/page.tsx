@@ -19,13 +19,13 @@ import {
   mailboxStatusDisplay,
   isMailboxIngestionCandidate,
   mailboxIngestionAccessMessage,
-  mailboxIngestionBucket,
   mailboxIngestionConflictMessage,
   mailboxIngestionStatusDisplay,
   MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS,
   MAILBOX_DUPLICATES_HREF,
   MAILBOX_INGESTION_GROUPS,
   type MailboxIngestionAction,
+  type MailboxIngestionBucket,
 } from "@/lib/mailbox";
 import {
   loadAuthorizedBusinesses,
@@ -949,19 +949,37 @@ export function MailboxCandidateReviewPanel({
 }
 
 // ------------------------------------------------------------------ //
-// Ingestion status board (Phase 3D-C Task 6)
+// Ingestion status board (Phase 3D-C Task 6, fix round 1)
 //
 // Per-candidate status after "Approve for ingestion" -- the approved
-// gate (plans/mockups/office-mailbox-ingestion/). Reuses the existing
-// candidate list route with no classification filter (no backend
-// change -- see task-6-report.md Ruling 1); grouping/pagination is
-// therefore one shared feed bucketed client-side into the gate's three
-// sections, rather than the mockup's three independent per-status
-// cursors, which the real list route has no status filter to support
-// (Ruling 2).
+// gate (plans/mockups/office-mailbox-ingestion/). Fix round 1 (review
+// findings #1/#4): each section is now its own server-filtered bucket
+// (status + the "approved at least once" scope-assigned rule, computed
+// in services/app-api/src/domain/mailbox-candidates.ts), with its own
+// cursor and totalCount -- no more client-side bucketing of one shared
+// feed. `isMailboxIngestionCandidate` is still applied client-side as a
+// defense-in-depth filter (cheap, never trusts the network alone).
 // ------------------------------------------------------------------ //
 
 type MailboxIngestionItem = Awaited<ReturnType<typeof loadMailboxIngestionCandidates>>["items"][number];
+
+interface IngestionGroupState {
+  readonly items: readonly MailboxIngestionItem[];
+  readonly nextCursor: string | null;
+  readonly totalCount: number | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+}
+
+const EMPTY_INGESTION_GROUP: IngestionGroupState = {
+  items: [],
+  nextCursor: null,
+  totalCount: null,
+  loading: false,
+  error: null,
+};
+
+const MAILBOX_INGESTION_POLL_MS = 5_000;
 
 function MailboxIngestionStatusPanel({
   session,
@@ -978,52 +996,141 @@ function MailboxIngestionStatusPanel({
   const { organization } = useOrganization();
   const organizationId = organization?.id ?? null;
 
-  const [rawItems, setRawItems] = useState<readonly MailboxIngestionItem[] | undefined>(undefined);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<Record<MailboxIngestionBucket, IngestionGroupState>>({
+    in_progress: EMPTY_INGESTION_GROUP,
+    needs_attention: EMPTY_INGESTION_GROUP,
+    completed: EMPTY_INGESTION_GROUP,
+  });
+  const [loaded, setLoaded] = useState(false);
   const [dismissedIds, setDismissedIds] = useState<ReadonlySet<string>>(new Set());
   const [workingId, setWorkingId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  // Fix round 1 (review finding #3) -- conflict/action errors are scoped
+  // to the affected candidate row, never a panel-global alert.
+  const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const accessMessage = mailboxIngestionAccessMessage(connectionStatus);
 
+  async function loadGroup(bucket: MailboxIngestionBucket, cursor?: string): Promise<IngestionGroupState> {
+    const data = await loadMailboxIngestionCandidates(session, connectionId, bucket, getToken, organizationId!, cursor);
+    return {
+      items: cursor ? [...groups[bucket].items, ...data.items] : data.items,
+      nextCursor: data.nextCursor,
+      totalCount: data.totalCount ?? null,
+      loading: false,
+      error: null,
+    };
+  }
+
+  async function loadMore(bucket: MailboxIngestionBucket) {
+    const current = groups[bucket];
+    if (!organizationId || !current.nextCursor) return;
+    setGroups((state) => ({ ...state, [bucket]: { ...state[bucket], loading: true, error: null } }));
+    try {
+      const data = await loadMailboxIngestionCandidates(
+        session,
+        connectionId,
+        bucket,
+        getToken,
+        organizationId,
+        current.nextCursor,
+      );
+      setGroups((state) => ({
+        ...state,
+        [bucket]: {
+          items: [...state[bucket].items, ...data.items],
+          nextCursor: data.nextCursor,
+          totalCount: data.totalCount ?? state[bucket].totalCount,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (caught: unknown) {
+      setGroups((state) => ({
+        ...state,
+        [bucket]: {
+          ...state[bucket],
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not load more ingestion status.",
+        },
+      }));
+    }
+  }
+
+  // Fix round 1 (review finding #2) -- initial load on mount/refreshSignal,
+  // then a self-scheduling poll (same 5s cadence as the scan-status poll
+  // above) that refetches all three buckets from page 1 while any row is
+  // still in progress, and stops once none are. Fake-timer-testable: the
+  // same shape as the existing "Scan now" poll effect.
   useEffect(() => {
     if (!organizationId || accessMessage) return;
     let active = true;
-    async function load() {
-      setRawItems(undefined);
-      setListError(null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function cycle() {
       try {
-        const data = await loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId);
+        const [inProgress, needsAttention, completed] = await Promise.all([
+          loadMailboxIngestionCandidates(session, connectionId, "in_progress", getToken, organizationId!),
+          loadMailboxIngestionCandidates(session, connectionId, "needs_attention", getToken, organizationId!),
+          loadMailboxIngestionCandidates(session, connectionId, "completed", getToken, organizationId!),
+        ]);
         if (!active) return;
-        setRawItems(data.items);
-        setNextCursor(data.nextCursor);
+        setGroups({
+          in_progress: {
+            items: inProgress.items,
+            nextCursor: inProgress.nextCursor,
+            totalCount: inProgress.totalCount ?? null,
+            loading: false,
+            error: null,
+          },
+          needs_attention: {
+            items: needsAttention.items,
+            nextCursor: needsAttention.nextCursor,
+            totalCount: needsAttention.totalCount ?? null,
+            loading: false,
+            error: null,
+          },
+          completed: {
+            items: completed.items,
+            nextCursor: completed.nextCursor,
+            totalCount: completed.totalCount ?? null,
+            loading: false,
+            error: null,
+          },
+        });
+        setLoaded(true);
+        if (active && inProgress.items.some((item) => isMailboxIngestionCandidate(item))) {
+          timer = setTimeout(() => void cycle(), MAILBOX_INGESTION_POLL_MS);
+        }
       } catch (caught: unknown) {
         if (!active) return;
-        setRawItems([]);
-        setListError(caught instanceof Error ? caught.message : "Could not load ingestion status.");
+        setLoaded(true);
+        const message = caught instanceof Error ? caught.message : "Could not load ingestion status.";
+        setGroups((state) => ({
+          in_progress: { ...state.in_progress, loading: false, error: message },
+          needs_attention: { ...state.needs_attention, loading: false, error: message },
+          completed: { ...state.completed, loading: false, error: message },
+        }));
       }
     }
-    void load();
+    void cycle();
     return () => {
       active = false;
+      if (timer) clearTimeout(timer);
     };
+    // loadGroup intentionally omitted -- it closes over `groups` only for
+    // its cursor-append branch, never used by this from-scratch cycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, organizationId, refreshSignal, accessMessage]);
 
-  async function loadMore() {
-    if (!organizationId || !nextCursor) return;
-    setLoadingMore(true);
-    try {
-      const data = await loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId, nextCursor);
-      setRawItems((current) => [...(current ?? []), ...data.items]);
-      setNextCursor(data.nextCursor);
-    } catch (caught: unknown) {
-      setListError(caught instanceof Error ? caught.message : "Could not load more ingestion status.");
-    } finally {
-      setLoadingMore(false);
-    }
+  async function refreshAll() {
+    if (!organizationId) return;
+    const [inProgress, needsAttention, completed] = await Promise.all([
+      loadGroup("in_progress"),
+      loadGroup("needs_attention"),
+      loadGroup("completed"),
+    ]);
+    setGroups({ in_progress: inProgress, needs_attention: needsAttention, completed: completed });
   }
 
   async function act(candidate: MailboxIngestionItem, action: MailboxIngestionAction) {
@@ -1039,9 +1146,13 @@ function MailboxIngestionStatusPanel({
     const reviewAction: MailboxCandidateReviewAction = action.kind === "retryIngest" ? "ingest" : "retry";
     if (reviewAction === "ingest" && !candidate.scope) return;
     setWorkingId(candidate.id);
-    setActionError(null);
+    setRowErrors((current) => {
+      const next = { ...current };
+      delete next[candidate.id];
+      return next;
+    });
     try {
-      const updated = await resolveMailboxCandidate(
+      await resolveMailboxCandidate(
         session,
         connectionId,
         candidate.id,
@@ -1051,21 +1162,53 @@ function MailboxIngestionStatusPanel({
         organizationId,
         reviewAction === "ingest" ? (candidate.scope ?? undefined) : undefined,
       );
-      setRawItems((current) => (current ?? []).map((item) => (item.id === candidate.id ? updated : item)));
+      // The candidate's bucket may have changed (e.g. failed -> review) --
+      // a full three-bucket refresh is simpler and always correct, unlike
+      // trying to relocate one row across buckets client-side.
+      await refreshAll();
     } catch (caught: unknown) {
       if (caught instanceof MailboxCandidateError && caught.status === 409) {
-        setActionError(mailboxIngestionConflictMessage(caught.status));
-        if (organizationId) {
-          void loadMailboxIngestionCandidates(session, connectionId, getToken, organizationId).then((data) => {
-            setRawItems(data.items);
-            setNextCursor(data.nextCursor);
-          });
+        setRowErrors((current) => ({ ...current, [candidate.id]: mailboxIngestionConflictMessage(caught.status) }));
+        // Fix round 1 (review finding #3) -- refetch on conflict, with
+        // rejection handled: a failed refresh leaves the row's own
+        // conflict message visible rather than throwing unhandled.
+        try {
+          await refreshAll();
+        } catch {
+          /* row's conflict message stays visible; list simply stays stale */
         }
       } else {
-        setActionError(caught instanceof Error ? caught.message : "Action failed.");
+        setRowErrors((current) => ({
+          ...current,
+          [candidate.id]: caught instanceof Error ? caught.message : "Action failed.",
+        }));
       }
     } finally {
       setWorkingId(null);
+    }
+  }
+
+  // Fix round 1 (review finding #5) -- clipboard API with a fallback and
+  // accessible ("Copied!") feedback, same control for every "Support
+  // details" candidate ID.
+  async function handleCopy(candidateId: string) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(candidateId);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = candidateId;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopiedId(candidateId);
+      setTimeout(() => setCopiedId((current) => (current === candidateId ? null : current)), 2_000);
+    } catch {
+      setCopiedId(null);
     }
   }
 
@@ -1077,9 +1220,7 @@ function MailboxIngestionStatusPanel({
     );
   }
 
-  const ingestionItems = (rawItems ?? []).filter(
-    (item) => isMailboxIngestionCandidate(item) && !dismissedIds.has(item.id),
-  );
+  const totalItems = groups.in_progress.items.length + groups.needs_attention.items.length + groups.completed.items.length;
 
   return (
     <Panel title="Ingestion status">
@@ -1087,30 +1228,28 @@ function MailboxIngestionStatusPanel({
         Once a candidate is approved for ingestion, it moves here -- status text and counts only. No
         provider message IDs, attachment bytes, or message content ever render in Office.
       </p>
-      {listError && (
-        <p role="alert" className="status bad">
-          {listError}
-        </p>
-      )}
-      {actionError && (
-        <p role="alert" className="status bad">
-          {actionError}
-        </p>
-      )}
-      {rawItems === undefined ? (
+      {!loaded ? (
         <p aria-live="polite">Loading ingestion status...</p>
-      ) : ingestionItems.length === 0 ? (
+      ) : totalItems === 0 && dismissedIds.size === 0 ? (
         <p role="status">
           No ingestion activity yet. Approve a candidate from the review queue above to see its status here.
         </p>
       ) : (
         MAILBOX_INGESTION_GROUPS.map((group) => {
-          const items = ingestionItems.filter((item) => mailboxIngestionBucket(item) === group.bucket);
+          const state = groups[group.bucket];
+          const items = state.items.filter(
+            (item) => isMailboxIngestionCandidate(item) && !dismissedIds.has(item.id),
+          );
           return (
             <section key={group.bucket} aria-label={`${group.label} ingestion candidates`}>
               <h3>
                 {group.label} <span>{items.length}</span>
               </h3>
+              {state.error && (
+                <p role="alert" className="status bad">
+                  {state.error}
+                </p>
+              )}
               {items.length === 0 ? (
                 <p role="status">{group.emptyMessage}</p>
               ) : (
@@ -1118,9 +1257,13 @@ function MailboxIngestionStatusPanel({
                   {items.map((candidate) => {
                     const display = mailboxIngestionStatusDisplay(candidate);
                     const busy = workingId === candidate.id;
+                    const rowError = rowErrors[candidate.id];
                     return (
                       <li key={candidate.id}>
-                        <article aria-labelledby={`mailbox-ingestion-${candidate.id}-sender`} role="status">
+                        <article
+                          aria-labelledby={`mailbox-ingestion-${candidate.id}-sender`}
+                          {...(display.active ? { role: "status", "aria-live": "polite" as const } : {})}
+                        >
                           <span id={`mailbox-ingestion-${candidate.id}-sender`}>{candidate.senderAddress}</span>
                           <Status tone={display.tone}>{display.label}</Status>
                           <p>{candidate.subject}</p>
@@ -1133,12 +1276,12 @@ function MailboxIngestionStatusPanel({
                                 : "Business"
                               : "unassigned"}
                           </p>
-                          {display.action?.kind === "retry" && (
-                            <button type="button" disabled={busy} onClick={() => void act(candidate, display.action!)}>
-                              {busy ? "Retrying..." : "Retry"}
-                            </button>
+                          {rowError && (
+                            <p role="alert" className="banner warn">
+                              {rowError}
+                            </p>
                           )}
-                          {display.action?.kind === "retryIngest" && (
+                          {(display.action?.kind === "retry" || display.action?.kind === "retryIngest") && (
                             <button type="button" disabled={busy} onClick={() => void act(candidate, display.action!)}>
                               {busy ? "Retrying..." : "Retry"}
                             </button>
@@ -1159,6 +1302,13 @@ function MailboxIngestionStatusPanel({
                             <div className="field-row">
                               <label>Candidate ID</label>
                               <span>{candidate.id}</span>
+                              <button
+                                type="button"
+                                aria-label="Copy candidate ID"
+                                onClick={() => void handleCopy(candidate.id)}
+                              >
+                                {copiedId === candidate.id ? "Copied!" : "Copy"}
+                              </button>
                             </div>
                           </details>
                         </article>
@@ -1167,14 +1317,24 @@ function MailboxIngestionStatusPanel({
                   })}
                 </ul>
               )}
+              {state.totalCount !== null && (
+                <p className="lede" style={{ margin: 0, fontSize: 12 }}>
+                  Showing {items.length} of {state.totalCount}
+                </p>
+              )}
+              {state.nextCursor && (
+                <button
+                  type="button"
+                  disabled={state.loading}
+                  aria-busy={state.loading}
+                  onClick={() => void loadMore(group.bucket)}
+                >
+                  {state.loading ? "Loading more..." : "Load more"}
+                </button>
+              )}
             </section>
           );
         })
-      )}
-      {nextCursor && (
-        <button type="button" disabled={loadingMore} aria-busy={loadingMore} onClick={() => void loadMore()}>
-          {loadingMore ? "Loading more..." : "Load more"}
-        </button>
       )}
     </Panel>
   );

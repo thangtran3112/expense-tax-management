@@ -1,5 +1,6 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PageHead, Panel, Status } from "@/components/ui";
@@ -14,6 +15,7 @@ import {
   type EnrichmentReviewState,
   getEnrichmentReviewState,
 } from "@/lib/api";
+import { MAILBOX_DUPLICATES_HREF } from "@/lib/mailbox";
 import { readOfficeSession } from "@/lib/session";
 
 type Suggestion = {
@@ -39,7 +41,18 @@ type ExpenseDetail = {
   currency: string;
   status: string;
   version: number;
+  personalProfileId?: string | null;
+  businessId?: string | null;
   tags?: Array<{ id: string; name: string; color: string | null }>;
+  /** Phase 3D-C Task 6 fix round 1 (review finding #6) -- connected-
+   * mailbox provenance, metadata only. Present only when the expense's
+   * source is "connected_mailbox". */
+  mailboxProvenance?: {
+    senderAddress: string;
+    receivedAt: string;
+    mailboxAccountEmail: string;
+    pendingDuplicateReview: boolean;
+  } | null;
 };
 
 function EvidencePanel({ evidence }: { evidence: Record<string, unknown> }) {
@@ -363,6 +376,37 @@ export default function ExpenseDetail() {
                 <span key={t.id} className="tag-chip-display">{t.name}</span>
               ))}
             </div>
+          )}
+          {expense.mailboxProvenance && (
+            <section aria-label="Source">
+              <h4>Source</h4>
+              <div className="field-row">
+                <label>Origin</label>
+                <span><Status tone="ok">Connected Gmail mailbox</Status></span>
+              </div>
+              <div className="field-row">
+                <label>From</label>
+                <span>{expense.mailboxProvenance.senderAddress}</span>
+              </div>
+              <div className="field-row">
+                <label>Received</label>
+                <span>{new Date(expense.mailboxProvenance.receivedAt).toLocaleString()}</span>
+              </div>
+              <div className="field-row">
+                <label>Scope</label>
+                <span>{expense.personalProfileId ? "Personal" : "Business"}</span>
+              </div>
+              <p>
+                Metadata only -- sender address, received date, and scope. Message body, attachment
+                bytes, and other provider content are never rendered in Office.
+              </p>
+              {expense.mailboxProvenance.pendingDuplicateReview && (
+                <p>
+                  <Link href={MAILBOX_DUPLICATES_HREF}>Review duplicate match →</Link> -- this expense
+                  stays until a reviewer resolves the match in the Duplicates queue; no automatic merge.
+                </p>
+              )}
+            </section>
           )}
         </Panel>
       )}

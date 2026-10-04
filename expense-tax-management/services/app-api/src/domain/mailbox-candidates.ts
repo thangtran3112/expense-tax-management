@@ -48,16 +48,19 @@ import {
   AI_WORKER_TASK_QUEUE,
   MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
   MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   TARGET_TEMPORAL_NAMESPACE,
   type JobReferenceV1,
   type MailboxCandidateClassification,
   type MailboxCandidateStatus,
   type MailboxCandidateV1,
   type MailboxErrorCodeV1,
+  type MailboxIngestionBucketV1,
+  type MailboxIngestionProgressV1,
   type MailboxScope,
   type ProcessingJobStatus,
 } from "@expense-tax/contracts";
-import { type Kysely, type Selectable, type Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import type { AppDatabase } from "../database/types.js";
 import { readDispatchRoutingForShare } from "./dispatch-routing.js";
@@ -228,7 +231,10 @@ function toMailboxScopeOrNull(
   return null;
 }
 
-function toMailboxCandidateV1(row: CandidateRow): MailboxCandidateV1 {
+function toMailboxCandidateV1(
+  row: CandidateRow,
+  ingestionProgress: MailboxIngestionProgressV1 | null = null,
+): MailboxCandidateV1 {
   return {
     schemaVersion: 1,
     id: row.id,
@@ -250,12 +256,102 @@ function toMailboxCandidateV1(row: CandidateRow): MailboxCandidateV1 {
     expenseId: row.expense_id,
     sourceId: row.source_id,
     duplicateMatchId: row.duplicate_match_id,
+    ingestionProgress,
     version: row.version,
     idempotencyKey: row.idempotency_key,
     errorCode: row.error_code as MailboxErrorCodeV1 | null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
+}
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #4) -- the Office
+ * ingestion-status board's three sections, each its own status set (plus
+ * the implicit "approved for ingestion at least once" scope-assigned
+ * filter every bucket shares -- see isMailboxIngestionCandidate's own
+ * frontend mirror, lib/mailbox.ts). Indexed by the existing
+ * mailbox_candidates_review_queue_index (tenant_id, connection_id,
+ * status) -- no new index needed.
+ */
+const INGESTION_BUCKET_STATUSES: Record<MailboxIngestionBucketV1, readonly MailboxCandidateStatus[]> = {
+  in_progress: ["queued"],
+  needs_attention: ["duplicate", "review", "failed"],
+  completed: ["processed"],
+};
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #1) -- batch-loads every
+ * MailboxMaterializeWorkflow/MailboxOcrReceiptWorkflow processing_jobs
+ * row for the given (queued) candidate IDs in two bounded queries (never
+ * N+1), and reduces them to the read-only phase/count summary described
+ * on MailboxIngestionProgressV1Schema. Returns null for a candidate with
+ * no materialize job yet, or whose materialize job hasn't reached RUNNING
+ * (still plain "Queued", nothing richer to report) or has already gone
+ * terminal with nothing pending (about to leave 'queued' -- a narrow
+ * race, not worth a distinct label).
+ */
+async function loadIngestionProgress(
+  database: Kysely<AppDatabase> | Transaction<AppDatabase>,
+  candidates: readonly Pick<CandidateRow, "id" | "attachment_manifest">[],
+): Promise<Map<string, MailboxIngestionProgressV1>> {
+  const result = new Map<string, MailboxIngestionProgressV1>();
+  if (candidates.length === 0) return result;
+  const candidateIds = candidates.map((candidate) => candidate.id);
+
+  const materializeRows = await database
+    .selectFrom("app.processing_jobs")
+    .select(["target_aggregate_id", "status", "created_at"])
+    .where("workflow_type", "=", MAILBOX_MATERIALIZE_WORKFLOW_TYPE)
+    .where("target_aggregate_type", "=", "mailbox_candidate")
+    .where("target_aggregate_id", "in", candidateIds)
+    .orderBy("created_at", "desc")
+    .execute();
+  const latestMaterializeStatus = new Map<string, ProcessingJobStatus>();
+  for (const row of materializeRows) {
+    const candidateId = row.target_aggregate_id;
+    if (candidateId && !latestMaterializeStatus.has(candidateId)) {
+      latestMaterializeStatus.set(candidateId, row.status);
+    }
+  }
+
+  const ocrRows = await database
+    .selectFrom("app.processing_jobs")
+    .select([sql<string>`input_params ->> 'mailboxCandidateId'`.as("candidate_id"), "status"])
+    .where("workflow_type", "=", MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE)
+    .where(sql<string>`input_params ->> 'mailboxCandidateId'`, "in", candidateIds)
+    .execute();
+  const ocrStatusesByCandidate = new Map<string, ProcessingJobStatus[]>();
+  for (const row of ocrRows) {
+    if (!row.candidate_id) continue;
+    const list = ocrStatusesByCandidate.get(row.candidate_id) ?? [];
+    list.push(row.status);
+    ocrStatusesByCandidate.set(row.candidate_id, list);
+  }
+
+  const PENDING_JOB_STATUSES = new Set<ProcessingJobStatus>(["PENDING", "DISPATCHED", "RUNNING"]);
+  for (const candidate of candidates) {
+    const materializeStatus = latestMaterializeStatus.get(candidate.id) ?? null;
+    const ocrStatuses = ocrStatusesByCandidate.get(candidate.id) ?? [];
+    const pending = ocrStatuses.filter((status) => PENDING_JOB_STATUSES.has(status)).length;
+
+    let phase: MailboxIngestionProgressV1["phase"] | null = null;
+    if (materializeStatus === "RUNNING") phase = "materializing";
+    else if (materializeStatus === "SUCCEEDED" && pending > 0) phase = "processing_attachments";
+    if (!phase) continue;
+
+    const manifest = candidate.attachment_manifest as unknown as readonly unknown[];
+    result.set(candidate.id, {
+      phase,
+      attachments: {
+        total: manifest.length,
+        succeeded: ocrStatuses.filter((status) => status === "SUCCEEDED").length,
+        failed: ocrStatuses.filter((status) => status === "FAILED").length,
+        pending,
+      },
+    });
+  }
+  return result;
 }
 
 function encodeCandidateCursor(receivedAt: Date, id: string): string {
@@ -345,6 +441,10 @@ export interface ListCandidatesInput {
   readonly tenantId: string;
   readonly connectionId: string;
   readonly classification?: MailboxCandidateClassification;
+  /** Fix round 1 (review finding #4) -- Office ingestion-status board
+   * section; mutually independent of `classification` (candidate review
+   * uses one, ingestion status uses the other). */
+  readonly bucket?: MailboxIngestionBucketV1;
   readonly cursor?: string;
   readonly limit?: number;
 }
@@ -352,6 +452,10 @@ export interface ListCandidatesInput {
 export interface ListCandidatesResult {
   readonly items: readonly MailboxCandidateV1[];
   readonly nextCursor: string | null;
+  /** Present only when `bucket` was given -- total matching rows for this
+   * bucket within the connection (ignores cursor/limit), for the
+   * approved gate's "Showing N of M" footer. */
+  readonly totalCount?: number;
 }
 
 export interface ResolveCandidateInput {
@@ -380,6 +484,7 @@ export function createMailboxCandidatesDomain(
       await authorizeCandidateAccess(database, input);
       const limit = input.limit ?? 50;
       const cursor = input.cursor ? decodeCandidateCursor(input.cursor) : null;
+      const bucketStatuses = input.bucket ? INGESTION_BUCKET_STATUSES[input.bucket] : null;
 
       let query = database
         .selectFrom("app.mailbox_candidates")
@@ -387,6 +492,41 @@ export function createMailboxCandidatesDomain(
         .where("tenant_id", "=", input.tenantId)
         .where("connection_id", "=", input.connectionId);
       if (input.classification) query = query.where("classification", "=", input.classification);
+      if (bucketStatuses) {
+        query = query
+          .where("status", "in", bucketStatuses)
+          .where((eb) =>
+            eb.or([
+              eb("candidate_personal_profile_id", "is not", null),
+              eb("candidate_business_id", "is not", null),
+            ]),
+          );
+      }
+
+      // Fix round 1 (review finding #4) -- total count for this bucket
+      // (ignoring cursor/limit), for the approved gate's "Showing N of M"
+      // footer. Same WHERE as the list query above (indexed by the
+      // existing mailbox_candidates_review_queue_index); only computed
+      // when a bucket was requested -- the candidate review panel's own
+      // classification-filtered calls never pay for this extra query.
+      let totalCount: number | undefined;
+      if (bucketStatuses) {
+        const countRow = await database
+          .selectFrom("app.mailbox_candidates")
+          .select((eb) => eb.fn.countAll().as("count"))
+          .where("tenant_id", "=", input.tenantId)
+          .where("connection_id", "=", input.connectionId)
+          .where("status", "in", bucketStatuses)
+          .where((eb) =>
+            eb.or([
+              eb("candidate_personal_profile_id", "is not", null),
+              eb("candidate_business_id", "is not", null),
+            ]),
+          )
+          .executeTakeFirst();
+        totalCount = Number(countRow?.count ?? 0);
+      }
+
       if (cursor) {
         query = query.where((eb) =>
           eb.or([
@@ -403,9 +543,17 @@ export function createMailboxCandidatesDomain(
         .execute();
       const items = rows.slice(0, limit);
       const last = items.at(-1);
+
+      // Fix round 1 (review finding #1) -- batch-computed, never N+1.
+      const progressByCandidateId = await loadIngestionProgress(
+        database,
+        items.filter((row) => row.status === "queued"),
+      );
+
       return {
-        items: items.map(toMailboxCandidateV1),
+        items: items.map((row) => toMailboxCandidateV1(row, progressByCandidateId.get(row.id) ?? null)),
         nextCursor: rows.length > limit && last ? encodeCandidateCursor(last.received_at, last.id) : null,
+        ...(totalCount !== undefined ? { totalCount } : {}),
       };
     },
 

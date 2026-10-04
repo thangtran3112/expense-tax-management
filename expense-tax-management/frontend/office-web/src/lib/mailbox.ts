@@ -202,7 +202,10 @@ const MAILBOX_RETRYABLE_ERROR_CODES = new Set<string>([
   "MAILBOX_MATERIALIZE_FAILED",
 ]);
 
-type IngestionCandidate = Pick<MailboxCandidateV1, "status" | "scope" | "errorCode" | "expenseId">;
+type IngestionCandidate = Pick<
+  MailboxCandidateV1,
+  "status" | "scope" | "errorCode" | "expenseId" | "ingestionProgress"
+>;
 
 /** True only for a candidate that has been approved for ingestion at
  * least once (see module comment above). */
@@ -235,30 +238,61 @@ export interface MailboxIngestionStatusDisplay {
   readonly tone: MailboxStatusTone;
   readonly note: string;
   readonly action: MailboxIngestionAction | null;
+  /** Fix round 1 (review finding #8) -- only an actively-progressing row
+   * (materializing/processing attachments) gets `role="status"
+   * aria-live="polite"` in the renderer; a plain "Queued" placeholder or
+   * any needs-attention/completed row does not. */
+  readonly active: boolean;
 }
 
 /**
  * Status text and action for one ingestion row -- status text only, per
  * the approved gate (no opaque ID here; IDs live in a separate "Support
  * details" disclosure the caller renders from the same candidate).
- * Never reads anything but status/errorCode/expenseId: no message
- * body/content field exists on the contract to leak in the first place.
+ * Never reads anything but status/errorCode/expenseId/ingestionProgress:
+ * no message body/content field exists on the contract to leak in the
+ * first place. `ingestionProgress` (fix round 1, review finding #1) is a
+ * read-only, server-derived phase/count summary -- see
+ * MailboxIngestionProgressV1Schema's own doc comment.
  */
 export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): MailboxIngestionStatusDisplay {
   switch (candidate.status) {
-    case "queued":
+    case "queued": {
+      const progress = candidate.ingestionProgress;
+      if (progress?.phase === "materializing") {
+        return {
+          label: "Materializing",
+          tone: "warn",
+          note: "Streaming attachment(s) to secure storage.",
+          action: null,
+          active: true,
+        };
+      }
+      if (progress?.phase === "processing_attachments") {
+        const { succeeded, total } = progress.attachments;
+        return {
+          label: "OCR in progress",
+          tone: "warn",
+          note: `Extracting receipt fields from the staged file${total > 0 ? ` (${succeeded}/${total} attachment(s) done)` : ""}. No message content is read.`,
+          action: null,
+          active: true,
+        };
+      }
       return {
         label: "Queued",
         tone: "warn",
         note: "Waiting to be ingested. No file created yet.",
         action: null,
+        active: false,
       };
+    }
     case "processed":
       return {
         label: "Ingested",
         tone: "ok",
         note: "Processing complete. Open the expense for full details.",
         action: candidate.expenseId ? { kind: "viewExpense", expenseId: candidate.expenseId } : null,
+        active: false,
       };
     case "duplicate":
       return {
@@ -266,6 +300,7 @@ export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): Ma
         tone: "warn",
         note: "Matches an existing expense. Pending in the Duplicates queue -- no automatic merge.",
         action: { kind: "viewDuplicate" },
+        active: false,
       };
     case "review":
       return {
@@ -273,6 +308,7 @@ export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): Ma
         tone: "bad",
         note: "A prior attempt failed and was cleared. Approve again to retry -- the same scope is reused.",
         action: { kind: "retryIngest" },
+        active: false,
       };
     case "failed":
       if (candidate.errorCode && MAILBOX_RETRYABLE_ERROR_CODES.has(candidate.errorCode)) {
@@ -281,6 +317,7 @@ export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): Ma
           tone: "bad",
           note: "Safe to retry -- the same idempotency key is reused, so retrying cannot create a duplicate expense.",
           action: { kind: "retry" },
+          active: false,
         };
       }
       if (candidate.errorCode === "MALWARE_DETECTED") {
@@ -289,6 +326,7 @@ export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): Ma
           tone: "bad",
           note: "Attachment failed the malware scan and was never stored. This is a dead end: no retry and no download -- the source message must be re-sent or handled outside Office.",
           action: { kind: "dismiss" },
+          active: false,
         };
       }
       return {
@@ -296,9 +334,10 @@ export function mailboxIngestionStatusDisplay(candidate: IngestionCandidate): Ma
         tone: "bad",
         note: "Attachment exceeded the size/type limit. Not eligible for retry.",
         action: null,
+        active: false,
       };
     default:
-      return { label: candidate.status, tone: "warn", note: "", action: null };
+      return { label: candidate.status, tone: "warn", note: "", action: null, active: false };
   }
 }
 
