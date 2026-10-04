@@ -240,7 +240,7 @@ export interface ExpenseTable {
   currency: string;
   incurred_on: NullableDate;
   readonly tax_year: Generated<number>;
-  source: "manual" | "ocr" | "forwarded_email";
+  source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
   status: "draft" | "ready" | "archived";
   version: Generated<number>;
   readonly created_at: GeneratedTimestamp;

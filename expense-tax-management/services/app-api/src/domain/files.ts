@@ -5,12 +5,24 @@ import type {
   CreateUploadSessionResponse,
   ExpenseFile,
   FileList,
+  MailboxAttachmentUploadResultV1,
+  MailboxErrorCodeV1,
 } from "@expense-tax/contracts";
-import { CreateUploadSessionResponseSchema, MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
+import {
+  CreateUploadSessionResponseSchema,
+  MAX_CANDIDATE_ATTACHMENTS,
+  MAX_UPLOAD_BYTES,
+} from "@expense-tax/contracts";
 import { type Kysely, type Selectable, type Transaction } from "kysely";
 import sharp from "sharp";
 
 import type { AppDatabase } from "../database/types.js";
+import type { MalwareScanner } from "../inbound/security.js";
+import { attachmentMagicMatches } from "../inbound/security.js";
+import {
+  BoundedStreamSizeExceededError,
+  readBoundedStream,
+} from "../storage/bounded-stream.js";
 import type { StorageAdapter } from "../storage/types.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
@@ -21,6 +33,78 @@ import {
 } from "./idempotency.js";
 
 type FileRow = Selectable<AppDatabase["app.expense_files"]>;
+type MailboxCandidateRow = Selectable<AppDatabase["app.mailbox_candidates"]>;
+
+/** Exactly the column's own literal union (migration 003/007's
+ * app.expense_files.content_type) -- the only types the magic-byte sniffer
+ * ever assigns. */
+type SniffedContentType = "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+const SNIFFABLE_CONTENT_TYPES: readonly SniffedContentType[] = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+];
+
+function sniffContentType(bytes: Buffer): SniffedContentType | null {
+  for (const candidate of SNIFFABLE_CONTENT_TYPES) {
+    if (attachmentMagicMatches(candidate, bytes)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Phase 3D-C Task 3 -- App-side malware scan adapter for mailbox staged
+ * attachments. `scanStream` is the optional fast path (not implemented
+ * here: writeMailboxAttachment already holds the full bounded buffer in
+ * memory by the time it scans, so there is no streaming benefit to chase
+ * for a 25 MiB cap); `scanStagedObject` is the required fallback the brief
+ * names: stage bytes to a dedicated staging object (never the file's own
+ * final storage key), read back bounded to MAX_UPLOAD_BYTES, call the
+ * existing deterministic malware engine (PatternMalwareScanner in
+ * production and in tests -- it is already local/EICAR-pattern-based, so
+ * "never call external scanners in tests" is satisfied by construction),
+ * then delete the staging object on either outcome.
+ */
+export interface MailboxStagingScanner {
+  scanStream?(
+    source: AsyncIterable<Buffer>,
+  ): Promise<{ readonly clean: boolean; readonly code: string | null }>;
+  scanStagedObject(input: {
+    readonly storageKey: string;
+    readonly sizeBytes: number;
+    readonly contentType: string;
+  }): Promise<{ readonly clean: boolean; readonly code: string | null }>;
+}
+
+export function createMailboxStagingScanner(
+  storage: StorageAdapter,
+  engine: MalwareScanner,
+): MailboxStagingScanner {
+  return {
+    async scanStagedObject({ storageKey, sizeBytes, contentType }) {
+      void contentType;
+      try {
+        if (sizeBytes > MAX_UPLOAD_BYTES) {
+          return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
+        }
+        const bytes = await storage.readObject(storageKey);
+        if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+          return { clean: false, code: "ATTACHMENT_BOUND_EXCEEDED" };
+        }
+        const result = await engine.scan(bytes);
+        return result.clean
+          ? { clean: true, code: null }
+          : { clean: false, code: "MALWARE_DETECTED" };
+      } finally {
+        // Always deletes the staging object -- clean or infected -- per
+        // the brief: this method stages a scan-only copy, never the
+        // file's persisted artifact.
+        await storage.deleteObject(storageKey);
+      }
+    },
+  };
+}
 
 export type FileScope =
   | { readonly kind: "personal"; readonly profileId: string }
@@ -226,12 +310,47 @@ export interface WritePendingContentCommand {
   readonly contentType: string;
 }
 
+/**
+ * Phase 3D-C Task 3. Deliberately carries no tenantId/scope (unlike every
+ * other FilesDomain command): candidateId is enough to resolve both --
+ * writeMailboxAttachment loads app.mailbox_candidates itself, the same
+ * "job binding IS the authorization" precedent ocr.ts's
+ * applyOcrExtraction already uses for the generic OCR path. uploadGrantId
+ * is carried through for audit/traceability only -- validating the grant
+ * itself (looked up via app.mailbox_ingestion_operations) is
+ * domain/mailbox-ingestion.ts's job, upstream of this call, since that
+ * ledger table is mailbox-ingestion's own concern, not files.ts's.
+ */
+export interface WriteMailboxAttachmentCommand {
+  readonly candidateId: string;
+  readonly attachmentIndex: number;
+  readonly uploadGrantId: string;
+  readonly expectedCandidateVersion: number;
+  readonly actorServicePrincipal: "mailbox-broker-app";
+  readonly requestId: string;
+}
+
 export interface FilesDomain {
   createUploadSession(
     input: CreateUploadSessionCommand,
   ): Promise<MutationResult<CreateUploadSessionResponse, 201>>;
   confirmUploadSession(input: ConfirmUploadSessionCommand): Promise<ExpenseFile>;
   writePendingContent(input: WritePendingContentCommand): Promise<void>;
+  /**
+   * Streams one mailbox attachment directly into bounded storage: never
+   * calls writePendingContent/a Buffer-shaped command, writes/hashes
+   * incrementally with a hard MAX_UPLOAD_BYTES cap, verifies the stored
+   * hash against the candidate's own attachment-manifest entry (staged by
+   * Phase 3D-B discovery, before this upload ever happens), scans before
+   * READY, and never creates a file row the caller didn't ask for -- a
+   * blocked (oversize/signature-rejected/hash-mismatched/infected) upload
+   * is marked FAILED and never confirmed (owner ruling: blocked is a dead
+   * end, dismiss only).
+   */
+  writeMailboxAttachment(
+    input: WriteMailboxAttachmentCommand,
+    source: AsyncIterable<Buffer>,
+  ): Promise<MailboxAttachmentUploadResultV1>;
   readReadyContent(
     fileId: string,
   ): Promise<{ readonly data: Buffer; readonly contentType: string }>;
@@ -247,6 +366,7 @@ export interface FilesDomain {
 export function createFilesDomain(
   database: Kysely<AppDatabase>,
   storage: StorageAdapter,
+  deps: { readonly mailboxScanner: MailboxStagingScanner },
 ): FilesDomain {
   async function requireBoundExpense(
     transaction: Transaction<AppDatabase>,
@@ -416,6 +536,170 @@ export function createFilesDomain(
         data: input.data,
         contentType: input.contentType,
       });
+    },
+
+    async writeMailboxAttachment(input, source) {
+      if (
+        !Number.isInteger(input.attachmentIndex) ||
+        input.attachmentIndex < 0 ||
+        input.attachmentIndex >= MAX_CANDIDATE_ATTACHMENTS
+      ) {
+        throw DomainError.validation();
+      }
+
+      const candidate: MailboxCandidateRow | undefined = await database
+        .selectFrom("app.mailbox_candidates")
+        .selectAll()
+        .where("id", "=", input.candidateId)
+        .executeTakeFirst();
+      if (!candidate) throw DomainError.notFound();
+      if (candidate.version !== input.expectedCandidateVersion) {
+        throw DomainError.versionConflict();
+      }
+      if (candidate.status !== "queued") throw DomainError.conflict();
+
+      const manifest = candidate.attachment_manifest as unknown as readonly {
+        readonly sha256: string;
+      }[];
+      const manifestEntry = manifest[input.attachmentIndex];
+      if (!manifestEntry) throw DomainError.validation();
+
+      const scope: FileScope = candidate.candidate_personal_profile_id
+        ? { kind: "personal", profileId: candidate.candidate_personal_profile_id }
+        : candidate.candidate_business_id
+          ? { kind: "business", businessId: candidate.candidate_business_id }
+          : (() => {
+              throw DomainError.validation();
+            })();
+
+      const fileId = randomUUID();
+      const now = new Date();
+      const storageKey = buildStorageKey({
+        tenantId: candidate.tenant_id,
+        scope,
+        fileId,
+        filename: `mailbox-attachment-${input.attachmentIndex}`,
+      });
+      // Type-system placeholder: expense_files.content_type is a 4-member
+      // literal union with no "unknown yet" member. Overwritten with the
+      // real sniffed type before this row ever reaches READY; a row that
+      // never leaves PENDING/FAILED (bound exceeded, bad signature, hash
+      // mismatch, infected) keeps this placeholder, which is harmless --
+      // nothing reads content_type on a dead, never-confirmed file.
+      const PLACEHOLDER_CONTENT_TYPE = "application/pdf" as const;
+
+      const created = await database
+        .insertInto("app.expense_files")
+        .values({
+          id: fileId,
+          tenant_id: candidate.tenant_id,
+          personal_profile_id: scope.kind === "personal" ? scope.profileId : null,
+          business_id: scope.kind === "business" ? scope.businessId : null,
+          expense_id: null,
+          original_filename: `mailbox-attachment-${input.attachmentIndex}`,
+          content_type: PLACEHOLDER_CONTENT_TYPE,
+          size_bytes: null,
+          sha256_hex: null,
+          storage_key: storageKey,
+          thumbnail_storage_key: null,
+          thumbnail_status: "skipped",
+          status: "PENDING",
+          version: 1,
+          created_at: now,
+          updated_at: now,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      const fail = async (
+        errorCode: MailboxErrorCodeV1,
+      ): Promise<MailboxAttachmentUploadResultV1> => {
+        await database
+          .updateTable("app.expense_files")
+          .set({ status: "FAILED", updated_at: new Date() })
+          .where("id", "=", fileId)
+          .where("status", "<>", "DELETED")
+          .execute();
+        return {
+          candidateId: input.candidateId,
+          attachmentIndex: input.attachmentIndex,
+          fileId,
+          status: "FAILED",
+          errorCode,
+          idempotencyKey: input.requestId,
+        };
+      };
+
+      let bounded;
+      try {
+        bounded = await readBoundedStream(source, MAX_UPLOAD_BYTES);
+      } catch (error) {
+        if (error instanceof BoundedStreamSizeExceededError) {
+          return fail("ATTACHMENT_BOUND_EXCEEDED");
+        }
+        throw error;
+      }
+
+      const sniffed = sniffContentType(bounded.data);
+      if (!sniffed) return fail("ATTACHMENT_SIGNATURE_REJECTED");
+      if (bounded.sha256Hex !== manifestEntry.sha256) {
+        return fail("ATTACHMENT_HASH_MISMATCH");
+      }
+
+      await database
+        .updateTable("app.expense_files")
+        .set({
+          content_type: sniffed,
+          size_bytes: bounded.sizeBytes,
+          sha256_hex: bounded.sha256Hex,
+          updated_at: new Date(),
+        })
+        .where("id", "=", fileId)
+        .execute();
+
+      // Scanner stages its OWN copy at a dedicated key (never the file's
+      // final storage_key) and always deletes it, clean or infected.
+      const stagingKey = `${storageKey}.scan-staging`;
+      await storage.writeObject({
+        storageKey: stagingKey,
+        data: bounded.data,
+        contentType: sniffed,
+      });
+      const scan = await deps.mailboxScanner.scanStagedObject({
+        storageKey: stagingKey,
+        sizeBytes: bounded.sizeBytes,
+        contentType: sniffed,
+      });
+      if (!scan.clean) {
+        // Blocked = dead end, dismiss only (owner ruling): never confirmed,
+        // the bytes above were only ever written to the deleted staging
+        // key, never to the file's own storage_key.
+        return fail((scan.code as MailboxErrorCodeV1 | null) ?? "ATTACHMENT_SIGNATURE_REJECTED");
+      }
+
+      // Scan passed and hash already verified above: only now does the
+      // object get written to the file's own persisted storage_key and
+      // the row confirmed READY.
+      await storage.writeObject({
+        storageKey,
+        data: bounded.data,
+        contentType: sniffed,
+      });
+      await database
+        .updateTable("app.expense_files")
+        .set({ status: "READY", updated_at: new Date(), version: created.version + 1 })
+        .where("id", "=", fileId)
+        .where("status", "=", "PENDING")
+        .execute();
+
+      return {
+        candidateId: input.candidateId,
+        attachmentIndex: input.attachmentIndex,
+        fileId,
+        status: "READY",
+        errorCode: null,
+        idempotencyKey: input.requestId,
+      };
     },
 
     async readReadyContent(fileId) {

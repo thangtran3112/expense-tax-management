@@ -68,6 +68,13 @@ export const MailboxErrorCodeV1Schema = z.enum([
   "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
   "STRUCTURED_RECEIPT_NOT_FOUND",
   "STRUCTURED_RECEIPT_INCOMPLETE",
+  // Phase 3D-C Task 3 -- App-side streaming/scan/hash verification for
+  // mailbox attachment uploads (packages/contracts/src/mailbox.ts is a
+  // 3D-A Task 1 file, not under 3D-C Task 1's migration-020 concurrent
+  // review, same precedent Task 2 already used for the five codes above).
+  "ATTACHMENT_HASH_MISMATCH",
+  "MALWARE_DETECTED",
+  "OCR_EXTRACTION_FAILED",
 ]);
 export type MailboxErrorCodeV1 = z.infer<typeof MailboxErrorCodeV1Schema>;
 

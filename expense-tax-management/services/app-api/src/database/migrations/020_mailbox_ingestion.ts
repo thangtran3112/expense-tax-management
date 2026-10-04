@@ -461,8 +461,22 @@ export async function up(database: Kysely<unknown>): Promise<void> {
               RAISE EXCEPTION 'mailbox ingestion operation response_json field errorCode must match the canonical error-code token pattern';
             END IF;
           WHEN 'expiresAt' THEN
+            -- Task 3 fix (found while implementing, not a 020 business-logic
+            -- change): the backslash-d/backslash-dot escapes this regex
+            -- previously used never reached PostgreSQL -- a JS template
+            -- literal's cooked string (what the sql tagged template
+            -- receives, not the raw strings array) treats an unrecognized
+            -- escape like backslash-d as a dropped backslash plus a
+            -- literal "d" (confirmed live via psql's \sf: the deployed
+            -- function body literally read 'd{4}-d{2}-d{2}...', which can
+            -- never match a real ISO timestamp -- every issue_upload_grant
+            -- write would fail validation in production, not just tests).
+            -- Rewritten with bracket character classes ([0-9], [.]),
+            -- matching this same function's own UUID/token/errorCode
+            -- regexes just above, which never hit this pitfall because
+            -- they already avoid backslash escapes entirely.
             IF jsonb_typeof(response_value) <> 'string'
-              OR (response_value #>> '{}') !~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$' THEN
+              OR (response_value #>> '{}') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN
               RAISE EXCEPTION 'mailbox ingestion operation response_json field expiresAt must be an ISO-8601 timestamp';
             END IF;
           WHEN 'status' THEN

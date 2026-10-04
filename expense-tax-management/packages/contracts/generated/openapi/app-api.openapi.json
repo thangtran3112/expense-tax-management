@@ -7011,7 +7011,8 @@
                             "enum": [
                               "manual",
                               "ocr",
-                              "forwarded_email"
+                              "forwarded_email",
+                              "connected_mailbox"
                             ],
                             "type": "string"
                           },
@@ -7562,7 +7563,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -8295,7 +8297,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -8826,7 +8829,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -28609,7 +28613,10 @@
                                   "ATTACHMENT_SIGNATURE_REJECTED",
                                   "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
                                   "STRUCTURED_RECEIPT_NOT_FOUND",
-                                  "STRUCTURED_RECEIPT_INCOMPLETE"
+                                  "STRUCTURED_RECEIPT_INCOMPLETE",
+                                  "ATTACHMENT_HASH_MISMATCH",
+                                  "MALWARE_DETECTED",
+                                  "OCR_EXTRACTION_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -29243,7 +29250,10 @@
                             "ATTACHMENT_SIGNATURE_REJECTED",
                             "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
                             "STRUCTURED_RECEIPT_NOT_FOUND",
-                            "STRUCTURED_RECEIPT_INCOMPLETE"
+                            "STRUCTURED_RECEIPT_INCOMPLETE",
+                            "ATTACHMENT_HASH_MISMATCH",
+                            "MALWARE_DETECTED",
+                            "OCR_EXTRACTION_FAILED"
                           ],
                           "type": "string"
                         },
@@ -29738,7 +29748,10 @@
                                   "ATTACHMENT_SIGNATURE_REJECTED",
                                   "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
                                   "STRUCTURED_RECEIPT_NOT_FOUND",
-                                  "STRUCTURED_RECEIPT_INCOMPLETE"
+                                  "STRUCTURED_RECEIPT_INCOMPLETE",
+                                  "ATTACHMENT_HASH_MISMATCH",
+                                  "MALWARE_DETECTED",
+                                  "OCR_EXTRACTION_FAILED"
                                 ],
                                 "type": "string"
                               },
@@ -30166,7 +30179,10 @@
                                 "ATTACHMENT_SIGNATURE_REJECTED",
                                 "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
                                 "STRUCTURED_RECEIPT_NOT_FOUND",
-                                "STRUCTURED_RECEIPT_INCOMPLETE"
+                                "STRUCTURED_RECEIPT_INCOMPLETE",
+                                "ATTACHMENT_HASH_MISMATCH",
+                                "MALWARE_DETECTED",
+                                "OCR_EXTRACTION_FAILED"
                               ],
                               "type": "string"
                             },
@@ -30477,7 +30493,10 @@
                                 "ATTACHMENT_SIGNATURE_REJECTED",
                                 "STRUCTURED_RECEIPT_BOUND_EXCEEDED",
                                 "STRUCTURED_RECEIPT_NOT_FOUND",
-                                "STRUCTURED_RECEIPT_INCOMPLETE"
+                                "STRUCTURED_RECEIPT_INCOMPLETE",
+                                "ATTACHMENT_HASH_MISMATCH",
+                                "MALWARE_DETECTED",
+                                "OCR_EXTRACTION_FAILED"
                               ],
                               "type": "string"
                             },
@@ -33447,7 +33466,8 @@
                             "enum": [
                               "manual",
                               "ocr",
-                              "forwarded_email"
+                              "forwarded_email",
+                              "connected_mailbox"
                             ],
                             "type": "string"
                           },
@@ -33998,7 +34018,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -34731,7 +34752,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },
@@ -35262,7 +35284,8 @@
                       "enum": [
                         "manual",
                         "ocr",
-                        "forwarded_email"
+                        "forwarded_email",
+                        "connected_mailbox"
                       ],
                       "type": "string"
                     },

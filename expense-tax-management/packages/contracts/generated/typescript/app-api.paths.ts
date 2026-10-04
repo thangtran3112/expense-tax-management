@@ -2854,7 +2854,7 @@ export interface paths {
                                 personalProfileId: string | null;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                source: "manual" | "ocr" | "forwarded_email";
+                                source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                                 spendingCategoryId: string | null;
                                 /** @enum {string} */
                                 status: "draft" | "ready" | "archived";
@@ -3019,7 +3019,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -3180,7 +3180,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -3466,7 +3466,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -10792,7 +10792,7 @@ export interface paths {
                                 /** Format: date-time */
                                 createdAt: string;
                                 duplicateMatchId: string | null;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED") | null;
                                 evidence: string[];
                                 expenseId: string | null;
                                 /** Format: uuid */
@@ -10983,7 +10983,7 @@ export interface paths {
                             /** Format: date-time */
                             createdAt: string;
                             duplicateMatchId: string | null;
-                            errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE") | null;
+                            errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED") | null;
                             evidence: string[];
                             expenseId: string | null;
                             /** Format: uuid */
@@ -11141,7 +11141,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -11274,7 +11274,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -11358,7 +11358,7 @@ export interface paths {
                                 discoveredCount: number;
                                 duplicateCount: number;
                                 entitlementVersion: number;
-                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE") | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING" | "ATTACHMENT_BOUND_EXCEEDED" | "ATTACHMENT_SIGNATURE_REJECTED" | "STRUCTURED_RECEIPT_BOUND_EXCEEDED" | "STRUCTURED_RECEIPT_NOT_FOUND" | "STRUCTURED_RECEIPT_INCOMPLETE" | "ATTACHMENT_HASH_MISMATCH" | "MALWARE_DETECTED" | "OCR_EXTRACTION_FAILED") | null;
                                 failedCount: number;
                                 /** Format: uuid */
                                 id: string;
@@ -12413,7 +12413,7 @@ export interface paths {
                                 personalProfileId: string | null;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                source: "manual" | "ocr" | "forwarded_email";
+                                source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                                 spendingCategoryId: string | null;
                                 /** @enum {string} */
                                 status: "draft" | "ready" | "archived";
@@ -12578,7 +12578,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -12739,7 +12739,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";
@@ -13025,7 +13025,7 @@ export interface paths {
                             personalProfileId: string | null;
                             projectId: string | null;
                             /** @enum {string} */
-                            source: "manual" | "ocr" | "forwarded_email";
+                            source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
                             spendingCategoryId: string | null;
                             /** @enum {string} */
                             status: "draft" | "ready" | "archived";

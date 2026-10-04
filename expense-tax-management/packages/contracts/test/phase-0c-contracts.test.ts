@@ -130,6 +130,7 @@ describe("Phase 0C OCR contracts", () => {
       "manual",
       "ocr",
       "forwarded_email",
+      "connected_mailbox",
     ]);
   });
 });

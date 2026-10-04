@@ -25,7 +25,19 @@ export const ExpenseTagChipSchema = z.strictObject({
 });
 export type ExpenseTagChip = z.infer<typeof ExpenseTagChipSchema>;
 
-export const ExpenseSourceSchema = z.enum(["manual", "ocr", "forwarded_email"]);
+// Phase 3D-C Task 3: connected-mailbox-sourced expenses (attachment OCR or
+// structured-HTML extraction) get their own source value -- distinct from
+// "ocr"/"forwarded_email" so the coarse expense.source categorization
+// doesn't misattribute provenance; the authoritative connected-mailbox
+// marker is app.expense_sources.source_type='connected_mailbox' plus
+// mailbox_candidate_id (migration 020), this is the lighter-weight sibling
+// column. Migration 021 widens the DB CHECK constraint to match.
+export const ExpenseSourceSchema = z.enum([
+  "manual",
+  "ocr",
+  "forwarded_email",
+  "connected_mailbox",
+]);
 export type ExpenseSource = z.infer<typeof ExpenseSourceSchema>;
 
 const ExpenseScopeFields = {

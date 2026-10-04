@@ -216,7 +216,7 @@ export async function insertExpenseInTransaction(
     request: ExpenseCreateRequest;
     requestId: string;
     scope: Scope;
-    source?: "manual" | "ocr" | "forwarded_email";
+    source?: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
     /**
      * Required: explicit mode governs initial status and enrichment job creation.
      * Callers must choose one of the three explicit modes — no default.

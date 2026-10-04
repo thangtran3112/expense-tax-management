@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   JobReferenceV1Schema,
   OcrExtractionResultV1Schema,
@@ -18,7 +19,7 @@ import type { TemporalWorkflowStarter } from "../temporal/client.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
 import { readDispatchRoutingForShare } from "./dispatch-routing.js";
-import { applyOcrExtraction } from "./ocr.js";
+import { applyMailboxOcrExtraction, applyOcrExtraction } from "./ocr.js";
 import {
   executeIdempotentMutation,
   hashNormalizedRequest,
@@ -376,11 +377,43 @@ export function createProcessingJobsDomain(
                 input.request.result,
               );
               if (!extraction.success) throw DomainError.validation();
-              appliedExpenseId = await applyOcrExtraction(transaction, {
-                job,
-                extraction: extraction.data,
-                requestId: input.requestId,
-              });
+              appliedExpenseId =
+                job.workflow_type === MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE
+                  ? await applyMailboxOcrExtraction(transaction, {
+                      job,
+                      extraction: extraction.data,
+                      requestId: input.requestId,
+                    })
+                  : await applyOcrExtraction(transaction, {
+                      job,
+                      extraction: extraction.data,
+                      requestId: input.requestId,
+                    });
+            }
+            // Mailbox OCR extraction failure: the candidate never advances
+            // past 'queued' on its own otherwise. No expense/provenance is
+            // created (same as the legacy path); this just surfaces the
+            // failure back onto the candidate so a reviewer isn't left
+            // waiting on a 'queued' candidate forever.
+            if (
+              input.request.status === "FAILED" &&
+              job.workflow_type === MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE
+            ) {
+              const candidateId = (
+                job.input_params as Record<string, unknown> | null
+              )?.mailboxCandidateId;
+              if (typeof candidateId === "string") {
+                await transaction
+                  .updateTable("app.mailbox_candidates")
+                  .set({
+                    status: "failed",
+                    error_code: "OCR_EXTRACTION_FAILED",
+                    updated_at: new Date(),
+                  })
+                  .where("id", "=", candidateId)
+                  .where("status", "=", "queued")
+                  .execute();
+              }
             }
             const now = new Date();
             const updated = await transaction
