@@ -355,6 +355,22 @@ export interface FilesDomain {
     input: WriteMailboxAttachmentCommand,
     source: AsyncIterable<Buffer>,
   ): Promise<MailboxAttachmentUploadResultV1>;
+  /**
+   * Fix round 3 (review Important #1) -- compensates a mailbox attachment
+   * THIS SAME upload attempt already wrote via writeMailboxAttachment, for
+   * use when mailbox-ingestion.ts's own fencing check later discovers the
+   * attempt was superseded by a reclaimed lease (a stale claim's owning
+   * attempt is still alive and finishes late, after a retry already
+   * reclaimed and completed the same ledger row). Deletes the persisted
+   * object (best-effort; a row that never reached READY has none at its
+   * final key) and marks the row FAILED, so a superseded attempt never
+   * leaves a live READY file with no job wired to it. Internal-only, no
+   * scope/role check -- same "candidateId/fileId is enough" precedent as
+   * writeMailboxAttachment itself; the caller already owns the fencing
+   * decision. Idempotent: a second call on an already-FAILED/DELETED row
+   * is a no-op.
+   */
+  compensateMailboxAttachment(fileId: string): Promise<void>;
   readReadyContent(
     fileId: string,
   ): Promise<{ readonly data: Buffer; readonly contentType: string }>;
@@ -713,6 +729,22 @@ export function createFilesDomain(
           throw new Error("final object size does not match the streamed size");
         }
 
+        // Fix round 3 (review Important #2) -- a size match alone cannot
+        // catch a same-length corruption introduced by the move/storage
+        // layer (bit flip, truncated-and-padded write, etc.). Re-reads
+        // the bytes actually persisted at the final key and re-hashes
+        // them, comparing against the candidate's own attachment-manifest
+        // entry (the same expected hash already verified against the
+        // STREAMED bytes above) -- any mismatch throws into the catch-all
+        // below, which compensates (deletes both possible object
+        // locations) and marks the row FAILED, exactly like every other
+        // failure in this block.
+        const persistedBytes = await storage.readObject(storageKey);
+        const persistedHash = createHash("sha256").update(persistedBytes).digest("hex");
+        if (persistedHash !== manifestEntry.sha256) {
+          throw new Error("persisted object hash does not match the candidate's attachment manifest");
+        }
+
         const updateResult = await database
           .updateTable("app.expense_files")
           .set({ status: "READY", updated_at: new Date(), version: created.version + 1 })
@@ -736,6 +768,22 @@ export function createFilesDomain(
         await storage.deleteObject(storageKey).catch(() => {});
         return fail("ATTACHMENT_CONFIRMATION_FAILED");
       }
+    },
+
+    async compensateMailboxAttachment(fileId) {
+      const row = await database
+        .selectFrom("app.expense_files")
+        .selectAll()
+        .where("id", "=", fileId)
+        .executeTakeFirst();
+      if (!row || row.status === "FAILED" || row.status === "DELETED") return;
+      await storage.deleteObject(row.storage_key).catch(() => {});
+      await database
+        .updateTable("app.expense_files")
+        .set({ status: "FAILED", updated_at: new Date() })
+        .where("id", "=", fileId)
+        .where("status", "=", row.status)
+        .execute();
     },
 
     async readReadyContent(fileId) {

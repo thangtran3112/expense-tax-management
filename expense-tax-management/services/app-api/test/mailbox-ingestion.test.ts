@@ -871,6 +871,47 @@ describe.skipIf(!requested)(
       expect(await storage.statObject(fileRow.storage_key)).toBeNull();
     });
 
+    it("round3 #2 (review Important #2): re-hashes the bytes actually persisted and rejects a same-length single-byte corruption a size check alone would miss", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      // Corrupting double: flips one byte of whatever is read back from
+      // the FINAL storage key only (never the scan-staging key, so the
+      // scan itself still sees the genuine bytes) -- same length, so the
+      // existing persisted-SIZE check (statObject) cannot catch this;
+      // only re-reading and re-hashing the actually-persisted bytes can.
+      const byteCorruptingStorage: StorageAdapter = {
+        ...storage,
+        async readObject(storageKey: string) {
+          const real = await storage.readObject(storageKey);
+          if (storageKey.endsWith(".scan-staging")) return real;
+          const corrupted = Buffer.from(real);
+          corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+          return corrupted;
+        },
+      };
+      const { domain } = createDomain({ storageOverride: byteCorruptingStorage });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+
+      const result = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([bytes]),
+      );
+      expect(result.status).toBe("FAILED");
+      expect(result.errorCode).toBe("ATTACHMENT_CONFIRMATION_FAILED");
+
+      const fileRow = await database!
+        .selectFrom("app.expense_files").selectAll()
+        .where("id", "=", result.fileId).executeTakeFirstOrThrow();
+      expect(fileRow.status).toBe("FAILED");
+      expect(await storage.statObject(fileRow.storage_key)).toBeNull();
+      expect(await storage.statObject(`${fileRow.storage_key}.scan-staging`)).toBeNull();
+    });
+
     it("round2 #4: two concurrent attachment uploads for the SAME candidate each get their OWN OCR job -- one per attachment, not one per candidate", async () => {
       const bytesFor = (n: number) => Buffer.concat([pngBytes(), Buffer.from(`-dup-${n}`)]);
       const hashes = [0, 1].map((n) => sha256Hex(bytesFor(n)));
@@ -959,6 +1000,120 @@ describe.skipIf(!requested)(
         .where("operation_kind", "=", "upload_attachment")
         .executeTakeFirstOrThrow();
       expect(operation.status).toBe("completed");
+    });
+
+    it("round3 #1 (review Important #1): a stale claim's lease is fenced by a rotating token -- a reclaim supersedes it and its late finalize is rejected, leaving no duplicate job or orphaned file", async () => {
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const grant = await createDomain().domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const sharedIdempotencyKey = randomUUID();
+
+      // Attempt A: its claim (phase 1) runs and commits normally, but
+      // phase 2 (the actual stream write) is gated on a promise this test
+      // controls -- simulating a genuinely slow, still-alive attempt, not
+      // a crashed one.
+      let releaseA: () => void = () => {};
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      let capturedAStagingKey: string | undefined;
+      const gatedStorageForA: StorageAdapter = {
+        ...storage,
+        async writeObjectStream(input, source) {
+          capturedAStagingKey = input.storageKey;
+          await gateA;
+          return storage.writeObjectStream(input, source);
+        },
+      };
+      const { domain: domainA } = createDomain({ storageOverride: gatedStorageForA });
+      const { domain: domainB } = createDomain();
+
+      const attemptA = domainA.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: sharedIdempotencyKey,
+        },
+        chunks([bytes]),
+      );
+      // Catch here too -- an unhandled rejection from this still-pending
+      // promise (before the later `await expect(attemptA).rejects...`
+      // picks it up) would otherwise fail the whole test run.
+      attemptA.catch(() => {});
+
+      // Wait for A's claim-phase transaction to actually commit (its
+      // 'started' row exists) before continuing.
+      await expect
+        .poll(async () => {
+          const row = await database!
+            .selectFrom("app.mailbox_ingestion_operations").select("status")
+            .where("candidate_id", "=", candidateId)
+            .where("operation_kind", "=", "upload_attachment")
+            .executeTakeFirst();
+          return row?.status ?? null;
+        })
+        .toBe("started");
+
+      // Age A's claim past the lease window and have B -- the exact same
+      // logical retry, same idempotencyKey -- reclaim it and complete
+      // normally while A is still gated in phase 2.
+      runtimeSql(`
+        UPDATE app.mailbox_ingestion_operations
+           SET updated_at = now() - interval '10 minutes'
+         WHERE candidate_id = '${candidateId}' AND operation_kind = 'upload_attachment';
+      `);
+      const resultB = await domainB.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: sharedIdempotencyKey,
+        },
+        chunks([bytes]),
+      );
+      expect(resultB.status).toBe("READY");
+
+      // Release A -- it finishes its own (now redundant) stream/scan/
+      // promote work and reaches its own finalize carrying its ORIGINAL
+      // (now-superseded) fencing version. It must be rejected outright,
+      // never silently returned as a second success.
+      releaseA();
+      await expect(attemptA).rejects.toMatchObject({ code: "CONFLICT" });
+
+      // A's own fileId, recovered from the staging key its (gated)
+      // writeObjectStream call was invoked with --
+      // tenants/.../originals/{fileId}/{filename}.scan-staging.
+      const stagingKeyMatch = capturedAStagingKey?.match(/\/originals\/([^/]+)\//);
+      expect(stagingKeyMatch).toBeTruthy();
+      const aFileId = stagingKeyMatch![1]!;
+      expect(aFileId).not.toBe(resultB.fileId);
+
+      const aFileRow = await database!
+        .selectFrom("app.expense_files").selectAll()
+        .where("id", "=", aFileId).executeTakeFirstOrThrow();
+      expect(aFileRow.status).toBe("FAILED");
+      // A's compensated object is actually gone from storage, not just
+      // marked FAILED in the database.
+      expect(await storage.statObject(aFileRow.storage_key)).toBeNull();
+
+      const bFileRow = await database!
+        .selectFrom("app.expense_files").selectAll()
+        .where("id", "=", resultB.fileId).executeTakeFirstOrThrow();
+      expect(bFileRow.status).toBe("READY");
+
+      // Exactly one job exists for either file -- B's -- never a second
+      // one for A's superseded (and now compensated) attempt.
+      const jobs = await database!
+        .selectFrom("app.processing_jobs")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("source_file_id", "in", [aFileId, resultB.fileId])
+        .executeTakeFirstOrThrow();
+      expect(Number(jobs.count)).toBe(1);
+      const jobForB = await database!
+        .selectFrom("app.processing_jobs")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("source_file_id", "=", resultB.fileId)
+        .executeTakeFirstOrThrow();
+      expect(Number(jobForB.count)).toBe(1);
     });
 
     it("review #6: two concurrent calls with the exact same idempotency key (within the lease window) never both run side effects -- one succeeds, the other is rejected", async () => {

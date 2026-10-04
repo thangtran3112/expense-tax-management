@@ -707,7 +707,7 @@ export function createMailboxIngestionDomain(
       // (review Important #6).
       const claim:
         | { readonly kind: "replay"; readonly result: MailboxAttachmentUploadResultV1 }
-        | { readonly kind: "claimed"; readonly tenantId: string } =
+        | { readonly kind: "claimed"; readonly tenantId: string; readonly leaseVersion: number } =
         await database.transaction().execute(async (transaction) => {
           const candidate = await transaction
             .selectFrom("app.mailbox_candidates")
@@ -754,12 +754,29 @@ export function createMailboxIngestionDomain(
             if (staleForMs < CLAIM_LEASE_MS) {
               throw DomainError.conflict();
             }
+            // Fix round 3 (review Important #1) -- a timestamp-only
+            // reclaim could still be stolen out from under a genuinely
+            // live (merely slow) attempt: that attempt is unaware of the
+            // reclaim and, once it finally finishes its own phase 2, would
+            // otherwise race this new claimant's finalize with no
+            // fencing at all. The row's own `version` column (already an
+            // optimistic-concurrency counter on every other table in this
+            // schema -- mailbox_candidates.version, expense_files.version,
+            // etc.) doubles as a monotonic lease/fencing token: reclaiming
+            // rotates it forward by one. The original attempt captured the
+            // OLD version when it first claimed; its own finalize UPDATE
+            // below CASes on that exact value, so it affects zero rows
+            // once this reclaim has bumped it -- a late finalize from a
+            // superseded attempt can never complete the ledger row or
+            // create a job (see the CAS check after writeMailboxAttachment
+            // returns).
+            const leaseVersion = existingOperation.version + 1;
             await transaction
               .updateTable("app.mailbox_ingestion_operations")
-              .set({ updated_at: new Date() })
+              .set({ updated_at: new Date(), version: leaseVersion })
               .where("id", "=", existingOperation.id)
               .execute();
-            return { kind: "claimed" as const, tenantId: candidate.tenant_id };
+            return { kind: "claimed" as const, tenantId: candidate.tenant_id, leaseVersion };
           }
 
           if (candidate.version !== input.expectedCandidateVersion) {
@@ -817,7 +834,7 @@ export function createMailboxIngestionDomain(
             })
             .execute();
 
-          return { kind: "claimed" as const, tenantId: candidate.tenant_id };
+          return { kind: "claimed" as const, tenantId: candidate.tenant_id, leaseVersion: 1 };
         });
 
       if (claim.kind === "replay") return claim.result;
@@ -859,8 +876,25 @@ export function createMailboxIngestionDomain(
           .where("operation_key", "=", operationKey)
           .where("idempotency_key", "=", input.idempotencyKey)
           .where("status", "=", "started")
+          // Fix round 3 (review Important #1): fences this finalize to
+          // the exact lease this attempt claimed. Zero rows match here
+          // whenever a reclaim rotated the version forward while this
+          // attempt was still in phase 2 -- the attempt is superseded.
+          .where("version", "=", claim.leaseVersion)
           .executeTakeFirst();
-        if (updated.numUpdatedRows !== 1n) return;
+        if (updated.numUpdatedRows !== 1n) {
+          // Superseded: must fail without side effects. A READY result
+          // from writeMailboxAttachment already persisted a live file row
+          // + storage object under its own fileId -- compensate it away
+          // (never a stranded READY file with no job, never a duplicate
+          // job for the same logical upload) and reject this call, rather
+          // than silently returning a result for a file that no longer
+          // exists.
+          if (result.status === "READY") {
+            await deps.filesDomain.compensateMailboxAttachment(result.fileId);
+          }
+          throw DomainError.conflict();
+        }
 
         if (result.status === "READY") {
           await createMailboxOcrJobInTransaction(
