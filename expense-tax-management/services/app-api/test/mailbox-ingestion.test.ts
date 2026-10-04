@@ -22,6 +22,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   MAX_UPLOAD_BYTES,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
 } from "@expense-tax/contracts";
@@ -369,6 +372,43 @@ describe.skipIf(!requested)(
         );
       `);
       return { connectionId, candidateId };
+    }
+
+    /**
+     * Phase 3D-C Task 5 fix round 2 (review Important #1) -- raw-SQL job
+     * insert (same convention as seedQueuedCandidate above) rather than
+     * going through domain/mailbox-candidates.ts's own
+     * ensureMaterializeJobInTransaction (that file is under concurrent
+     * re-review this round): lets each test below choose an
+     * inconsistent/wrong-type shape directly, which that helper -- by
+     * design -- can never produce.
+     */
+    function seedProcessingJob(input: {
+      readonly workflowType: string;
+      readonly targetAggregateType: string | null;
+      readonly targetAggregateId: string | null;
+      readonly inputParams: Record<string, unknown>;
+      readonly status?: "DISPATCHED" | "RUNNING";
+      readonly allowedResultSchemaVersion?: string;
+    }): { readonly jobId: string } {
+      const jobId = randomUUID();
+      runtimeSql(`
+        INSERT INTO app.processing_jobs (
+          id, tenant_id, personal_profile_id, business_id, workflow_type, workflow_id,
+          task_queue, run_id, status, target_aggregate_type, target_aggregate_id,
+          expected_aggregate_version, input_params, allowed_result_schema_version,
+          result, error_message, version, dispatched_at
+        ) VALUES (
+          '${jobId}', '${TENANT_ID}', '${PROFILE_ID}', NULL, '${input.workflowType}', 'job-${jobId}',
+          'expense-tax-processing', NULL, '${input.status ?? "DISPATCHED"}',
+          ${input.targetAggregateType === null ? "NULL" : `'${input.targetAggregateType}'`},
+          ${input.targetAggregateId === null ? "NULL" : `'${input.targetAggregateId}'`},
+          NULL, '${JSON.stringify(input.inputParams)}'::jsonb,
+          '${input.allowedResultSchemaVersion ?? MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION}',
+          NULL, NULL, 2, now()
+        );
+      `);
+      return { jobId };
     }
 
     function fakePlansDomain(entitled: boolean): PlansDomain {
@@ -1659,6 +1699,197 @@ describe.skipIf(!requested)(
           );
         `),
       ).toThrow();
+    });
+
+    // ------------------------------------------------------------ //
+    // Fix round 2 (task-5-review.md, re-review Important #1):
+    // domain/processing-jobs.ts's requireMailboxMaterializeJob --
+    // routes/mailbox-internal.ts's mailbox-scoped job-callback routes
+    // (materialize-input/status/result) must only ever resolve/mutate
+    // the ONE MailboxMaterializeWorkflow job they were built for, never
+    // ANY processing_jobs row the worker's shared (not per-tenant)
+    // mailbox credential happens to name by id. No-op TemporalWorkflowStarter
+    // -- these tests never dispatch, only recordStatusUpdate/submitResult/
+    // getJob directly, same direct-call style the existing "ocr-e2e"
+    // test above already uses.
+    // ------------------------------------------------------------ //
+
+    const noopTemporalStarter: TemporalWorkflowStarter = {
+      async start() {
+        throw new Error("not used in this test");
+      },
+      async close() {},
+    };
+
+    it("fix round 2 Important #1: getJob with requireMailboxMaterializeWorkflow rejects a job of the WRONG workflow type (e.g. a per-attachment MailboxOcrReceiptWorkflow job) as 404", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      await expect(
+        processingJobsDomain.getJob(jobId, { requireMailboxMaterializeWorkflow: true }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      // Unguarded getJob (the shape routes/jobs.ts's own GET /internal/v1/
+      // jobs/:jobId still uses for every other job type) is untouched --
+      // proves the rejection comes from the opt-in flag, not a regression
+      // to getJob itself.
+      const unguarded = await processingJobsDomain.getJob(jobId);
+      expect(unguarded.workflowType).toBe(MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE);
+    });
+
+    it("fix round 2 Important #1: getJob with requireMailboxMaterializeWorkflow rejects a MailboxMaterializeWorkflow job whose target_aggregate_id disagrees with its own input_params.mailboxCandidateId (data-integrity / cross-candidate mismatch) as 404", async () => {
+      const first = seedQueuedCandidate({ attachmentSha256: [] });
+      const second = seedQueuedCandidate({ attachmentSha256: [] });
+      // target_aggregate_id says "first", but input_params.mailboxCandidateId
+      // says "second" -- exactly the inconsistency a forged/corrupted job
+      // row would exhibit; a route trusting input_params alone (as the
+      // original materialize-input route did pre-round-2) would resolve
+      // and leak/act on the WRONG candidate.
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: first.candidateId,
+        inputParams: { mailboxCandidateId: second.candidateId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      await expect(
+        processingJobsDomain.getJob(jobId, { requireMailboxMaterializeWorkflow: true }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("fix round 2 Important #1: recordStatusUpdate with requireMailboxMaterializeWorkflow rejects a wrong-type job and an inconsistent materialize job, mutating neither (version/status unchanged, no audit event)", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const other = seedQueuedCandidate({ attachmentSha256: [] });
+      const wrongType = seedProcessingJob({
+        workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId },
+      });
+      const inconsistent = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: other.candidateId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      for (const { jobId } of [wrongType, inconsistent]) {
+        await expect(
+          processingJobsDomain.recordStatusUpdate({
+            jobId,
+            request: {
+              schemaVersion: 1, status: "RUNNING",
+              idempotencyKey: `fr2-reject-${jobId}`, expectedJobVersion: 2,
+            },
+            actorServicePrincipal: "workflow-worker-mailbox",
+            requestId: `fr2-reject-${jobId}`,
+            requireMailboxMaterializeWorkflow: true,
+          }),
+        ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+        // No side effect: version/status untouched by the rejected call.
+        const row = await database!
+          .selectFrom("app.processing_jobs").select(["version", "status"])
+          .where("id", "=", jobId).executeTakeFirstOrThrow();
+        expect(row.version).toBe(2);
+        expect(row.status).toBe("DISPATCHED");
+
+        const idempotencyRow = await database!
+          .selectFrom("app.idempotency_records").select("id")
+          .where("idempotency_key", "=", `fr2-reject-${jobId}`)
+          .executeTakeFirst();
+        expect(idempotencyRow).toBeUndefined();
+      }
+    });
+
+    it("fix round 2 Important #1: submitResult with requireMailboxMaterializeWorkflow rejects a wrong-type job and an inconsistent materialize job, mutating neither", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const other = seedQueuedCandidate({ attachmentSha256: [] });
+      const wrongType = seedProcessingJob({
+        workflowType: MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId },
+      });
+      const inconsistent = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: other.candidateId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      for (const { jobId } of [wrongType, inconsistent]) {
+        await expect(
+          processingJobsDomain.submitResult({
+            jobId,
+            request: {
+              schemaVersion: 1, status: "SUCCEEDED",
+              idempotencyKey: `fr2-result-reject-${jobId}`, expectedJobVersion: 2,
+              resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+              result: { candidateId, status: "queued" },
+            },
+            actorServicePrincipal: "workflow-worker-mailbox",
+            requestId: `fr2-result-reject-${jobId}`,
+            requireMailboxMaterializeWorkflow: true,
+          }),
+        ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+        const row = await database!
+          .selectFrom("app.processing_jobs").select(["version", "status", "result"])
+          .where("id", "=", jobId).executeTakeFirstOrThrow();
+        expect(row.version).toBe(2);
+        expect(row.status).toBe("DISPATCHED");
+        expect(row.result).toBeNull();
+      }
+    });
+
+    it("fix round 2 Important #1: a correctly-typed, internally-consistent materialize job still succeeds through getJob/recordStatusUpdate/submitResult with the flag set (the gate never breaks the legitimate path)", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { jobId } = seedProcessingJob({
+        workflowType: MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+        targetAggregateType: "mailbox_candidate",
+        targetAggregateId: candidateId,
+        inputParams: { mailboxCandidateId: candidateId },
+      });
+      const processingJobsDomain = createProcessingJobsDomain(database!, noopTemporalStarter);
+
+      const input = await processingJobsDomain.getJob(jobId, { requireMailboxMaterializeWorkflow: true });
+      expect((input.inputParams as Record<string, unknown>)["mailboxCandidateId"]).toBe(candidateId);
+
+      const running = await processingJobsDomain.recordStatusUpdate({
+        jobId,
+        request: {
+          schemaVersion: 1, status: "RUNNING",
+          idempotencyKey: "fr2-accept-running", expectedJobVersion: 2,
+        },
+        actorServicePrincipal: "workflow-worker-mailbox",
+        requestId: "fr2-accept-running",
+        requireMailboxMaterializeWorkflow: true,
+      });
+      expect(running.body.status).toBe("RUNNING");
+
+      const submitted = await processingJobsDomain.submitResult({
+        jobId,
+        request: {
+          schemaVersion: 1, status: "SUCCEEDED",
+          idempotencyKey: "fr2-accept-result", expectedJobVersion: running.body.version,
+          resultSchemaVersion: MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+          result: { candidateId, status: "queued" },
+        },
+        actorServicePrincipal: "workflow-worker-mailbox",
+        requestId: "fr2-accept-result",
+        requireMailboxMaterializeWorkflow: true,
+      });
+      expect(submitted.body.status).toBe("SUCCEEDED");
     });
   },
 );

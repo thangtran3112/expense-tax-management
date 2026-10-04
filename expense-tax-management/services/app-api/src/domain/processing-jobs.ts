@@ -145,6 +145,18 @@ export interface RecordStatusUpdateInput {
   readonly request: JobStatusUpdateRequestV1;
   readonly actorServicePrincipal: string;
   readonly requestId: string;
+  /**
+   * Phase 3D-C Task 5 fix round 2 (review Important #1) -- set only by
+   * routes/mailbox-internal.ts's mailbox-scoped job-callback routes. The
+   * worker's mailbox credential has no tenant/workflow claim of its own,
+   * so without this the generic recordStatusUpdate/submitResult/getJob
+   * below (also the SAME methods routes/jobs.ts's ai-worker-guarded
+   * routes call for every OTHER job type) would let that credential
+   * read/mutate ANY processing_jobs row in the system by id alone. When
+   * true, requireMailboxMaterializeJob gates the row under the SAME lock
+   * `requireJobForUpdate` already takes, before any other check.
+   */
+  readonly requireMailboxMaterializeWorkflow?: boolean;
 }
 
 export interface SubmitResultInput {
@@ -152,6 +164,16 @@ export interface SubmitResultInput {
   readonly request: JobResultSubmitRequestV1;
   readonly actorServicePrincipal: string;
   readonly requestId: string;
+  /** See RecordStatusUpdateInput's own doc comment -- identical gate. */
+  readonly requireMailboxMaterializeWorkflow?: boolean;
+}
+
+export interface GetJobOptions {
+  /** See RecordStatusUpdateInput's own doc comment -- identical gate,
+   * applied to this read-only lookup (no row lock needed: workflow_type/
+   * target_aggregate_type/target_aggregate_id/input_params are all
+   * write-once at job creation, never touched by any later mutation). */
+  readonly requireMailboxMaterializeWorkflow?: boolean;
 }
 
 export interface ProcessingJobsDomain {
@@ -165,7 +187,7 @@ export interface ProcessingJobsDomain {
   submitResult(
     input: SubmitResultInput,
   ): Promise<MutationResult<ProcessingJob, 200>>;
-  getJob(jobId: string): Promise<ProcessingJob>;
+  getJob(jobId: string, options?: GetJobOptions): Promise<ProcessingJob>;
 }
 
 const STATUS_UPDATE_LEGAL_FROM: Record<
@@ -209,6 +231,48 @@ const MAILBOX_CANDIDATE_JOB_WORKFLOW_TYPES = new Set<string>([
   MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
 ]);
+
+/**
+ * Phase 3D-C Task 5 fix round 2 (review Important #1) -- duplicated as a
+ * local literal (not imported from domain/mailbox-candidates.ts, which is
+ * under concurrent re-review this round) rather than exported from there:
+ * this is the exact target_aggregate_type ensureMaterializeJobInTransaction
+ * stamps on every MailboxMaterializeWorkflow job it creates.
+ */
+const MAILBOX_CANDIDATE_TARGET_AGGREGATE_TYPE = "mailbox_candidate";
+
+/**
+ * Phase 3D-C Task 5 fix round 2 (review Important #1) -- the sole gate
+ * restricting the mailbox-scoped job-callback routes (materialize-input/
+ * status/result) to EXACTLY the MailboxMaterializeWorkflow job each was
+ * created for, never any other job the worker's bearer token happens to
+ * name by id (wrong workflow type, or -- "tenant/connection consistency"
+ * -- a job whose own target_aggregate_id and input_params.mailboxCandidateId
+ * disagree, which would mean the row's own data integrity can't be
+ * trusted to resolve the RIGHT candidate). A legitimate materialize job's
+ * target_aggregate_id and input_params.mailboxCandidateId are both set,
+ * in the same insert statement, from the same candidate.id (see
+ * domain/mailbox-candidates.ts's ensureMaterializeJobInTransaction) --
+ * they must always agree.
+ *
+ * 404 (not a type-specific error) on every failure mode here, same as an
+ * outright-missing job: a wrong-type/inconsistent job id reveals nothing
+ * to the caller beyond "that id is not a reachable materialize job".
+ */
+function requireMailboxMaterializeJob(
+  row: Pick<
+    ProcessingJobRow,
+    "workflow_type" | "target_aggregate_type" | "target_aggregate_id" | "input_params"
+  >,
+): void {
+  if (row.workflow_type !== MAILBOX_MATERIALIZE_WORKFLOW_TYPE) throw DomainError.notFound();
+  if (row.target_aggregate_type !== MAILBOX_CANDIDATE_TARGET_AGGREGATE_TYPE) {
+    throw DomainError.notFound();
+  }
+  const candidateId = (row.input_params as Record<string, unknown> | null)?.mailboxCandidateId;
+  if (typeof candidateId !== "string" || candidateId.length === 0) throw DomainError.notFound();
+  if (candidateId !== row.target_aggregate_id) throw DomainError.notFound();
+}
 
 /**
  * Phase 3D-C Task 5 gap closure 2 (controller ruling) -- called from BOTH
@@ -268,6 +332,15 @@ async function maybeFailMailboxCandidateInTransaction(
     .select((eb) => eb.fn.countAll<string>().as("count"))
     .where("id", "!=", job.id)
     .where("status", "not in", ["SUCCEEDED", "FAILED"])
+    // Phase 3D-C Task 5 fix round 2 (review Minor #3): restricts the
+    // sibling scan to the two mailbox job workflow types -- the same set
+    // this function's own entry guard above checks -- instead of trusting
+    // input_params's own key name alone to mean "this is a mailbox job".
+    // Belt-and-suspenders: input_params.mailboxCandidateId is, today,
+    // written by nothing else, but a future unrelated job type reusing
+    // that key by coincidence must never be counted as this candidate's
+    // sibling.
+    .where("workflow_type", "in", [...MAILBOX_CANDIDATE_JOB_WORKFLOW_TYPES])
     .where(sql<string>`input_params ->> 'mailboxCandidateId'`, "=", candidateId)
     .executeTakeFirstOrThrow();
   if (Number(outstanding.count) > 0) return;
@@ -379,6 +452,9 @@ export function createProcessingJobsDomain(
           parseBody: (value) => value as ProcessingJob,
           execute: async (transaction) => {
             const job = await requireJobForUpdate(transaction, input.jobId);
+            if (input.requireMailboxMaterializeWorkflow) {
+              requireMailboxMaterializeJob(job);
+            }
             if (job.version !== input.request.expectedJobVersion) {
               throw DomainError.preconditionFailed();
             }
@@ -434,6 +510,9 @@ export function createProcessingJobsDomain(
           parseBody: (value) => value as ProcessingJob,
           execute: async (transaction) => {
             const job = await requireJobForUpdate(transaction, input.jobId);
+            if (input.requireMailboxMaterializeWorkflow) {
+              requireMailboxMaterializeJob(job);
+            }
             if (job.version !== input.request.expectedJobVersion) {
               throw DomainError.preconditionFailed();
             }
@@ -520,13 +599,16 @@ export function createProcessingJobsDomain(
       }
     },
 
-    async getJob(jobId) {
+    async getJob(jobId, options) {
       const row = await database
         .selectFrom("app.processing_jobs")
         .selectAll()
         .where("id", "=", jobId)
         .executeTakeFirst();
       if (!row) throw DomainError.notFound();
+      if (options?.requireMailboxMaterializeWorkflow) {
+        requireMailboxMaterializeJob(row);
+      }
       return toProcessingJob(row);
     },
   };

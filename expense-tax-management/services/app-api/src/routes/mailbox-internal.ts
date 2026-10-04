@@ -326,7 +326,13 @@ export async function registerMailboxInternalRoutes(
       },
     },
     async (request) => {
-      const job = await options.processingJobsDomain.getJob(request.params.jobId);
+      // Phase 3D-C Task 5 fix round 2 (review Important #1): restricts
+      // this worker-identity route to EXACTLY the MailboxMaterializeWorkflow
+      // job it was created for -- see ProcessingJobsDomain's own doc
+      // comment on this flag for the full threat model.
+      const job = await options.processingJobsDomain.getJob(request.params.jobId, {
+        requireMailboxMaterializeWorkflow: true,
+      });
       const candidateId = (job.inputParams as Record<string, unknown> | null)?.["mailboxCandidateId"];
       if (typeof candidateId !== "string") throw DomainError.validation();
       return { candidateId };
@@ -351,6 +357,7 @@ export async function registerMailboxInternalRoutes(
         request: request.body,
         actorServicePrincipal: actorServicePrincipal(request),
         requestId: request.id,
+        requireMailboxMaterializeWorkflow: true,
       });
       return reply.code(result.statusCode).send(result.body);
     },
@@ -374,6 +381,7 @@ export async function registerMailboxInternalRoutes(
         request: request.body,
         actorServicePrincipal: actorServicePrincipal(request),
         requestId: request.id,
+        requireMailboxMaterializeWorkflow: true,
       });
       return reply.code(result.statusCode).send(result.body);
     },

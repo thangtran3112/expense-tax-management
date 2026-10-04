@@ -21,11 +21,27 @@ import { expect, it } from "vitest";
 const TASK_QUEUE = "expense-tax-processing";
 const workflowsPath = fileURLToPath(new URL("../src/workflows/index.ts", import.meta.url));
 
-/** Banned per the plan's global constraint: no history ID, cursor, pre-fence
- * token, message ID, thread ID, sender, subject, or attachment metadata may
- * ever cross into Temporal history. */
+/**
+ * Banned per the plan's global constraint: no history ID, cursor,
+ * pre-fence token, message ID, thread ID, sender, subject, or attachment
+ * metadata may ever cross into Temporal history.
+ *
+ * Phase 3D-C Task 5 fix round 2 (review payload-leak regression): merged
+ * with the extraction-content/HTML-body terms the OCR/materialize combined
+ * activities' own real implementation (activities/mailbox-ingestion.ts)
+ * must never surface through ANY Temporal-visible channel -- activity
+ * input, activity result, a failure's own message, or the subsequent
+ * *_mark_failed callback's forwarded message -- for
+ * MailboxOcrReceiptWorkflow/MailboxMaterializeWorkflow. One shared
+ * pattern + helper (not a second one) deliberately: these are strictly
+ * additive terms a scan-workflow history could never legitimately contain
+ * either, so reusing forbiddenFieldsInHistory below for every workflow in
+ * this file is both correct and the smallest diff. (No separate
+ * heartbeat check: grep confirms neither activity ever calls
+ * Context.current().heartbeat(...), so that channel doesn't exist here.)
+ */
 const FORBIDDEN_FIELD_PATTERN =
-  /historyId|cursorDigest|preFenceToken|providerMessageId|providerThreadId|senderAddress|senderDomain|"subject"|attachmentManifest/i;
+  /historyId|cursorDigest|preFenceToken|providerMessageId|providerThreadId|senderAddress|senderDomain|"subject"|attachmentManifest|merchant|incurredOn|"amount"|"currency"|confidence|htmlBody|<html|<!doctype|attachmentBytes|receipt bytes|order number|orderNumber/i;
 
 async function forbiddenFieldsInHistory(
   env: TestWorkflowEnvironment,
@@ -259,8 +275,6 @@ it("MailboxScheduledScanTriggerWorkflow does nothing on skipped_overlap", async 
  * extraction field or byte ever appears in Temporal history (only the
  * opaque jobId/version/message cross the boundary).
  */
-const FORBIDDEN_EXTRACTION_FIELD_PATTERN = /merchant|incurredOn|"amount"|"currency"|receipt bytes/i;
-
 it("MailboxOcrReceiptWorkflow marks running, runs the combined OCR activity, and returns", async () => {
   const calls: unknown[] = [];
   const env = await TestWorkflowEnvironment.createTimeSkipping();
@@ -303,8 +317,12 @@ it("MailboxOcrReceiptWorkflow marks running, runs the combined OCR activity, and
       ["mark_running", { jobReference, expectedJobVersion: 2 }],
       ["mailbox_ocr_receipt", { jobReference, expectedJobVersion: 2 }],
     ]);
+    // Fix round 2 (payload-leak regression): checks the REAL fetched
+    // Temporal history, not just this test's own local `calls` capture --
+    // `calls` only proves what the fake activity itself logged, which is
+    // tautological given its typed signature; fetchHistory() proves what
+    // Temporal server actually persisted.
     expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
-    expect(FORBIDDEN_EXTRACTION_FIELD_PATTERN.test(JSON.stringify(calls))).toBe(false);
   } finally {
     await env.teardown();
   }
@@ -357,6 +375,11 @@ it("MailboxOcrReceiptWorkflow marks the job failed (best-effort) when the combin
         },
       ],
     ]);
+    // Fix round 2 (payload-leak regression): the failure path is the one
+    // most at risk of a future "helpful" regression (forwarding
+    // error.message instead of this fixed constant) -- checks the REAL
+    // fetched history, not just `calls`.
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
   } finally {
     await env.teardown();
   }
@@ -498,6 +521,9 @@ it("MailboxMaterializeWorkflow marks the job failed (best-effort) when the combi
         },
       ],
     ]);
+    // Fix round 2 (payload-leak regression): same rationale as the OCR
+    // failure test above -- checks the REAL fetched history.
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
   } finally {
     await env.teardown();
   }
