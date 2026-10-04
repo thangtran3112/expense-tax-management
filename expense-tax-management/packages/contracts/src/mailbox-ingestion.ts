@@ -135,6 +135,41 @@ export interface StructuredReceiptResultV1 {
   readonly idempotencyKey: string;
 }
 
+/**
+ * Task 4 fix round 1 (review Important #2) -- `StructuredReceiptResultV1.
+ * evidence` is parser-controlled provenance (which schema.org type/fields
+ * the structured-HTML parser matched), never a free-form string: a
+ * compromised or buggy broker must not be able to smuggle raw HTML/text
+ * through this field into app.expense_sources.metadata. The exact closed
+ * vocabulary `parseStructuredReceipt` emits (services/mailbox-broker/src/
+ * structured-receipt.ts's own extractReceiptFields -- RECEIPT_TYPES =
+ * {Order, Invoice, Receipt} crossed with the five parsed fields). This is
+ * deliberately NOT the 9-code MAILBOX_CANDIDATE_REASON_CODES classification
+ * catalog (services/mailbox-broker/src/classification.ts) -- Task 2's own
+ * ruling (task-2-report.md) already established these as two separate
+ * fields serving different purposes (candidate classification evidence vs.
+ * parsed-field provenance); reusing that catalog here would misrepresent
+ * what each evidence entry means. Bounded to 8 entries (the vocabulary's
+ * own maximum: 3 schema_type + 5 field entries, and no entry repeats per
+ * parse) as a second, structural bound beyond the enum itself.
+ */
+export const MailboxStructuredReceiptEvidenceCodeSchema = z.enum([
+  "schema_type:Order",
+  "schema_type:Invoice",
+  "schema_type:Receipt",
+  "field:merchant",
+  "field:amount",
+  "field:currency",
+  "field:incurredOn",
+  "field:orderNumber",
+]);
+export type MailboxStructuredReceiptEvidenceCode = z.infer<
+  typeof MailboxStructuredReceiptEvidenceCodeSchema
+>;
+export const MailboxStructuredReceiptEvidenceSchema = z
+  .array(MailboxStructuredReceiptEvidenceCodeSchema)
+  .max(8);
+
 export interface MailboxResolvedStructuredReceiptV1 extends StructuredReceiptResultV1 {
   readonly scope: MailboxScope;
   readonly scopeSource: "connection_default" | "review_assignment";

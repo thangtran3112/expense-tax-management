@@ -20,7 +20,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EXPENSE_ENRICHMENT_WORKFLOW_TYPE, MAX_UPLOAD_BYTES } from "@expense-tax/contracts";
+import {
+  EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  MAX_UPLOAD_BYTES,
+  OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
+} from "@expense-tax/contracts";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -617,7 +621,7 @@ describe.skipIf(!requested)(
           ).connection_id,
           candidateVersion: 1,
           merchant: "Shopwave Co", amount: "42.50", currency: "USD", incurredOn: "2026-09-01",
-          orderNumber: "ORD-123", notes: null, evidence: ["structured_html_invoice"],
+          orderNumber: "ORD-123", notes: null, evidence: ["schema_type:Order"],
           idempotencyKey: "struct-1",
         },
         idempotencyKey: "struct-1",
@@ -1117,6 +1121,37 @@ describe.skipIf(!requested)(
       expect(candidateRow.expense_id).toBeNull();
     });
 
+    it("fix round 1 review #1: refuses a structured-receipt callback when connected_mailbox_scan is disabled, before any materialization or ledger write", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const connectionId = await connectionIdFor(candidateId);
+      const { domain } = createDomain({ entitled: false });
+
+      await expect(
+        domain.submitStructuredReceipt({
+          result: {
+            schemaVersion: 1, candidateId, connectionId, candidateVersion: 1,
+            merchant: "Disabled Co", amount: "1.00", currency: "USD", incurredOn: "2026-09-10",
+            orderNumber: null, notes: null, evidence: [], idempotencyKey: "disabled-1",
+          },
+          idempotencyKey: "disabled-1",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+      expect(candidateRow.expense_id).toBeNull();
+
+      const ledgerCount = await database!
+        .selectFrom("app.mailbox_ingestion_operations")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("candidate_id", "=", candidateId)
+        .where("operation_kind", "=", "submit_structured_result")
+        .executeTakeFirstOrThrow();
+      expect(Number(ledgerCount.count)).toBe(0);
+    });
+
     it("creates a Phase 3C enrichment job transactionally with the materialized expense, same as every other source", async () => {
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
       const { domain } = createDomain();
@@ -1147,6 +1182,119 @@ describe.skipIf(!requested)(
       expect(outbox).toHaveLength(1);
     });
 
+    it("fix round 1 review #3: a succeeded mailbox OCR job (PENDING -> DISPATCHED -> RUNNING -> SUCCEEDED via submitResult) materializes the expense with connected_mailbox provenance, an enrichment job, and pending dedup evidence", async () => {
+      // Pre-seed an existing expense + fingerprint with the exact
+      // merchant/amount/currency/date the OCR extraction below will
+      // report, so this end-to-end run also exercises the shared dedup
+      // path (not just the happy "processed" case).
+      const seedCandidate = seedQueuedCandidate({ attachmentSha256: [] });
+      const seedConnectionId = await connectionIdFor(seedCandidate.candidateId);
+      const { domain } = createDomain();
+      const seedResult = await domain.submitStructuredReceipt({
+        result: {
+          schemaVersion: 1, candidateId: seedCandidate.candidateId, connectionId: seedConnectionId,
+          candidateVersion: 1,
+          merchant: "OCR E2E Co", amount: "33.33", currency: "USD", incurredOn: "2026-09-11",
+          orderNumber: null, notes: null, evidence: [], idempotencyKey: "ocr-e2e-seed",
+        },
+        idempotencyKey: "ocr-e2e-seed",
+      });
+      expect(seedResult.status).toBe("processed");
+
+      // Attachment-OCR path: upload -> READY -> PENDING job created.
+      const bytes = pngBytes();
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [sha256Hex(bytes)] });
+      const grant = await domain.issueUploadGrant({
+        candidateId, expectedCandidateVersion: 1, operationId: randomUUID(),
+      });
+      const uploadResult = await domain.receiveAttachment(
+        {
+          candidateId, attachmentIndex: 0, uploadGrantId: grant.uploadGrantId,
+          expectedCandidateVersion: 1, idempotencyKey: randomUUID(),
+        },
+        chunks([bytes]),
+      );
+      expect(uploadResult.status).toBe("READY");
+      const jobRow = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("source_file_id", "=", uploadResult.fileId).executeTakeFirstOrThrow();
+      expect(jobRow.status).toBe("PENDING");
+
+      // Dispatch (PENDING -> DISPATCHED) through the same
+      // dispatchPendingJobs mechanism round2 #6 already proves, then
+      // RUNNING, then submitResult with a SUCCEEDED OCR extraction.
+      const temporalStarter: TemporalWorkflowStarter = {
+        async start() {
+          return { runId: `run-${randomUUID()}` };
+        },
+        async close() {},
+      };
+      const processingJobsDomain = createProcessingJobsDomain(database!, temporalStarter);
+      const dispatched = await processingJobsDomain.dispatchPendingJobs({});
+      expect(dispatched.dispatchedCount).toBeGreaterThanOrEqual(1);
+
+      const dispatchedJob = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("id", "=", jobRow.id).executeTakeFirstOrThrow();
+      expect(dispatchedJob.status).toBe("DISPATCHED");
+
+      const runningResult = await processingJobsDomain.recordStatusUpdate({
+        jobId: jobRow.id,
+        request: {
+          schemaVersion: 1, status: "RUNNING",
+          idempotencyKey: "ocr-e2e-running", expectedJobVersion: dispatchedJob.version,
+        },
+        actorServicePrincipal: "ai-worker-app-machine",
+        requestId: "ocr-e2e-running",
+      });
+      expect(runningResult.body.status).toBe("RUNNING");
+
+      const submitted = await processingJobsDomain.submitResult({
+        jobId: jobRow.id,
+        request: {
+          schemaVersion: 1, status: "SUCCEEDED",
+          idempotencyKey: "ocr-e2e-result", expectedJobVersion: runningResult.body.version,
+          resultSchemaVersion: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
+          result: {
+            schemaVersion: 1,
+            merchant: "OCR E2E Co", amount: "33.33", currency: "USD", incurredOn: "2026-09-11",
+            confidence: 0.97,
+          },
+        },
+        actorServicePrincipal: "ai-worker-app-machine",
+        requestId: "ocr-e2e-result",
+      });
+      expect(submitted.body.status).toBe("SUCCEEDED");
+
+      // Connected provenance.
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("duplicate");
+      expect(candidateRow.expense_id).not.toBeNull();
+      const source = await database!
+        .selectFrom("app.expense_sources").selectAll()
+        .where("id", "=", candidateRow.source_id as string).executeTakeFirstOrThrow();
+      expect(source.source_type).toBe("connected_mailbox");
+      expect(source.mailbox_candidate_id).toBe(candidateId);
+
+      // Enrichment job created transactionally, same as the structured path.
+      const enrichmentJobs = await database!
+        .selectFrom("app.processing_jobs").selectAll()
+        .where("target_aggregate_id", "=", candidateRow.expense_id as string)
+        .where("workflow_type", "=", EXPENSE_ENRICHMENT_WORKFLOW_TYPE)
+        .execute();
+      expect(enrichmentJobs).toHaveLength(1);
+
+      // Pending dedup evidence against the pre-seeded expense.
+      expect(candidateRow.duplicate_match_id).not.toBeNull();
+      const match = await database!
+        .selectFrom("app.expense_duplicate_matches").selectAll()
+        .where("id", "=", candidateRow.duplicate_match_id as string).executeTakeFirstOrThrow();
+      expect(match.existing_expense_id).toBe(seedResult.expenseId);
+      expect(match.status).toBe("pending");
+    });
+
     it("stores structured-receipt evidence as bounded names in expense_sources.metadata, never raw HTML/text", async () => {
       const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
       const { domain } = createDomain();
@@ -1157,7 +1305,7 @@ describe.skipIf(!requested)(
           schemaVersion: 1, candidateId, connectionId, candidateVersion: 1,
           merchant: "Evidence Co", amount: "9.99", currency: "USD", incurredOn: "2026-09-04",
           orderNumber: "ORD-9", notes: null,
-          evidence: ["schema_type:Order", "field:totalPrice"],
+          evidence: ["schema_type:Order", "field:amount", "field:orderNumber"],
           idempotencyKey: "evidence-1",
         },
         idempotencyKey: "evidence-1",
@@ -1168,8 +1316,46 @@ describe.skipIf(!requested)(
         .where("id", "=", result.sourceId as string).executeTakeFirstOrThrow();
       expect(source.metadata).toEqual({
         orderNumber: "ORD-9",
-        evidence: ["schema_type:Order", "field:totalPrice"],
+        evidence: ["schema_type:Order", "field:amount", "field:orderNumber"],
       });
+    });
+
+    it("rejects content-bearing or unbounded structured-receipt evidence before any side effect", async () => {
+      const { candidateId } = seedQueuedCandidate({ attachmentSha256: [] });
+      const { domain } = createDomain();
+      const connectionId = await connectionIdFor(candidateId);
+      const base = {
+        schemaVersion: 1 as const,
+        candidateId,
+        connectionId,
+        candidateVersion: 1,
+        merchant: "Evidence Reject Co",
+        amount: "1.00",
+        currency: "USD",
+        incurredOn: "2026-09-09",
+        orderNumber: null,
+        notes: null,
+      };
+      const invalidEvidenceCases: Array<[string, readonly string[]]> = [
+        ["raw HTML content", ["<script>alert(1)</script>"]],
+        ["free-form text not in the catalog", ["structured_html_invoice"]],
+        ["an entry outside the closed vocabulary", ["field:totalPrice"]],
+        ["an oversized array", Array.from({ length: 9 }, () => "field:merchant")],
+      ];
+      for (const [label, evidence] of invalidEvidenceCases) {
+        await expect(
+          domain.submitStructuredReceipt({
+            result: { ...base, evidence, idempotencyKey: `bad-evidence-${label}` },
+            idempotencyKey: `bad-evidence-${label}`,
+          }),
+          label,
+        ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+      }
+      const candidateRow = await database!
+        .selectFrom("app.mailbox_candidates").selectAll()
+        .where("id", "=", candidateId).executeTakeFirstOrThrow();
+      expect(candidateRow.status).toBe("queued");
+      expect(candidateRow.expense_id).toBeNull();
     });
 
     it("records a Phase 3B pending duplicate match on a repeat fingerprint, with evidence identical in shape to the legacy dedup path", async () => {

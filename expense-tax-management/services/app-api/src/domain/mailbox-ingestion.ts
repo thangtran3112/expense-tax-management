@@ -42,6 +42,7 @@ import {
   DateOnlySchema,
   DecimalMoneySchema,
   MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+  MailboxStructuredReceiptEvidenceSchema,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   TARGET_TEMPORAL_NAMESPACE,
   type JobReferenceV1,
@@ -96,6 +97,13 @@ const StructuredReceiptFieldsSchema = z.strictObject({
   currency: CurrencySchema,
   incurredOn: DateOnlySchema,
   orderNumber: z.string().trim().min(1).max(200).nullable(),
+  // Fix round 1 (review Important #2) -- re-validated here too, not just
+  // at the route: a direct domain caller (this file's own
+  // recordConnectedMailboxEvidence wrapper is exempt by always passing
+  // []; but any future caller of submitStructuredReceipt that bypasses
+  // the HTTP route must not be able to smuggle raw HTML/text through
+  // evidence any more than it can through merchant/amount/currency/date.
+  evidence: MailboxStructuredReceiptEvidenceSchema,
 });
 
 function validateStructuredReceiptFields(result: MailboxStructuredReceiptCallbackV1["result"]): {
@@ -104,6 +112,7 @@ function validateStructuredReceiptFields(result: MailboxStructuredReceiptCallbac
   readonly currency: string;
   readonly incurredOn: string;
   readonly orderNumber: string | null;
+  readonly evidence: readonly string[];
 } {
   const parsed = StructuredReceiptFieldsSchema.safeParse({
     merchant: result.merchant,
@@ -111,6 +120,7 @@ function validateStructuredReceiptFields(result: MailboxStructuredReceiptCallbac
     currency: result.currency,
     incurredOn: result.incurredOn,
     orderNumber: result.orderNumber,
+    evidence: result.evidence,
   });
   if (!parsed.success) throw DomainError.validation();
   return parsed.data;
@@ -905,6 +915,24 @@ export function createMailboxIngestionDomain(
           throw DomainError.validation();
         }
 
+        const connection = await transaction
+          .selectFrom("app.mailbox_connections")
+          .selectAll()
+          .where("id", "=", locked.connection_id)
+          .executeTakeFirstOrThrow();
+
+        // Fix round 1 (review Important #1) -- the structured-HTML
+        // callback never checked connected_mailbox_scan before, unlike
+        // receiveAttachment's own claim phase: a disabled tenant could
+        // still have a broker callback materialize an expense. Reuses the
+        // exact same helper, gated before any materialization or ledger
+        // write (the final insertInto below).
+        await requireConnectedMailboxEntitlement(
+          deps.plansDomain,
+          locked.tenant_id,
+          connection.owner_user_id,
+        );
+
         // Never trust structured data blindly: the broker's parser already
         // validates these fields (Task 2), but this is the actual App-side
         // trust boundary -- a crafted/buggy payload must not reach
@@ -913,11 +941,6 @@ export function createMailboxIngestionDomain(
         // candidate can still materialize it independently.
         const fields = validateStructuredReceiptFields(input.result);
 
-        const connection = await transaction
-          .selectFrom("app.mailbox_connections")
-          .selectAll()
-          .where("id", "=", locked.connection_id)
-          .executeTakeFirstOrThrow();
         const actor = resolveMailboxOcrActor(locked, connection);
 
         const materialized = await recordConnectedMailboxEvidenceInTransaction(transaction, {
@@ -932,7 +955,7 @@ export function createMailboxIngestionDomain(
           processingJobId: null,
           requestedByUserId: actor.kind === "user" ? actor.requestedByUserId : null,
           requestId: input.idempotencyKey,
-          evidence: input.result.evidence,
+          evidence: fields.evidence,
         });
 
         const result: MailboxMaterializationResultV1 = {

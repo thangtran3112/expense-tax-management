@@ -39,6 +39,7 @@ import {
   DateOnlySchema,
   DecimalMoneySchema,
   ErrorResponseSchema,
+  MailboxStructuredReceiptEvidenceSchema,
 } from "@expense-tax/contracts";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
@@ -109,7 +110,7 @@ const StructuredResultBodySchema = z.strictObject({
     incurredOn: DateOnlySchema,
     orderNumber: z.string().trim().min(1).max(200).nullable(),
     notes: z.string().nullable(),
-    evidence: z.array(z.string()),
+    evidence: MailboxStructuredReceiptEvidenceSchema,
     idempotencyKey: z.string().trim().min(1).max(500),
   }),
   idempotencyKey: z.string().trim().min(1).max(500),
