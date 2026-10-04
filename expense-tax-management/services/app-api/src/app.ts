@@ -84,6 +84,7 @@ import { registerAuthCheckRoutes } from "./routes/auth-check.js";
 import { registerDuplicateMatchRoutes } from "./routes/duplicate-matches.js";
 import { registerMailboxConnectionRoutes } from "./routes/mailbox-connections.js";
 import { registerMailboxInternalRoutes } from "./routes/mailbox-internal.js";
+import { registerMailboxCandidateRoutes } from "./routes/mailbox-candidates.js";
 import {
   createMailboxConnectionsDomain,
   type MailboxConnectionsDomain,
@@ -92,6 +93,10 @@ import {
   createMailboxScansDomain,
   type MailboxScansDomain,
 } from "./domain/mailbox-scans.js";
+import {
+  createMailboxCandidatesDomain,
+  type MailboxCandidatesDomain,
+} from "./domain/mailbox-candidates.js";
 import { createMailboxBrokerClient } from "./integrations/mailbox-broker-client.js";
 import type { ClerkIdentityMappingDomain } from "./domain/clerk-identity.js";
 import {
@@ -211,6 +216,7 @@ export interface BuildAppOptions {
   readonly tagDomain?: TagDomain;
   readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
   readonly mailboxScansDomain?: MailboxScansDomain;
+  readonly mailboxCandidatesDomain?: MailboxCandidatesDomain;
 }
 
 /**
@@ -257,6 +263,19 @@ function createDisabledMailboxScansDomain(): MailboxScansDomain {
     loadCandidateBinding: disabled,
     recordCandidateMetadata: disabled,
     finalizeScanRun: disabled,
+  };
+}
+
+/** Same "explicitly disabled, not misconfigured" convention as
+ * createDisabledMailboxConnectionsDomain, applied to Task 5's candidate
+ * review domain. */
+function createDisabledMailboxCandidatesDomain(): MailboxCandidatesDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    listCandidates: disabled,
+    resolveCandidate: disabled,
   };
 }
 
@@ -474,6 +493,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           temporalStarter,
         )
       : createDisabledMailboxScansDomain());
+  // Phase 3D-B Task 5 -- no broker client needed (candidate review is a
+  // pure App-owned transition), so this only depends on `mailboxEnabled`.
+  const mailboxCandidatesDomain =
+    options.mailboxCandidatesDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxCandidatesDomain(database)
+      : createDisabledMailboxCandidatesDomain());
   // Always registered (same pattern as every other route group in this
   // file) so the customer-facing route is always present in the generated
   // OpenAPI spec/TS client; when the feature is disabled, every call fails
@@ -499,6 +525,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     ...(options.config.clerk?.mailboxWorkerServiceSubject
       ? { workerServiceSubject: options.config.clerk.mailboxWorkerServiceSubject }
       : {}),
+  });
+  app.register(registerMailboxCandidateRoutes, {
+    mailboxCandidatesDomain,
+    identityResolver: identityDomain,
   });
   const exportsDomain =
     options.exportsDomain ??

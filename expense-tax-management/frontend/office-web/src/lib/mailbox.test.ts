@@ -2,7 +2,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OfficeSession } from "./session";
-import { connectMailboxGoogle, mailboxStatusDisplay } from "./mailbox";
+import {
+  connectMailboxGoogle,
+  mailboxCandidateReviewActionLabel,
+  mailboxReasonCodeLabel,
+  mailboxStatusDisplay,
+  MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS,
+} from "./mailbox";
 
 const personalSession: OfficeSession = {
   apiBaseUrl: "http://app.test",
@@ -86,5 +92,55 @@ describe("connectMailboxGoogle", () => {
         },
       }),
     );
+  });
+});
+
+describe("MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS", () => {
+  it("has exactly the three groups the approved mockup requires, in display order", () => {
+    expect(MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS.map((group) => group.classification)).toEqual([
+      "receipt",
+      "ambiguous",
+      "not_receipt",
+    ]);
+    for (const group of MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS) {
+      expect(group.label.length).toBeGreaterThan(0);
+      expect(group.emptyMessage.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("mailboxReasonCodeLabel", () => {
+  it("maps every fixed catalog code to a non-empty, human label", () => {
+    const codes = [
+      "pdf_attachment_detected",
+      "order_confirmation_schema",
+      "structured_html_invoice",
+      "sender_domain_known_retailer",
+      "sender_domain_unverified",
+      "subject_keyword_order",
+      "free_text_only_low_confidence",
+      "marketing_keyword_match",
+      "no_structured_or_attachment_evidence",
+    ];
+    for (const code of codes) {
+      const label = mailboxReasonCodeLabel(code);
+      expect(label).not.toBe(code);
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("falls back to the raw code for an unknown/future reason code, never throwing", () => {
+    expect(mailboxReasonCodeLabel("a_future_3d_c_reason_code")).toBe("a_future_3d_c_reason_code");
+  });
+});
+
+describe("mailboxCandidateReviewActionLabel", () => {
+  it.each([
+    ["ingest", "Approve for ingestion"],
+    ["skip", "Skip"],
+    ["not_receipt", "Not a receipt"],
+    ["retry", "Retry"],
+  ] as const)("labels %s as %s", (action, label) => {
+    expect(mailboxCandidateReviewActionLabel(action)).toBe(label);
   });
 });

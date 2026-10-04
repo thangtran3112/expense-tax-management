@@ -13,10 +13,14 @@
  * mere messenger: it never creates, stores, or transports the nonce
  * itself, so there is no cookie-handling code left in this module at all.
  */
-import type { Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
 
 import type { ClerkGetToken } from "./clerk";
-import { startMailboxConnection, type StartMailboxConnectionInput } from "./api";
+import {
+  startMailboxConnection,
+  type MailboxCandidateReviewAction,
+  type StartMailboxConnectionInput,
+} from "./api";
 import type { OfficeSession } from "./session";
 
 // ------------------------------------------------------------------ //
@@ -85,4 +89,69 @@ export async function connectMailboxGoogle(
   };
 
   return startMailboxConnection(session, scope, input, getToken, organizationId, options.client);
+}
+
+// ------------------------------------------------------------------ //
+// Candidate review queue display (Phase 3D-B Task 5)
+// ------------------------------------------------------------------ //
+
+/**
+ * Candidate classification groups, display order and label, matching the
+ * approved mockup (plans/mockups/office-mailbox-review/review.html):
+ * "Likely receipt" / "Uncertain" / "Not a receipt".
+ */
+export const MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS: readonly {
+  readonly classification: MailboxCandidateClassification;
+  readonly label: string;
+  readonly emptyMessage: string;
+}[] = [
+  {
+    classification: "receipt",
+    label: "Likely receipt",
+    emptyMessage: "No likely-receipt candidates. New scans add candidates here automatically.",
+  },
+  {
+    classification: "ambiguous",
+    label: "Uncertain",
+    emptyMessage: "Nothing needs review. Uncertain items will appear here when found.",
+  },
+  {
+    classification: "not_receipt",
+    label: "Not a receipt",
+    emptyMessage: "No dismissed candidates. Items you dismiss are kept here for audit only.",
+  },
+];
+
+/**
+ * Best-effort label for a candidate's deterministic reason-code evidence.
+ * `evidence` is typed as `readonly string[]` in the wire contract (not an
+ * enum -- see packages/contracts/src/mailbox-discovery.ts), so an unknown
+ * code (e.g. from a future classifier version) falls back to the raw
+ * string rather than throwing or disappearing.
+ */
+const REASON_CODE_LABELS: Readonly<Record<string, string>> = {
+  pdf_attachment_detected: "PDF attachment",
+  order_confirmation_schema: "Order confirmation",
+  structured_html_invoice: "Structured invoice",
+  sender_domain_known_retailer: "Known retailer",
+  sender_domain_unverified: "Unverified sender",
+  subject_keyword_order: "Order keyword",
+  free_text_only_low_confidence: "Low-confidence text",
+  marketing_keyword_match: "Marketing keyword",
+  no_structured_or_attachment_evidence: "No structured evidence",
+};
+
+export function mailboxReasonCodeLabel(code: string): string {
+  return REASON_CODE_LABELS[code] ?? code;
+}
+
+const REVIEW_ACTION_LABELS: Record<MailboxCandidateReviewAction, string> = {
+  ingest: "Approve for ingestion",
+  skip: "Skip",
+  not_receipt: "Not a receipt",
+  retry: "Retry",
+};
+
+export function mailboxCandidateReviewActionLabel(action: MailboxCandidateReviewAction): string {
+  return REVIEW_ACTION_LABELS[action];
 }

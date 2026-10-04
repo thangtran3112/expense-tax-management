@@ -254,14 +254,26 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   /* Terminal-immutability trigger: processed/duplicate/skipped/failed rows
      are fully immutable (no further transition, not even a same-status
      touch) -- same pattern as migration 016's
-     prevent_enrichment_suggestion_terminal_update. */
+     prevent_enrichment_suggestion_terminal_update -- with exactly one
+     documented exception (Phase 3D-B Task 5, in-place edit: migration 019
+     is unreleased in this branch, same precedent as Task 1's own fix
+     round 1): a `failed` row may transition to `review`, and only that
+     exact transition. This is the sole DB-level opening the spec's
+     `retry` review action needs ("retry: allowed for typed transient
+     failure only") -- domain/mailbox-candidates.ts independently gates
+     *which* failed rows may use it (status=failed AND a typed transient
+     errorCode); this trigger only ensures no other terminal transition is
+     ever possible, including `failed` to anything besides `review`. */
   await sql`
     CREATE OR REPLACE FUNCTION app.prevent_mailbox_candidate_terminal_update()
     RETURNS trigger
     LANGUAGE plpgsql
     AS $function$
     BEGIN
-      IF OLD.status IN ('processed', 'duplicate', 'skipped', 'failed') AND OLD IS DISTINCT FROM NEW THEN
+      IF OLD.status IN ('processed', 'duplicate', 'skipped') AND OLD IS DISTINCT FROM NEW THEN
+        RAISE EXCEPTION 'terminal mailbox candidate is immutable: %', OLD.status;
+      END IF;
+      IF OLD.status = 'failed' AND OLD IS DISTINCT FROM NEW AND NEW.status != 'review' THEN
         RAISE EXCEPTION 'terminal mailbox candidate is immutable: %', OLD.status;
       END IF;
       RETURN NEW;

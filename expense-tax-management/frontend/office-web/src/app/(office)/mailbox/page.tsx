@@ -1,12 +1,30 @@
 "use client";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import type { Scope } from "@expense-tax/contracts";
+import type { MailboxCandidateClassification, Scope } from "@expense-tax/contracts";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PageHead, Status } from "@/components/ui";
-import { MailboxConnectionError } from "@/lib/api";
-import { connectMailboxGoogle, mailboxStatusDisplay } from "@/lib/mailbox";
-import { loadAuthorizedBusinesses, loadMailboxConnection, loadOwnPersonalProfile } from "@/lib/page-data";
+import {
+  MailboxCandidateError,
+  MailboxConnectionError,
+  resolveMailboxCandidate,
+  startMailboxScan,
+  type MailboxCandidateReviewAction,
+} from "@/lib/api";
+import {
+  mailboxCandidateReviewActionLabel,
+  mailboxReasonCodeLabel,
+  connectMailboxGoogle,
+  mailboxStatusDisplay,
+  MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS,
+} from "@/lib/mailbox";
+import {
+  loadAuthorizedBusinesses,
+  loadMailboxCandidates,
+  loadMailboxConnection,
+  loadMailboxScanRuns,
+  loadOwnPersonalProfile,
+} from "@/lib/page-data";
 import { readOfficeSession, type OfficeSession } from "@/lib/session";
 
 /**
@@ -78,6 +96,15 @@ export default function MailboxPage() {
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const [disconnectNote, setDisconnectNote] = useState<string | null>(null);
 
+  // Phase 3D-B Task 5 -- scan history/trigger + candidate review queue.
+  const [scanRuns, setScanRuns] = useState<Awaited<ReturnType<typeof loadMailboxScanRuns>> | undefined>(
+    undefined,
+  );
+  const [scanStarting, setScanStarting] = useState(false);
+  const [scanActionError, setScanActionError] = useState<string | null>(null);
+  const [candidateRefreshSignal, setCandidateRefreshSignal] = useState(0);
+  const previousScanStatusRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!isLoaded || !isSignedIn || !organizationLoaded || !session || !organizationId) return;
     let active = true;
@@ -136,6 +163,63 @@ export default function MailboxPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, organizationId, organizationLoaded, isLoaded, isSignedIn]);
+
+  // Phase 3D-B Task 5 -- scan status polls live (mockup owner decision:
+  // "Running-scan refresh is batch, not streaming"); the candidate list
+  // itself refreshes only once the active run transitions to a terminal
+  // status, via `candidateRefreshSignal`.
+  const connectionId = connection && connection.status !== "pending" ? connection.id : null;
+  useEffect(() => {
+    if (!session || !organizationId || !connectionId) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const items = await loadMailboxScanRuns(session!, connectionId!, getToken, organizationId);
+        if (!active) return;
+        setScanRuns(items);
+        const latestStatus = items[0]?.status ?? null;
+        const wasActive =
+          previousScanStatusRef.current === "pending" || previousScanStatusRef.current === "running";
+        const nowTerminal = latestStatus !== "pending" && latestStatus !== "running";
+        if (wasActive && nowTerminal) setCandidateRefreshSignal((count) => count + 1);
+        previousScanStatusRef.current = latestStatus;
+        if (active && (latestStatus === "pending" || latestStatus === "running")) {
+          timer = setTimeout(() => void poll(), 5_000);
+        }
+      } catch {
+        if (active) setScanRuns([]);
+      }
+    }
+    void poll();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, organizationId]);
+
+  async function handleScanNow() {
+    if (!session || !organizationId || !connectionId) return;
+    setScanStarting(true);
+    setScanActionError(null);
+    try {
+      await startMailboxScan(session, connectionId, getToken, organizationId);
+    } catch (caught: unknown) {
+      setScanActionError(
+        caught instanceof MailboxConnectionError ? caught.message : "Could not start scan.",
+      );
+    } finally {
+      setScanStarting(false);
+      try {
+        const items = await loadMailboxScanRuns(session, connectionId, getToken, organizationId);
+        setScanRuns(items);
+      } catch {
+        // Next poll tick will retry.
+      }
+    }
+  }
 
   if (!isLoaded || !organizationLoaded) {
     return <div className="empty" aria-live="polite">Loading...</div>;
@@ -359,25 +443,64 @@ export default function MailboxPage() {
       </Panel>
 
       <Panel title="Scan schedule">
-        <p>Daily scan time, timezone, and enable/disable arrive with Phase 3D-B&apos;s scheduling write route.</p>
-        <button type="button" className="secondary" disabled aria-disabled="true" title="Reserved for Phase 3D-B">
-          Scan now
-        </button>
+        <p>Daily scan time, timezone, and enable/disable arrive with a later phase&apos;s write route.</p>
+        <div className="field-row">
+          <label>Last scan</label>
+          <span>
+            {scanRuns?.[0]?.completedAt ? new Date(scanRuns[0].completedAt).toLocaleString() : "Never"}
+          </span>
+        </div>
+        <div className="field-row">
+          <label>Last run result</label>
+          <span>
+            {scanRuns?.[0]
+              ? `${scanRuns[0].discoveredCount} discovered · ${scanRuns[0].stagedCount} staged · ${scanRuns[0].reviewCount} review · ${scanRuns[0].duplicateCount} duplicate · ${scanRuns[0].skippedCount} skipped · ${scanRuns[0].failedCount} failed`
+              : "No runs yet"}
+          </span>
+        </div>
+        {(() => {
+          const running = scanRuns?.[0]?.status === "pending" || scanRuns?.[0]?.status === "running";
+          return (
+            <>
+              <button
+                type="button"
+                className="secondary"
+                disabled={scanStarting || running}
+                aria-disabled={scanStarting || running}
+                title={running ? "A scan is already running" : undefined}
+                onClick={() => void handleScanNow()}
+              >
+                {scanStarting ? "Starting..." : "Scan now"}
+              </button>
+              {running && (
+                <p role="status" aria-live="polite">
+                  Scan in progress — {scanRuns?.[0]?.discoveredCount ?? 0} discovered so far. The candidate
+                  list below refreshes once this run completes.
+                </p>
+              )}
+            </>
+          );
+        })()}
+        {scanActionError && (
+          <p role="alert" className="status bad">
+            {scanActionError}
+          </p>
+        )}
       </Panel>
 
       <Panel title="Reviewer grants">
         <p>No reviewers added. Owners can grant read-only review access to this connection&apos;s scope.</p>
-        <button type="button" className="secondary" aria-disabled="true" title="Reserved for Phase 3D-B review workflow">
+        <button type="button" className="secondary" aria-disabled="true" title="Reserved for a later phase">
           Add reviewer
         </button>
       </Panel>
 
-      <Panel title="Candidate review queue" className="placeholder-card">
-        <p>
-          Reserved layout region. Scan runs, staged candidates, and ingest/skip/not-receipt actions arrive
-          with Phase 3D-B and extend this same page.
-        </p>
-      </Panel>
+      <MailboxCandidateReviewPanel
+        session={session}
+        connectionId={connection.id}
+        scopeOptions={scopeOptions}
+        refreshSignal={candidateRefreshSignal}
+      />
 
       {/* Scenario 5: disconnect confirmation */}
       {confirmingDisconnect && (
@@ -415,5 +538,285 @@ export default function MailboxPage() {
         </div>
       )}
     </>
+  );
+}
+
+// ------------------------------------------------------------------ //
+// Candidate review queue (Phase 3D-B Task 5)
+// ------------------------------------------------------------------ //
+
+type MailboxCandidateItem = Awaited<ReturnType<typeof loadMailboxCandidates>>["items"][number];
+
+interface CandidateGroupState {
+  readonly items: readonly MailboxCandidateItem[];
+  readonly nextCursor: string | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+}
+
+const EMPTY_CANDIDATE_GROUP: CandidateGroupState = {
+  items: [],
+  nextCursor: null,
+  loading: false,
+  error: null,
+};
+
+export function MailboxCandidateReviewPanel({
+  session,
+  connectionId,
+  scopeOptions,
+  refreshSignal,
+}: {
+  session: OfficeSession;
+  connectionId: string;
+  scopeOptions: readonly { readonly scope: Scope; readonly label: string }[];
+  refreshSignal: number;
+}) {
+  const { getToken } = useAuth();
+  const { organization } = useOrganization();
+  const organizationId = organization?.id ?? null;
+
+  const [groups, setGroups] = useState<Record<MailboxCandidateClassification, CandidateGroupState>>({
+    receipt: EMPTY_CANDIDATE_GROUP,
+    ambiguous: EMPTY_CANDIDATE_GROUP,
+    not_receipt: EMPTY_CANDIDATE_GROUP,
+  });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedScopeKey, setSelectedScopeKey] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function loadGroup(classification: MailboxCandidateClassification, cursor?: string) {
+    if (!organizationId) return;
+    setGroups((current) => ({
+      ...current,
+      [classification]: { ...current[classification], loading: true, error: null },
+    }));
+    try {
+      const data = await loadMailboxCandidates(
+        session,
+        connectionId,
+        classification,
+        getToken,
+        organizationId,
+        cursor,
+      );
+      setGroups((current) => ({
+        ...current,
+        [classification]: {
+          items: cursor ? [...current[classification].items, ...data.items] : data.items,
+          nextCursor: data.nextCursor,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (caught: unknown) {
+      setGroups((current) => ({
+        ...current,
+        [classification]: {
+          ...current[classification],
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not load candidates",
+        },
+      }));
+    }
+  }
+
+  useEffect(() => {
+    if (!organizationId) return;
+    void loadGroup("receipt");
+    void loadGroup("ambiguous");
+    void loadGroup("not_receipt");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, organizationId, refreshSignal]);
+
+  const selected = selectedId
+    ? ([...groups.receipt.items, ...groups.ambiguous.items, ...groups.not_receipt.items].find(
+        (candidate) => candidate.id === selectedId,
+      ) ?? null)
+    : null;
+
+  async function resolve(candidate: MailboxCandidateItem, action: MailboxCandidateReviewAction) {
+    if (!organizationId) return;
+    setWorking(true);
+    setActionError(null);
+    try {
+      let scope: Scope | undefined;
+      if (action === "ingest") {
+        const option = scopeOptions.find((candidateOption) => scopeKey(candidateOption.scope) === selectedScopeKey);
+        if (!option) {
+          setActionError("Choose a scope above to enable approval.");
+          setWorking(false);
+          return;
+        }
+        scope = option.scope;
+      }
+      await resolveMailboxCandidate(
+        session,
+        connectionId,
+        candidate.id,
+        action,
+        candidate.version,
+        getToken,
+        organizationId,
+        scope,
+      );
+      setGroups((current) => ({
+        ...current,
+        [candidate.classification]: {
+          ...current[candidate.classification],
+          items: current[candidate.classification].items.filter((item) => item.id !== candidate.id),
+        },
+      }));
+      if (selectedId === candidate.id) {
+        setSelectedId(null);
+        setSelectedScopeKey(null);
+      }
+    } catch (caught: unknown) {
+      if (caught instanceof MailboxCandidateError && caught.status === 409) {
+        setActionError("This candidate changed. Refreshing review list.");
+        void loadGroup(candidate.classification);
+      } else {
+        setActionError(caught instanceof Error ? caught.message : "Action failed");
+      }
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <Panel title="Candidate review queue">
+      {actionError && (
+        <p role="alert" className="status bad">
+          {actionError}
+        </p>
+      )}
+      {MAILBOX_CANDIDATE_CLASSIFICATION_GROUPS.map((group) => {
+        const state = groups[group.classification];
+        return (
+          <section key={group.classification} aria-label={`${group.label} candidates`}>
+            <h3>
+              {group.label} <span>{state.items.length}</span>
+            </h3>
+            {state.error && (
+              <p role="alert" className="status bad">
+                {state.error}
+              </p>
+            )}
+            {state.items.length === 0 && !state.loading ? (
+              <p role="status">{group.emptyMessage}</p>
+            ) : (
+              <ul>
+                {state.items.map((candidate) => (
+                  <li key={candidate.id}>
+                    <article
+                      aria-labelledby={`mailbox-candidate-${candidate.id}-sender`}
+                      aria-current={selectedId === candidate.id}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedId(candidate.id);
+                          setSelectedScopeKey(null);
+                          setActionError(null);
+                        }}
+                      >
+                        <span id={`mailbox-candidate-${candidate.id}-sender`}>{candidate.senderAddress}</span>
+                        <Status tone={candidate.scope ? "ok" : "warn"}>
+                          {candidate.scope
+                            ? candidate.scope.kind === "personal"
+                              ? "Scope: Personal"
+                              : "Scope: Business"
+                            : "Scope: unassigned"}
+                        </Status>
+                        <p>{candidate.subject}</p>
+                        <p>{new Date(candidate.receivedAt).toLocaleString()}</p>
+                        <p>
+                          {candidate.attachmentManifest.length > 0
+                            ? `${candidate.attachmentManifest.length} attachment(s)`
+                            : "No attachment"}
+                        </p>
+                        <p>
+                          {candidate.evidence.map((code) => (
+                            <span key={code} className="tag-chip-display">
+                              {mailboxReasonCodeLabel(code)}
+                            </span>
+                          ))}
+                        </p>
+                      </button>
+                    </article>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {state.nextCursor && (
+              <button
+                type="button"
+                disabled={state.loading}
+                aria-busy={state.loading}
+                onClick={() => void loadGroup(group.classification, state.nextCursor ?? undefined)}
+              >
+                {state.loading ? "Loading more..." : "Load more"}
+              </button>
+            )}
+          </section>
+        );
+      })}
+
+      {selected && (
+        <aside aria-labelledby="mailbox-candidate-detail-heading">
+          <h3 id="mailbox-candidate-detail-heading">{selected.senderAddress}</h3>
+          <p>{selected.subject}</p>
+          <p>
+            {selected.classification} · {Math.round(selected.confidence * 100)}% confidence
+          </p>
+          <p>
+            {selected.evidence.map((code) => (
+              <span key={code} className="tag-chip-display">
+                {mailboxReasonCodeLabel(code)}
+              </span>
+            ))}
+          </p>
+
+          <fieldset style={{ border: 0, padding: 0, margin: "14px 0 0" }}>
+            <legend>
+              Assign scope before approving<span aria-hidden="true"> *</span>
+            </legend>
+            <div role="radiogroup" aria-required="true">
+              {scopeOptions.map((option) => (
+                <label key={scopeKey(option.scope)}>
+                  <input
+                    type="radio"
+                    name="mailbox-candidate-scope"
+                    checked={selectedScopeKey === scopeKey(option.scope)}
+                    onChange={() => setSelectedScopeKey(scopeKey(option.scope))}
+                  />
+                  <strong>{option.label}</strong>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="toolbar">
+            <button
+              type="button"
+              className="primary"
+              disabled={working || !selectedScopeKey}
+              aria-disabled={working || !selectedScopeKey}
+              title={selectedScopeKey ? undefined : "Choose a scope above to enable approval"}
+              onClick={() => void resolve(selected, "ingest")}
+            >
+              {mailboxCandidateReviewActionLabel("ingest")}
+            </button>
+            <button type="button" disabled={working} onClick={() => void resolve(selected, "skip")}>
+              {mailboxCandidateReviewActionLabel("skip")}
+            </button>
+            <button type="button" disabled={working} onClick={() => void resolve(selected, "not_receipt")}>
+              {mailboxCandidateReviewActionLabel("not_receipt")}
+            </button>
+          </div>
+        </aside>
+      )}
+    </Panel>
   );
 }

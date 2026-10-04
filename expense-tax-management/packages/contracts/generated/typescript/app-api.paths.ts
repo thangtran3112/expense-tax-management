@@ -10745,6 +10745,366 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    classification?: "receipt" | "ambiguous" | "not_receipt";
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    connectionId: string;
+                    tenantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                attachmentManifest: {
+                                    /** @enum {string} */
+                                    mimeType: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+                                    name: string;
+                                    sha256: string;
+                                    sizeBytes: number;
+                                }[];
+                                /** @enum {string} */
+                                classification: "receipt" | "ambiguous" | "not_receipt";
+                                confidence: number;
+                                /** Format: uuid */
+                                connectionId: string;
+                                contentHash: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                duplicateMatchId: string | null;
+                                errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                                evidence: string[];
+                                expenseId: string | null;
+                                /** Format: uuid */
+                                id: string;
+                                idempotencyKey: string;
+                                processingJobId: string | null;
+                                /** Format: date-time */
+                                receivedAt: string;
+                                /** Format: uuid */
+                                scanRunId: string;
+                                /** @enum {number} */
+                                schemaVersion: 1;
+                                scope: ({
+                                    /** @enum {string} */
+                                    kind: "personal";
+                                    /** Format: uuid */
+                                    profileId: string;
+                                } | {
+                                    /** Format: uuid */
+                                    businessId: string;
+                                    /** @enum {string} */
+                                    kind: "business";
+                                }) | null;
+                                /** Format: email */
+                                senderAddress: string;
+                                senderDomain: string;
+                                sourceId: string | null;
+                                /** @enum {string} */
+                                status: "staged" | "review" | "queued" | "processed" | "duplicate" | "skipped" | "failed";
+                                subject: string;
+                                /** Format: uuid */
+                                tenantId: string;
+                                /** Format: date-time */
+                                updatedAt: string;
+                                version: number;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+                /** @description Default Response */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/candidates/{candidateId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    candidateId: string;
+                    connectionId: string;
+                    tenantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        action: "ingest" | "skip" | "not_receipt" | "retry";
+                        expectedCandidateVersion: number;
+                        requestId: string;
+                        scope?: {
+                            /** @enum {string} */
+                            kind: "personal";
+                            /** Format: uuid */
+                            profileId: string;
+                        } | {
+                            /** Format: uuid */
+                            businessId: string;
+                            /** @enum {string} */
+                            kind: "business";
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            attachmentManifest: {
+                                /** @enum {string} */
+                                mimeType: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+                                name: string;
+                                sha256: string;
+                                sizeBytes: number;
+                            }[];
+                            /** @enum {string} */
+                            classification: "receipt" | "ambiguous" | "not_receipt";
+                            confidence: number;
+                            /** Format: uuid */
+                            connectionId: string;
+                            contentHash: string;
+                            /** Format: date-time */
+                            createdAt: string;
+                            duplicateMatchId: string | null;
+                            errorCode: ("ENTITLEMENT_DISABLED" | "SCOPE_ACCESS_DENIED" | "CONNECTION_NOT_FOUND" | "PROVIDER_UNSUPPORTED" | "OAUTH_ATTEMPT_EXPIRED" | "OAUTH_STATE_INVALID" | "OAUTH_REPLAY" | "OAUTH_SCOPE_MISMATCH" | "GOOGLE_REAUTH_REQUIRED" | "GOOGLE_RATE_LIMITED" | "GOOGLE_UNAVAILABLE" | "VERSION_CONFLICT" | "IDEMPOTENCY_CONFLICT" | "REVOKE_PENDING") | null;
+                            evidence: string[];
+                            expenseId: string | null;
+                            /** Format: uuid */
+                            id: string;
+                            idempotencyKey: string;
+                            processingJobId: string | null;
+                            /** Format: date-time */
+                            receivedAt: string;
+                            /** Format: uuid */
+                            scanRunId: string;
+                            /** @enum {number} */
+                            schemaVersion: 1;
+                            scope: ({
+                                /** @enum {string} */
+                                kind: "personal";
+                                /** Format: uuid */
+                                profileId: string;
+                            } | {
+                                /** Format: uuid */
+                                businessId: string;
+                                /** @enum {string} */
+                                kind: "business";
+                            }) | null;
+                            /** Format: email */
+                            senderAddress: string;
+                            senderDomain: string;
+                            sourceId: string | null;
+                            /** @enum {string} */
+                            status: "staged" | "review" | "queued" | "processed" | "duplicate" | "skipped" | "failed";
+                            subject: string;
+                            /** Format: uuid */
+                            tenantId: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                            version: number;
+                        };
+                    };
+                };
+                /** @description Default Response */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenantId}/mailbox-connections/{connectionId}/scans": {
         parameters: {
             query?: never;

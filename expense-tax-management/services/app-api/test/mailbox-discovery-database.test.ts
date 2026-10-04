@@ -134,11 +134,17 @@ describe("mailbox discovery migration 019 – app.mailbox_candidates", () => {
     );
   });
 
-  it("guards terminal candidates (processed/duplicate/skipped/failed) as fully immutable, including same-status updates", () => {
+  it("guards terminal candidates (processed/duplicate/skipped) as fully immutable, including same-status updates", () => {
     expect(migration).toMatch(/prevent_mailbox_candidate_terminal_update/);
     expect(migration).toMatch(/mailbox_candidates_terminal_guard_trigger/);
     expect(migration).toMatch(
-      /OLD\.status IN \('processed', 'duplicate', 'skipped', 'failed'\) AND OLD IS DISTINCT FROM NEW/,
+      /OLD\.status IN \('processed', 'duplicate', 'skipped'\) AND OLD IS DISTINCT FROM NEW/,
+    );
+  });
+
+  it("allows exactly one failed-candidate exception: failed -> review (Phase 3D-B Task 5's retry action), nothing else", () => {
+    expect(migration).toMatch(
+      /OLD\.status = 'failed' AND OLD IS DISTINCT FROM NEW AND NEW\.status != 'review'/,
     );
   });
 
