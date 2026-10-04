@@ -3,6 +3,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
 
 import { createActivities, createMailboxActivities } from "./activities/index.js";
+import {
+  createMailboxMaterializeActivities,
+  createMailboxOcrActivities,
+} from "./activities/mailbox-ingestion.js";
 import { createAppApiClient } from "./clients/app-api.js";
 import { createFoundryClient } from "./clients/foundry.js";
 import { createMailboxAppApiClient } from "./clients/mailbox-client.js";
@@ -28,18 +32,33 @@ export async function runWorker(
   });
 
   try {
+    const appApi = createAppApiClient(config);
     const activities = createActivities({
-      appApi: createAppApiClient(config),
+      appApi,
       foundry: createFoundryClient(config),
+      extractReceipt: extractFakeReceipt,
+    });
+    // Phase 3D-C Task 5: mailbox_ocr_receipt needs only the generic App
+    // API identity (jobs:write/files:read) -- never mailbox credentials --
+    // so it registers unconditionally, same as the generic `activities`
+    // above.
+    const mailboxOcrActivities = createMailboxOcrActivities({
+      appApi,
       extractReceipt: extractFakeReceipt,
     });
     // Phase 3D-B Task 3: mirrors 3D-A Task 5's own "mailbox config is
     // optional, construct only when present" convention -- an ordinary
     // dev->main deploy carries no mailbox env at all.
-    const mailboxActivities =
+    const mailboxClient =
       config.clerk.mailboxApp && config.clerk.mailboxBroker
-        ? createMailboxActivities({ mailboxClient: createMailboxAppApiClient(config) })
-        : {};
+        ? createMailboxAppApiClient(config)
+        : undefined;
+    const mailboxActivities = mailboxClient
+      ? {
+          ...createMailboxActivities({ mailboxClient }),
+          ...createMailboxMaterializeActivities({ mailboxClient }),
+        }
+      : {};
     const worker = await factories.create({
       connection,
       namespace: config.temporal.namespace,
@@ -47,7 +66,7 @@ export async function runWorker(
       workflowsPath: fileURLToPath(
         new URL("./workflows/index.js", import.meta.url),
       ),
-      activities: { ...activities, ...mailboxActivities },
+      activities: { ...activities, ...mailboxOcrActivities, ...mailboxActivities },
       // Temporal Runtime handles SIGTERM and stops polling before this drain.
       shutdownGraceTime: "30s",
     });

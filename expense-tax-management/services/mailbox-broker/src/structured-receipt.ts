@@ -37,6 +37,8 @@ import {
   mailboxIdempotencyKey,
   TimestampSchema,
   type MailboxErrorCodeV1,
+  type MailboxMaterializationResultV1,
+  type MailboxStructuredReceiptCallbackV1,
   type StructuredReceiptResultV1,
 } from "@expense-tax/contracts";
 
@@ -530,4 +532,32 @@ function extractReceiptFields(node: Record<string, unknown>, typeLabel: string):
   if (orderNumber !== null) evidence.push("field:orderNumber");
 
   return { merchant, amount, currency, incurredOn, orderNumber, evidence };
+}
+
+/**
+ * Phase 3D-C Task 5 — structured-result materialize glue: parses, then
+ * (only on a complete match) submits directly to App. Returns null on
+ * "review"/"skipped" -- nothing to submit; the candidate stays queued for
+ * a later attachment-OCR materialization instead.
+ *
+ * Not yet called from ingestion.ts's materializeCandidate: no Gmail
+ * client in this codebase exposes a message-body byte source (see that
+ * function's own ruling) -- this is ready for whichever future change
+ * adds one.
+ */
+export interface StructuredReceiptMaterializeDependencies {
+  readonly submitStructuredResult: (
+    input: MailboxStructuredReceiptCallbackV1,
+  ) => Promise<MailboxMaterializationResultV1>;
+}
+
+export async function materializeStructuredReceipt(
+  deps: StructuredReceiptMaterializeDependencies,
+  stream: AsyncIterable<Buffer>,
+  metadata: StructuredReceiptMetadata,
+  idempotencyKey: string,
+): Promise<MailboxMaterializationResultV1 | null> {
+  const outcome = await parseStructuredReceipt(stream, metadata);
+  if ("status" in outcome) return null;
+  return deps.submitStructuredResult({ result: outcome, idempotencyKey });
 }

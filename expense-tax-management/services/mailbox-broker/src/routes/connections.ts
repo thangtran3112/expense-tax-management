@@ -18,9 +18,11 @@
  * to change.
  */
 import type { FastifyInstance } from "fastify";
+import { MailboxMaterializationResultV1Schema } from "@expense-tax/contracts";
 import { z } from "zod";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 
+import { materializeCandidate, type MaterializeCandidateDependencies } from "../ingestion.js";
 import type { ServiceGuard } from "../plugins/auth.js";
 import type {
   MailboxBrokerConnectionAppClient,
@@ -39,6 +41,17 @@ export interface ConnectionsRouteOptions {
   readonly discoveryAppClient?: MailboxBrokerDiscoveryAppClient;
   /** Guards the discover route: caller "worker", scope "mailbox:discover". */
   readonly workerDiscoverGuard?: ServiceGuard;
+  /**
+   * Phase 3D-C Task 5 -- materialize route dependencies. Omit both to
+   * skip registering the route entirely (same "all-or-nothing" pattern as
+   * the discover trio above; production wiring of a real
+   * `MaterializeCandidateDependencies` -- a real Gmail client factory --
+   * remains deferred/flagged in task-5-report.md, same class of gap Task
+   * 2/3 already left for this exact route).
+   */
+  readonly materializeDependencies?: MaterializeCandidateDependencies;
+  /** Guards the materialize route: caller "worker", scope "mailbox:materialize". */
+  readonly workerMaterializeGuard?: ServiceGuard;
 }
 
 const ConnectionIdParamsSchema = z.strictObject({ connectionId: z.uuid() });
@@ -50,6 +63,8 @@ const DiscoverResponseSchema = z.strictObject({
   candidateCount: z.number().int(),
   retryCount: z.number().int(),
 });
+const CandidateIdParamsSchema = z.strictObject({ candidateId: z.uuid() });
+const MaterializeBodySchema = z.strictObject({ operationId: z.string().trim().min(1) });
 
 export async function registerConnectionRoutes(
   app: FastifyInstance,
@@ -93,6 +108,32 @@ export async function registerConnectionRoutes(
         return discoveryProviderAdapter.discover({
           connectionId: "",
           scanRunId: request.params.scanRunId,
+        });
+      },
+    );
+  }
+
+  const { materializeDependencies, workerMaterializeGuard } = options;
+  if (materializeDependencies && workerMaterializeGuard) {
+    typedApp.post(
+      "/internal/v1/mailbox/candidates/:candidateId/materialize",
+      {
+        preHandler: [workerMaterializeGuard],
+        schema: {
+          params: CandidateIdParamsSchema,
+          body: MaterializeBodySchema,
+          response: { 200: MailboxMaterializationResultV1Schema },
+        },
+      },
+      async (request) => {
+        // MaterializeInput.connectionId is part of the generic contract
+        // shape but unused -- same ruling as the discover route above:
+        // the broker resolves it itself via loadCandidateBinding, since
+        // the worker never knows it either (opaque by design).
+        return materializeCandidate(materializeDependencies, {
+          connectionId: "",
+          candidateId: request.params.candidateId,
+          operationId: request.body.operationId,
         });
       },
     );

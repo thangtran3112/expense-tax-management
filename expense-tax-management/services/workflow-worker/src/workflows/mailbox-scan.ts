@@ -32,15 +32,22 @@ import {
   ApplicationFailure,
   CancellationScope,
   executeChild,
+  isCancellation,
   proxyActivities,
   workflowInfo,
 } from "@temporalio/workflow";
 import {
   AI_WORKER_TASK_QUEUE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   MAILBOX_SCAN_WORKFLOW_TYPE,
   type DiscoveryPageV1,
+  type JobReferenceV1,
+  type MailboxMaterializationResultV1,
   type MailboxScanExecutionInputV1,
+  type MailboxWorkerMaterializationInputV1,
 } from "@expense-tax/contracts";
+
+import { requireJobReference } from "./job-reference.js";
 
 /**
  * Inline activity interfaces, same convention as every other workflow
@@ -142,4 +149,86 @@ export async function MailboxScheduledScanTriggerWorkflow(
     taskQueue: AI_WORKER_TASK_QUEUE,
     args: [{ schemaVersion: 1, scanRunId: result.scanRunId }],
   });
+}
+
+/**
+ * Phase 3D-C Task 5 — opaque mailbox-OCR materialization. Receives only a
+ * `JobReferenceV1` (same shape every job-dispatched workflow receives);
+ * one combined activity does get-input/download/extract/submit so bytes
+ * and extraction fields never become a separate Temporal history event
+ * (see activities/mailbox-ingestion.ts's own header comment). Dispatched
+ * through the existing processing_job_dispatch_outbox/dispatchPendingJobs
+ * path (App API domain/mailbox-ingestion.ts), same as every other job
+ * type -- no bespoke one-shot start call.
+ */
+interface MailboxOcrActivities {
+  mark_running(input: { jobReference: JobReferenceV1; expectedJobVersion: number }): Promise<number>;
+  mailbox_ocr_receipt(input: { jobReference: JobReferenceV1; expectedJobVersion: number }): Promise<number>;
+  ocr_mark_failed(input: {
+    jobReference: JobReferenceV1;
+    expectedJobVersion: number;
+    message: string;
+  }): Promise<number>;
+}
+
+const mailboxOcr = proxyActivities<MailboxOcrActivities>({
+  startToCloseTimeout: "90 seconds",
+  retry: { maximumAttempts: 3 },
+});
+
+export async function MailboxOcrReceiptWorkflow(jobReference: JobReferenceV1): Promise<void> {
+  const ref = requireJobReference(jobReference, MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE);
+  const version = await mailboxOcr.mark_running({ jobReference: ref, expectedJobVersion: 2 });
+  try {
+    await mailboxOcr.mailbox_ocr_receipt({ jobReference: ref, expectedJobVersion: version });
+  } catch (error) {
+    if (isCancellation(error)) throw error;
+    try {
+      await mailboxOcr.ocr_mark_failed({
+        jobReference: ref,
+        expectedJobVersion: version,
+        message: "MAILBOX_OCR_FAILED: extraction or submission error",
+      });
+    } catch (failError) {
+      if (isCancellation(failError)) throw failError;
+      // Best-effort terminal callback, same precedent as ocr-receipt.ts's fail().
+    }
+  }
+}
+
+/**
+ * Phase 3D-C Task 5 — opaque materialize-by-candidateId trigger.
+ * `MailboxWorkerMaterializationInputV1` is Task 1's own pre-named
+ * Temporal-boundary input for "the (not-yet-named-by-this-task) worker
+ * activity/workflow that drives materialization"; scanRunId refers to the
+ * candidate's originating scan run and is carried through opaquely, not
+ * used to start a new run. The worker never sees connectionId, Gmail
+ * ids, or any content -- only this candidateId and the opaque result the
+ * broker/App return. Not yet started by anything (the App-side "a queued
+ * candidate enqueues materialization" trigger is separate, future work --
+ * see task-5-report.md); this workflow is the ready-to-start target for
+ * it, keyed by candidateId so a retried/reconciled start is naturally
+ * idempotent via Temporal's own workflow-id reuse.
+ */
+interface MailboxMaterializeActivities {
+  mailbox_materialize_candidate(input: {
+    candidateId: string;
+    operationId: string;
+  }): Promise<MailboxMaterializationResultV1>;
+}
+
+const { mailbox_materialize_candidate } = proxyActivities<MailboxMaterializeActivities>({
+  startToCloseTimeout: "60 seconds",
+  retry: { maximumAttempts: 5 },
+});
+
+export function mailboxMaterializeWorkflowId(candidateId: string): string {
+  return `mailbox-materialize-${candidateId}`;
+}
+
+export async function MailboxMaterializeWorkflow(
+  input: MailboxWorkerMaterializationInputV1,
+): Promise<MailboxMaterializationResultV1> {
+  const operationId = workflowInfo().firstExecutionRunId;
+  return mailbox_materialize_candidate({ candidateId: input.candidateId, operationId });
 }

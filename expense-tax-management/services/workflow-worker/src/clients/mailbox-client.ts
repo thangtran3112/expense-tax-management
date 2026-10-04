@@ -18,7 +18,11 @@
  * `CLERK_MAILBOX_SERVICE_AUDIENCE`, new) for calls directly to the
  * broker.
  */
-import type { DiscoveryPageV1 } from "@expense-tax/contracts";
+import {
+  MailboxMaterializationResultV1Schema,
+  type DiscoveryPageV1,
+  type MailboxMaterializationResultV1,
+} from "@expense-tax/contracts";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../config.js";
@@ -139,6 +143,16 @@ export interface MailboxAppApiClient {
     readonly scanRunId: string;
     readonly outcome: "succeeded" | "failed";
   }): Promise<FinalizeScanResult>;
+  /**
+   * Phase 3D-C Task 5. The worker's one opaque-by-candidateId call into
+   * the broker's materialize route -- same "named convenience method over
+   * requestBroker" shape as discoverPage, same mailbox:materialize scope
+   * this client's broker token provider already requests.
+   */
+  materializeCandidate(input: {
+    readonly candidateId: string;
+    readonly operationId: string;
+  }): Promise<MailboxMaterializationResultV1>;
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -307,6 +321,14 @@ export function createMailboxAppApiClient(
         method: "POST",
         responseSchema: FinalizeScanResultSchema,
         body: { outcome },
+      });
+    },
+    materializeCandidate({ candidateId, operationId }) {
+      return client.requestBroker({
+        path: `/internal/v1/mailbox/candidates/${candidateId}/materialize`,
+        method: "POST",
+        responseSchema: MailboxMaterializationResultV1Schema,
+        body: { operationId },
       });
     },
   };

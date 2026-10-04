@@ -6,9 +6,9 @@
  * parser is safe against oversize/deep/slow input without ever executing
  * script content, fetching externally, or polluting a prototype.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { parseStructuredReceipt } from "../src/structured-receipt.js";
+import { materializeStructuredReceipt, parseStructuredReceipt } from "../src/structured-receipt.js";
 
 const METADATA = {
   candidateId: "11111111-1111-4111-8111-111111111111",
@@ -289,5 +289,47 @@ describe("parseStructuredReceipt — hostile input / bound safety", () => {
     const result = await parseStructuredReceipt(iterableOf(html), METADATA);
     expect(Date.now() - start).toBeLessThan(500);
     expect("merchant" in result && result.merchant).toBe("Acme Hardware");
+  });
+});
+
+describe("materializeStructuredReceipt", () => {
+  it("submits directly to App on a complete parse match", async () => {
+    const submitStructuredResult = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      candidateId: METADATA.candidateId,
+      status: "processed" as const,
+      processingJobId: null,
+      expenseId: "33333333-3333-4333-8333-333333333333",
+      sourceId: "44444444-4444-4444-8444-444444444444",
+      duplicateMatchId: null,
+      idempotencyKey: "idem-1",
+    }));
+
+    const result = await materializeStructuredReceipt(
+      { submitStructuredResult },
+      iterableOf(orderHtml(VALID_ORDER)),
+      METADATA,
+      "idem-1",
+    );
+
+    expect(submitStructuredResult).toHaveBeenCalledWith({
+      result: expect.objectContaining({ merchant: "Acme Hardware" }),
+      idempotencyKey: "idem-1",
+    });
+    expect(result).toMatchObject({ status: "processed" });
+  });
+
+  it("returns null and never calls App when the parse is not a complete match", async () => {
+    const submitStructuredResult = vi.fn();
+
+    const result = await materializeStructuredReceipt(
+      { submitStructuredResult },
+      iterableOf("<html><body>no receipt here</body></html>"),
+      METADATA,
+      "idem-2",
+    );
+
+    expect(submitStructuredResult).not.toHaveBeenCalled();
+    expect(result).toBeNull();
   });
 });

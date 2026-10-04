@@ -251,3 +251,196 @@ it("MailboxScheduledScanTriggerWorkflow does nothing on skipped_overlap", async 
     await env.teardown();
   }
 }, 60_000);
+
+/**
+ * Phase 3D-C Task 5 — MailboxOcrReceiptWorkflow. Proves mark_running then
+ * the single combined mailbox_ocr_receipt activity, with ocr_mark_failed
+ * as the best-effort terminal callback on failure -- and that no OCR
+ * extraction field or byte ever appears in Temporal history (only the
+ * opaque jobId/version/message cross the boundary).
+ */
+const FORBIDDEN_EXTRACTION_FIELD_PATTERN = /merchant|incurredOn|"amount"|"currency"|receipt bytes/i;
+
+it("MailboxOcrReceiptWorkflow marks running, runs the combined OCR activity, and returns", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-success";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running(input: unknown) {
+          calls.push(["mark_running", input]);
+          return 2;
+        },
+        async mailbox_ocr_receipt(input: unknown) {
+          calls.push(["mailbox_ocr_receipt", input]);
+          return 3;
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 4;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "11111111-1111-4111-8111-111111111111",
+      workflowType: "MailboxOcrReceiptWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      ["mark_running", { jobReference, expectedJobVersion: 2 }],
+      ["mailbox_ocr_receipt", { jobReference, expectedJobVersion: 2 }],
+    ]);
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+    expect(FORBIDDEN_EXTRACTION_FIELD_PATTERN.test(JSON.stringify(calls))).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxOcrReceiptWorkflow marks the job failed (best-effort) when the combined activity fails permanently", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-failure";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running() {
+          return 2;
+        },
+        async mailbox_ocr_receipt() {
+          const { ApplicationFailure } = await import("@temporalio/activity");
+          throw ApplicationFailure.nonRetryable("extraction failed", "MailboxOcrExtractionFailed");
+        },
+        async ocr_mark_failed(input: unknown) {
+          calls.push(["ocr_mark_failed", input]);
+          return 5;
+        },
+      },
+    });
+    const jobReference = {
+      schemaVersion: 1,
+      jobId: "22222222-2222-4222-8222-222222222222",
+      workflowType: "MailboxOcrReceiptWorkflow",
+      workflowId,
+    };
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [jobReference],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "ocr_mark_failed",
+        {
+          jobReference,
+          expectedJobVersion: 2,
+          message: "MAILBOX_OCR_FAILED: extraction or submission error",
+        },
+      ],
+    ]);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxOcrReceiptWorkflow rejects a job reference for a different workflow type", async () => {
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-ocr-wrong-type";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mark_running() {
+          throw new Error("must not be called");
+        },
+        async mailbox_ocr_receipt() {
+          throw new Error("must not be called");
+        },
+        async ocr_mark_failed() {
+          throw new Error("must not be called");
+        },
+      },
+    });
+    await expect(
+      worker.runUntil(() =>
+        env.client.workflow.execute("MailboxOcrReceiptWorkflow", {
+          workflowId,
+          taskQueue: TASK_QUEUE,
+          args: [{ schemaVersion: 1, jobId: "33333333-3333-4333-8333-333333333333", workflowType: "OcrReceiptWorkflow", workflowId }],
+        }),
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+/**
+ * Phase 3D-C Task 5 — MailboxMaterializeWorkflow. Receives only
+ * MailboxWorkerMaterializationInputV1 ({scanRunId, candidateId}) and
+ * invokes exactly one opaque broker operation by candidateId.
+ */
+it("MailboxMaterializeWorkflow invokes mailbox_materialize_candidate with candidateId and an opaque operationId", async () => {
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-materialize-candidate-1";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_materialize_candidate(input: unknown) {
+          calls.push(["materialize", input]);
+          return {
+            schemaVersion: 1,
+            candidateId: "candidate-1",
+            status: "queued",
+            processingJobId: null,
+            expenseId: null,
+            sourceId: null,
+            duplicateMatchId: null,
+            idempotencyKey: "idem-1",
+          };
+        },
+      },
+    });
+    const result = await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxMaterializeWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [{ scanRunId: "scan-1", candidateId: "candidate-1" }],
+      }),
+    );
+    expect(result).toMatchObject({ candidateId: "candidate-1", status: "queued" });
+    expect(calls).toEqual([
+      ["materialize", { candidateId: "candidate-1", operationId: expect.any(String) }],
+    ]);
+    expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);

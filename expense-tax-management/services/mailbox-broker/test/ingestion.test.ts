@@ -7,9 +7,15 @@
  */
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { AttachmentBoundError, pumpBoundedAttachment, streamAttachment } from "../src/ingestion.js";
+import {
+  AttachmentBoundError,
+  materializeCandidate,
+  pumpBoundedAttachment,
+  streamAttachment,
+  type MaterializeCandidateDependencies,
+} from "../src/ingestion.js";
 
 const PDF_MAGIC = Buffer.from("%PDF-1.4\nrest of a tiny pdf body", "latin1");
 const JPEG_MAGIC = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16, 1)]);
@@ -206,5 +212,127 @@ describe("streamAttachment", () => {
       sizeBytes: PDF_MAGIC.length,
       sha256: createHash("sha256").update(PDF_MAGIC).digest("hex"),
     });
+  });
+});
+
+describe("materializeCandidate", () => {
+  const CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
+  const CONNECTION_ID = "22222222-2222-4222-8222-222222222222";
+
+  function fakeDeps(
+    overrides: {
+      attachments?: readonly { attachmentId: string; filename: string; mimeType: string; sizeBytes: number }[];
+      uploadStatus?: "READY" | "REVIEW" | "FAILED";
+    } = {},
+  ): MaterializeCandidateDependencies & {
+    appClient: { [K in keyof MaterializeCandidateDependencies["appClient"]]: ReturnType<typeof vi.fn> };
+  } {
+    const appClient = {
+      loadCandidateBinding: vi.fn(async () => ({
+        candidateId: CANDIDATE_ID,
+        connectionId: CONNECTION_ID,
+        expectedCandidateVersion: 1,
+        providerMessageId: "gmail-message-1",
+        providerThreadId: null,
+      })),
+      issueUploadGrant: vi.fn(async () => ({
+        candidateId: CANDIDATE_ID,
+        connectionId: CONNECTION_ID,
+        uploadGrantId: "grant-1",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        maxBytes: 26214400 as const,
+        maxAttachments: 5 as const,
+      })),
+      uploadAttachment: vi.fn(async (input: { attachmentIndex: number }) => ({
+        candidateId: CANDIDATE_ID,
+        attachmentIndex: input.attachmentIndex,
+        fileId: `file-${input.attachmentIndex}`,
+        status: overrides.uploadStatus ?? "READY",
+        errorCode: null,
+        idempotencyKey: `idem-${input.attachmentIndex}`,
+      })),
+      submitStructuredResult: vi.fn(),
+      loadScanBinding: vi.fn(),
+      stageCandidateMetadata: vi.fn(),
+    } as unknown as MaterializeCandidateDependencies["appClient"] & {
+      [K in keyof MaterializeCandidateDependencies["appClient"]]: ReturnType<typeof vi.fn>;
+    };
+    const getGmailClient = vi.fn(async () => ({
+      getMessage: vi.fn(async () => ({
+        attachments: overrides.attachments ?? [
+          { attachmentId: "att-1", filename: "receipt.pdf", mimeType: "application/pdf", sizeBytes: 100 },
+        ],
+      })),
+      getAttachment: vi.fn(async () => Buffer.from("fake-attachment-bytes")),
+    }));
+    return { appClient, getGmailClient };
+  }
+
+  it("issues one grant and uploads every attachment, returning status queued", async () => {
+    const deps = fakeDeps({
+      attachments: [
+        { attachmentId: "att-1", filename: "a.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+        { attachmentId: "att-2", filename: "b.pdf", mimeType: "application/pdf", sizeBytes: 10 },
+      ],
+    });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.loadCandidateBinding).toHaveBeenCalledWith(CANDIDATE_ID);
+    expect(deps.appClient.issueUploadGrant).toHaveBeenCalledTimes(1);
+    expect(deps.appClient.uploadAttachment).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      schemaVersion: 1,
+      candidateId: CANDIDATE_ID,
+      status: "queued",
+      processingJobId: null,
+      expenseId: null,
+      sourceId: null,
+      duplicateMatchId: null,
+    });
+  });
+
+  it("returns review and never issues an upload grant when there are no attachments", async () => {
+    const deps = fakeDeps({ attachments: [] });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(deps.appClient.issueUploadGrant).not.toHaveBeenCalled();
+    expect(result.status).toBe("review");
+  });
+
+  it("returns status failed when any attachment upload fails", async () => {
+    const deps = fakeDeps({ uploadStatus: "FAILED" });
+
+    const result = await materializeCandidate(deps, {
+      connectionId: "ignored",
+      candidateId: CANDIDATE_ID,
+      operationId: "op-1",
+    });
+
+    expect(result.status).toBe("failed");
+  });
+
+  it("never uploads more than MAX_CANDIDATE_ATTACHMENTS even if the Gmail message reports more", async () => {
+    const deps = fakeDeps({
+      attachments: Array.from({ length: 7 }, (_, index) => ({
+        attachmentId: `att-${index}`,
+        filename: `f${index}.pdf`,
+        mimeType: "application/pdf",
+        sizeBytes: 10,
+      })),
+    });
+
+    await materializeCandidate(deps, { connectionId: "ignored", candidateId: CANDIDATE_ID, operationId: "op-1" });
+
+    expect(deps.appClient.uploadAttachment).toHaveBeenCalledTimes(5);
   });
 });

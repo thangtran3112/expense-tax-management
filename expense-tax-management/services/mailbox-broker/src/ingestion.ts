@@ -38,9 +38,13 @@ import { createHash } from "node:crypto";
 import {
   MAX_UPLOAD_BYTES,
   MAX_CANDIDATE_ATTACHMENTS,
+  mailboxIdempotencyKey,
   type FileContentType,
   type AttachmentManifestV1,
   type MailboxErrorCodeV1,
+  type MailboxIngestionAppClient,
+  type MailboxMaterializationResultV1,
+  type MaterializeInput,
 } from "@expense-tax/contracts";
 
 export interface StreamTarget {
@@ -172,4 +176,125 @@ export async function streamAttachment(
 ): Promise<AttachmentManifestV1> {
   const result = await pumpBoundedAttachment({ attachmentIndex: request.attachmentIndex }, source, target);
   return { name: request.name, mimeType: result.mimeType, sizeBytes: result.sizeBytes, sha256: result.sha256 };
+}
+
+/**
+ * Phase 3D-C Task 5 — materialize orchestration (the Gmail-refetch +
+ * direct-App-callback glue Task 2/3 both flagged as not-yet-implemented).
+ *
+ * Narrower than `GmailDiscoveryClientLike` (discovery.ts) on purpose: only
+ * the two attachment-fetch methods this function actually needs, so it
+ * stays independently testable with a fake and carries no dependency on
+ * discovery.ts's larger (list/history) surface.
+ *
+ * Ruling: only the attachment path is implemented. The structured-HTML
+ * path (structured-receipt.ts's parseStructuredReceipt /
+ * materializeStructuredReceipt) needs the message's HTML body, and no
+ * Gmail client interface in this codebase exposes one yet
+ * (GmailDiscoveryClientLike.getMessage returns attachment metadata only,
+ * never a body) -- adding one is a discovery.ts/google-mailbox.ts change,
+ * out of this task's file list (flagged in task-5-report.md). A
+ * zero-attachment candidate therefore comes back "review", not silently
+ * dropped.
+ *
+ * Ruling: `MaterializeInput.connectionId` is accepted (canonical contract
+ * shape) but unused -- same precedent as the discover route's own
+ * documented ruling (routes/connections.ts): the broker resolves the real
+ * connectionId itself via `loadCandidateBinding(candidateId)`, never from
+ * the caller, since the worker never knows it either (opaque by design).
+ */
+export interface MaterializeGmailClient {
+  getMessage(id: string): Promise<{
+    readonly attachments: readonly {
+      readonly attachmentId: string;
+      readonly filename: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+    }[];
+  }>;
+  getAttachment(input: { readonly messageId: string; readonly attachmentId: string }): Promise<Buffer>;
+}
+
+export interface MaterializeCandidateDependencies {
+  readonly appClient: MailboxIngestionAppClient;
+  readonly getGmailClient: (connectionId: string) => Promise<MaterializeGmailClient>;
+}
+
+async function* singleChunk(data: Buffer): AsyncIterable<Buffer> {
+  yield data;
+}
+
+export async function materializeCandidate(
+  deps: MaterializeCandidateDependencies,
+  input: MaterializeInput,
+): Promise<MailboxMaterializationResultV1> {
+  const binding = await deps.appClient.loadCandidateBinding(input.candidateId);
+  const gmail = await deps.getGmailClient(binding.connectionId);
+  const message = await gmail.getMessage(binding.providerMessageId);
+
+  if (message.attachments.length === 0) {
+    return {
+      schemaVersion: 1,
+      candidateId: input.candidateId,
+      status: "review",
+      processingJobId: null,
+      expenseId: null,
+      sourceId: null,
+      duplicateMatchId: null,
+      idempotencyKey: mailboxIdempotencyKey(
+        binding.connectionId,
+        "materialize_candidate_no_attachments",
+        input.candidateId,
+        binding.expectedCandidateVersion,
+      ),
+    };
+  }
+
+  const grant = await deps.appClient.issueUploadGrant({
+    candidateId: input.candidateId,
+    expectedCandidateVersion: binding.expectedCandidateVersion,
+    operationId: input.operationId,
+  });
+
+  const attachmentCount = Math.min(message.attachments.length, MAX_CANDIDATE_ATTACHMENTS);
+  let anyFailed = false;
+  for (let index = 0; index < attachmentCount; index += 1) {
+    const attachment = message.attachments[index]!;
+    const bytes = await gmail.getAttachment({
+      messageId: binding.providerMessageId,
+      attachmentId: attachment.attachmentId,
+    });
+    const result = await deps.appClient.uploadAttachment(
+      {
+        candidateId: input.candidateId,
+        attachmentIndex: index,
+        uploadGrantId: grant.uploadGrantId,
+        expectedCandidateVersion: binding.expectedCandidateVersion,
+        idempotencyKey: mailboxIdempotencyKey(
+          binding.connectionId,
+          "upload_attachment",
+          `${input.candidateId}:${index}`,
+          binding.expectedCandidateVersion,
+        ),
+      },
+      singleChunk(bytes),
+    );
+    if (result.status === "FAILED") anyFailed = true;
+  }
+
+  return {
+    schemaVersion: 1,
+    candidateId: input.candidateId,
+    status: anyFailed ? "failed" : "queued",
+    processingJobId: null,
+    expenseId: null,
+    sourceId: null,
+    duplicateMatchId: null,
+    idempotencyKey: mailboxIdempotencyKey(
+      binding.connectionId,
+      "materialize_candidate",
+      input.candidateId,
+      binding.expectedCandidateVersion,
+    ),
+  };
 }

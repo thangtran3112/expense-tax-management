@@ -15,6 +15,7 @@ import { registerErrorHandlers } from "./errors.js";
 import { createServiceGuardFactory } from "./plugins/auth.js";
 import type { CreateServiceVerifierOptions } from "./auth/clerk.js";
 import { registerConnectionRoutes } from "./routes/connections.js";
+import type { MaterializeCandidateDependencies } from "./ingestion.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
 import type {
   MailboxBrokerConnectionAppClient,
@@ -55,6 +56,12 @@ export interface BuildAppOptions {
    */
   readonly discoveryAppClient?: MailboxBrokerDiscoveryAppClient;
   readonly discoveryProviderAdapter?: MailboxDiscoveryProviderAdapter;
+  /**
+   * Phase 3D-C Task 5 -- materialize route dependencies. Optional, same
+   * "omit to skip registering the route" convention as the discovery pair
+   * above; no existing test or call site needs to change.
+   */
+  readonly materializeDependencies?: MaterializeCandidateDependencies;
 }
 
 /**
@@ -126,6 +133,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     ...(options.discoveryAppClient ? { discoveryAppClient: options.discoveryAppClient } : {}),
     ...(options.discoveryProviderAdapter && options.discoveryAppClient
       ? { workerDiscoverGuard: createGuard("worker", ["mailbox:discover"]) }
+      : {}),
+    ...(options.materializeDependencies
+      ? {
+          materializeDependencies: options.materializeDependencies,
+          workerMaterializeGuard: createGuard("worker", ["mailbox:materialize"]),
+        }
       : {}),
   });
 
