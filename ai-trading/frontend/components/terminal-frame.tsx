@@ -38,6 +38,13 @@ export function TerminalFrame({ app }: { app: TerminalApp }) {
           Closing this page keeps your session running.
         </span>
       </div>
+      <div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Good for:</span> {app.goodFor}
+        <span aria-hidden className="mx-2">
+          ·
+        </span>
+        <span className="font-medium text-foreground">Cost:</span> {app.costNote}
+      </div>
       <iframe key={connection} src={app.terminalPath} title={`${app.name} terminal`} className="min-h-0 w-full flex-1 border-0 bg-black" />
     </div>
   );

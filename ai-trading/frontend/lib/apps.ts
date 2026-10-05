@@ -1,13 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { Bot, LineChart, MessagesSquare, Rocket } from "lucide-react";
 
-export type CategoryId = "research" | "funds" | "desk";
-
-export const hubCategories: readonly { id: CategoryId; label: string }[] = [
+export const hubCategories = [
   { id: "research", label: "Research and analysis" },
   { id: "funds", label: "Funds and backtesting" },
   { id: "desk", label: "Family desk" },
-];
+] as const;
+
+export type CategoryId = (typeof hubCategories)[number]["id"];
 
 export type AppIconKey = "tradingAgents" | "hedgeFund" | "vibeTrading" | "familyDesk";
 

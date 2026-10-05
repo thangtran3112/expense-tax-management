@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { Clock, LayoutGrid } from "lucide-react";
+import { LayoutGrid } from "lucide-react";
 import { appIcons, hubApps, hubCategories } from "@/lib/apps";
+import { StatusBadge } from "@/components/status-badge";
 
 export function AppsMenu() {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -40,6 +42,7 @@ export function AppsMenu() {
         type="button"
         aria-haspopup="true"
         aria-expanded={open}
+        aria-controls={panelId}
         aria-label="Apps"
         onClick={() => setOpen((value) => !value)}
         className="flex h-11 cursor-pointer items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -49,6 +52,7 @@ export function AppsMenu() {
       </button>
       {open && (
         <nav
+          id={panelId}
           ref={panelRef}
           aria-label="Apps"
           className="absolute right-0 top-full z-20 mt-2 w-72 rounded-lg border border-border bg-card p-2 shadow-lg"
@@ -71,8 +75,8 @@ export function AppsMenu() {
                         className="flex min-h-11 items-center gap-2 rounded-md px-2 text-sm text-muted-foreground opacity-60"
                       >
                         <Icon aria-hidden size={16} />
-                        <span className="flex-1">{app.name}</span>
-                        <Clock aria-hidden size={14} />
+                        <span className="flex-1 truncate">{app.name}</span>
+                        <StatusBadge app={app} />
                       </div>
                     );
                   }
@@ -84,7 +88,8 @@ export function AppsMenu() {
                       className="flex min-h-11 items-center gap-2 rounded-md px-2 text-sm text-foreground transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       <Icon aria-hidden size={16} />
-                      {app.name}
+                      <span className="flex-1 truncate">{app.name}</span>
+                      <StatusBadge app={app} />
                     </Link>
                   );
                 })}

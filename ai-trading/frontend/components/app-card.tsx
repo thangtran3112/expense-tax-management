@@ -21,6 +21,9 @@ function CardBody({ app }: { app: HubApp }) {
         <StatusBadge app={app} />
       </div>
       <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{app.summary}</p>
+      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Good for:</span> {app.goodFor}
+      </p>
       <div className="mt-3 flex gap-2 overflow-hidden">
         {app.tags.slice(0, 3).map((tag) => (
           <span
@@ -59,7 +62,6 @@ export function AppCard({ app }: { app: HubApp }) {
     return (
       <div
         aria-disabled="true"
-        title={app.goodFor}
         className="flex min-h-[200px] flex-col rounded-xl border border-dashed border-border bg-card p-6 opacity-70"
       >
         <CardBody app={app} />
@@ -69,7 +71,6 @@ export function AppCard({ app }: { app: HubApp }) {
   return (
     <Link
       href={`/apps/${app.slug}`}
-      title={app.goodFor}
       className="flex min-h-[200px] flex-col rounded-xl border border-border bg-card p-6 transition-[color,background-color,border-color,transform] duration-150 ease-out hover:border-accent motion-safe:hover:-translate-y-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
     >
       <CardBody app={app} />

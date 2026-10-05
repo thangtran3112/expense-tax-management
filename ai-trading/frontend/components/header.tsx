@@ -9,7 +9,7 @@ export function Header({ breadcrumb }: { breadcrumb?: string }) {
         <div className="flex min-w-0 items-center gap-2">
           <Link
             href="/"
-            className="flex shrink-0 items-center gap-2 rounded-md font-semibold text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="flex h-11 shrink-0 items-center gap-2 rounded-md font-semibold text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-on-accent">
               <CandlestickChart aria-hidden size={18} />

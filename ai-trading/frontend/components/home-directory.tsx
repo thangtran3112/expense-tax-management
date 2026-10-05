@@ -17,12 +17,17 @@ export function HomeDirectory() {
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<CategoryId | "all">("all");
 
-  const liveApps = hubApps.filter((app) => app.status === "live");
-  const plannedApps = hubApps.filter((app) => app.status === "planned");
-
   const categoryLabel = (id: CategoryId) => hubCategories.find((category) => category.id === id)?.label ?? "";
 
-  const searchedApps = liveApps.filter((app) => matchesQuery(app, query, categoryLabel(app.category)));
+  // Matches the search query only (ignores the active category) so chip counts show
+  // how many apps each category has available, independent of which chip is active.
+  const searchedApps = hubApps.filter((app) => matchesQuery(app, query, categoryLabel(app.category)));
+
+  // Matches the search query AND the active category; this is what actually renders.
+  const filteredApps = searchedApps.filter((app) => activeCategory === "all" || app.category === activeCategory);
+  const filteredLiveApps = filteredApps.filter((app) => app.status === "live");
+  const filteredPlannedApps = filteredApps.filter((app) => app.status === "planned");
+
   const visibleCategories =
     activeCategory === "all" ? hubCategories : hubCategories.filter((category) => category.id === activeCategory);
 
@@ -52,7 +57,7 @@ export function HomeDirectory() {
               type="button"
               aria-label="Clear search"
               onClick={() => setQuery("")}
-              className={`absolute top-1/2 right-3 -translate-y-1/2 cursor-pointer rounded text-muted-foreground hover:text-foreground ${FOCUS_RING}`}
+              className={`absolute top-1/2 right-0 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground hover:text-foreground ${FOCUS_RING}`}
             >
               <X aria-hidden size={18} />
             </button>
@@ -93,7 +98,7 @@ export function HomeDirectory() {
         })}
       </div>
 
-      {searchedApps.length === 0 ? (
+      {filteredApps.length === 0 ? (
         <div className="mt-10 rounded-lg border border-dashed border-border p-8 text-center">
           <p className="text-foreground">No apps match &quot;{query}&quot;</p>
           <p className="mt-1 text-sm text-muted-foreground">Try a different name, tag, or category.</p>
@@ -106,33 +111,35 @@ export function HomeDirectory() {
           </button>
         </div>
       ) : (
-        visibleCategories.map((category) => {
-          const apps = searchedApps.filter((app) => app.category === category.id);
-          if (apps.length === 0) return null;
-          return (
-            <section key={category.id} className="mt-8">
-              <h2 className="text-lg font-semibold text-foreground">
-                {category.label} · {apps.length}
-              </h2>
+        <>
+          {visibleCategories.map((category) => {
+            const apps = filteredLiveApps.filter((app) => app.category === category.id);
+            if (apps.length === 0) return null;
+            return (
+              <section key={category.id} className="mt-8">
+                <h2 className="text-lg font-semibold text-foreground">
+                  {category.label} · {apps.length}
+                </h2>
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {apps.map((app) => (
+                    <AppCard key={app.slug} app={app} />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+
+          {filteredPlannedApps.length > 0 && (
+            <section className="mt-10">
+              <h2 className="text-lg font-semibold text-foreground">Coming next</h2>
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {apps.map((app) => (
+                {filteredPlannedApps.map((app) => (
                   <AppCard key={app.slug} app={app} />
                 ))}
               </div>
             </section>
-          );
-        })
-      )}
-
-      {plannedApps.length > 0 && (
-        <section className="mt-10">
-          <h2 className="text-lg font-semibold text-foreground">Coming next</h2>
-          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {plannedApps.map((app) => (
-              <AppCard key={app.slug} app={app} />
-            ))}
-          </div>
-        </section>
+          )}
+        </>
       )}
     </div>
   );

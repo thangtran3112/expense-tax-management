@@ -45,6 +45,16 @@ export default async function AppPage({ params }: Props) {
             <StatusBadge app={app} />
           </div>
           <p className="mt-4 text-muted-foreground">{app.summary}</p>
+          <dl className="mt-4 space-y-1 text-left text-sm text-muted-foreground">
+            <div>
+              <dt className="inline font-medium text-foreground">Good for: </dt>
+              <dd className="inline">{app.goodFor}</dd>
+            </div>
+            <div>
+              <dt className="inline font-medium text-foreground">Cost: </dt>
+              <dd className="inline">{app.costNote}</dd>
+            </div>
+          </dl>
           <div className="mt-6 text-left">
             <h2 className="text-sm font-semibold text-foreground">First visit in this browser</h2>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
