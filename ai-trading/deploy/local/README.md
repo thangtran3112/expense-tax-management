@@ -12,7 +12,11 @@ Runs the release 1 stack on a laptop, with Caddy standing in for the Cloudflare 
    chmod 0600 "$AI_TRADING_SECRETS_DIR/cloudflared.env"
    ```
 
-   `vibe-trading.env` carries the real shared `API_AUTH_KEY` from the bundle; paste that value into Settings in step 4 below.
+   `vibe-trading.env` renders with the real shared `API_AUTH_KEY` from the bundle; overwrite it with the fixed local-dev key so it matches the value pasted in step 4 (never display or reuse the production key locally):
+
+   ```bash
+   sed -i.bak 's/^API_AUTH_KEY=.*/API_AUTH_KEY=local-dev-key/' "$AI_TRADING_SECRETS_DIR/vibe-trading.env" && rm -f "$AI_TRADING_SECRETS_DIR/vibe-trading.env.bak"
+   ```
 
 2. Build the images:
 
