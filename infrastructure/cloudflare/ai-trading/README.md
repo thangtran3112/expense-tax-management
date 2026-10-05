@@ -37,7 +37,7 @@ cd infrastructure/cloudflare/ai-trading
 gcloud auth application-default login
 export TF_VAR_cloudflare_account_id=<account id>
 export TF_VAR_cloudflare_api_token=<token>
-export TF_VAR_access_allowed_emails='["first@example.com","second@example.com"]'
+export TF_VAR_access_allowed_emails='["<allowed-email-1>","<allowed-email-2>"]'
 terraform init -backend-config="bucket=expense-tax-tobytran-2026-tfstate"
 terraform apply
 terraform output -raw tunnel_token

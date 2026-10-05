@@ -39,6 +39,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: hashicorp/setup-terraform@v3
       - run: terraform init -backend=false
       - run: terraform fmt -check -recursive
@@ -57,6 +59,8 @@ jobs:
       TF_VAR_access_allowed_emails: ${{ secrets.AI_TRADING_ACCESS_ALLOWED_EMAILS }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
