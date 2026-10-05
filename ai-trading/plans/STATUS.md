@@ -28,8 +28,8 @@ Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-h
 | 0 | Upstream package evaluation | Done (2026-10-04) | [subplans/00-upstream-evaluation.md](subplans/00-upstream-evaluation.md) |
 | 0b | App shell evaluation (deer-flow, AG-UI) | Done (2026-10-04) | [subplans/00b-app-shell-evaluation.md](subplans/00b-app-shell-evaluation.md) |
 | 1 | Release 1 (MVP) design: Trading Hub web app running the three upstream apps unmodified | Spec written, awaiting review | [subplans/01-release-1-hub-design.md](subplans/01-release-1-hub-design.md) |
-| 2 | Release 1 implementation plan | Written, awaiting review | [subplans/01-release-1-hub-plan.md](subplans/01-release-1-hub-plan.md) and [subplans/01-release-1-hub-tasks/](subplans/01-release-1-hub-tasks/) |
-| 3 | Release 1 build and deploy | Not started | |
+| 2 | Release 1 implementation plan | Done (2026-10-04) | [subplans/01-release-1-hub-plan.md](subplans/01-release-1-hub-plan.md) and [subplans/01-release-1-hub-tasks/](subplans/01-release-1-hub-tasks/) |
+| 3 | Release 1 build and deploy | Build done and verified locally (Tasks 0-7); pull request to `dev` open; Task 8 operator steps and first deploy pending | See "Release 1 build notes" below |
 | 4 | Release 2 design: our own solution (Family Desk) as the hub's fourth app | Approved in conversation; revisit after the MVP ships | [subplans/02-release-2-desk-design.md](subplans/02-release-2-desk-design.md) |
 | 5+ | Release 2 plan and build | Later | |
 
@@ -52,6 +52,26 @@ Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-h
 | 2026-10-04 | D9, release 1 hub design: the three deployed apps become git submodules with weekly Dependabot bump pull requests and CI smoke tests; Vibe-Trading runs on its own hostname and opens in a new tab; each upstream app gets its own Docker network and env file; per-app provider keys with console spend limits; no backend, database, or backups in release 1. | Accepted | Upstream code and its security settings stay exactly as shipped (Vibe-Trading forbids framing); updates are reviewable and revertible; a compromised or runaway app stays contained. See [subplans/01-release-1-hub-design.md](subplans/01-release-1-hub-design.md). |
 
 | 2026-10-04 | ai-trading work happens in the worktree `.worktrees/ai-trading-hub` on branch `feature/ai-trading-hub`, not on `feature/toby`. | Accepted (ruling) | Another session resets `feature/toby` to `origin/dev` in the main checkout several times an hour; staged or committed ai-trading work there would be wiped or swept into its pull requests. |
+
+## Release 1 Build Notes (2026-10-04)
+
+- Verification on the local stack:
+  - all four images build with Bake;
+  - `smoke-test.sh all` passes 23/23;
+  - Terraform validates;
+  - compose files resolve;
+  - shellcheck and actionlint are clean.
+- Playwright check on the local stack:
+  - hub home and routes render, and `/apps/desk` and `/apps/unknown` return 404;
+  - the TradingAgents terminal reattaches after Reconnect;
+  - the ai-hedge-fund terminal UI renders;
+  - Vibe-Trading accepts its key in Settings > Local API access > Server API key.
+- Deviations from the plan, all reviewed:
+  - The terminal-tools Dockerfile needs syntax 1.12 so `TARGETARCH` expands in a `FROM` stage name, and pre-creates `/etc/ai-trading` at 0755.
+  - `ai-trading/.gitignore` re-includes `frontend/lib/` and `deploy/production/env/`, which the root Python template ignores.
+  - ttyd runs with `disableLeaveAlert=true`, because tmux keeps sessions alive.
+  - The Cloudflare provider locks to 5.26.0.
+- Accepted ceiling: ttyd truncates the Access identity to 29 characters, so the two allowed emails must differ within their first 29 characters. Plan Task 8 and the runbook both say so.
 
 ## Open Questions
 
