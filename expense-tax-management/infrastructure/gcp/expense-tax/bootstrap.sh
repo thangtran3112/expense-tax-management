@@ -11,7 +11,7 @@ POOL_ID="expense-tax-github"
 PROVIDER_ID="github"
 REPOSITORY="thangtran3112/family-app"
 WIF_ATTRIBUTE_CONDITION="assertion.repository=='thangtran3112/family-app' && assertion.ref=='refs/heads/main' && assertion.workflow_ref=='thangtran3112/family-app/.github/workflows/expense-tax-deploy.yml@refs/heads/main' && assertion.environment=='production'"
-OUTPUT_FILE="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.keys/gcp/expense-tax-bootstrap-outputs.json}"
+OUTPUT_FILE="${1:-/dev/stdout}"
 TEMP_DIR="$(mktemp -d)"
 PROVIDER_FILE="$TEMP_DIR/provider.json"
 SERVICE_ACCOUNT_FILE="$TEMP_DIR/service-account.json"
@@ -148,7 +148,7 @@ gcloud secrets add-iam-policy-binding "$SECRET_ID" \
   --role="roles/secretmanager.secretAccessor" \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}"
 
-mkdir -p "$(dirname "$OUTPUT_FILE")"
+[[ "$OUTPUT_FILE" == /dev/stdout ]] || mkdir -p "$(dirname "$OUTPUT_FILE")"
 gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
   --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL_ID" \
   --format=json > "$PROVIDER_FILE"
@@ -184,5 +184,5 @@ writeFileSync(output, `${JSON.stringify({
   repository: "thangtran3112/family-app",
 }, null, 2)}\n`);
 NODE
-chmod 600 "$OUTPUT_FILE"
-echo "wrote machine-readable outputs: $OUTPUT_FILE"
+[[ "$OUTPUT_FILE" == /dev/stdout ]] || chmod 600 "$OUTPUT_FILE"
+echo "wrote machine-readable outputs: $OUTPUT_FILE" >&2

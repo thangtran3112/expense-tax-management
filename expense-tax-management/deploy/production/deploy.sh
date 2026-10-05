@@ -11,11 +11,11 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 # that helper alone (e.g. a test harness) still behaves exactly like the
 # pre-mailbox single-file invocation.
 MAILBOX_COMPOSE_FILE="$SCRIPT_DIR/docker-compose.mailbox.yml"
-TARGET_ENV_FILE="${PRODUCTION_ENV_FILE:-/etc/expense-tax-management/production.env}"
-INCOMING_ENV_FILE="${DEPLOY_ENV_FILE:-${2:-$TARGET_ENV_FILE}}"
+# family_config.py writes the Firestore production profile to this root-only
+# temp file for the duration of the deploy (`run ... --env-file-var DEPLOY_ENV_FILE`).
+COMPOSE_ENV_FILE="${DEPLOY_ENV_FILE:-}"
 STATE_FILE="${DEPLOYED_IMAGE_TAG_FILE:-/opt/expense-tax-management/app/deployed-image-tag}"
 PROJECT_NAME="expense-tax-production"
-COMPOSE_ENV_FILE="$INCOMING_ENV_FILE"
 IMAGE_TAG="${IMAGE_TAG:-${1:-}}"
 
 # Allowlist is deliberately narrower than a shell environment. Values are data
@@ -37,7 +37,7 @@ KNOWN_ENV_KEYS=(
   # Phase 3D-A Task 5: mailbox broker, opt-in. The production env file
   # always carries MAILBOX_FEATURE_ENABLED (true or false); every other
   # key here is only ever present -- with a real value -- when it is true
-  # (production-secret-bundle.mjs emits none of them otherwise). Allowing
+  # (the Firestore production profile carries none of them otherwise). Allowing
   # them unconditionally is harmless: an unknown-key line still fails
   # load_env_file regardless of this list's contents.
   MAILBOX_FEATURE_ENABLED
@@ -57,6 +57,7 @@ die() {
 }
 
 [[ "$IMAGE_TAG" =~ ^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$ ]] || die "IMAGE_TAG must be a full 40- or 64-character hexadecimal SHA"
+[[ -n "$COMPOSE_ENV_FILE" ]] || die "DEPLOY_ENV_FILE is required; run deploy.sh through family_config.py run expense-tax-management/production --env-file-var DEPLOY_ENV_FILE"
 
 file_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
@@ -136,6 +137,33 @@ validate_auth_values() {
         ;;
     esac
   done
+}
+
+# Required runtime values the production profile must carry. Mailbox values are
+# required only when the feature is on, and the broker's inbound verifier must
+# match what App API and the workflow worker mint against.
+validate_required_values() {
+  local key
+  for key in OPENAI_API_KEY OPENROUTER_API_KEY \
+    APP_DATABASE_URL APP_MIGRATION_DATABASE_URL FOUNDRY_DATABASE_URL FOUNDRY_MIGRATION_DATABASE_URL \
+    CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET; do
+    [[ -n "${!key:-}" ]] || die "$key is required"
+  done
+  for key in STORAGE_URL_SIGNING_KEY INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET; do
+    [[ "${!key:-}" =~ ^[0-9a-f]{64}$ ]] || die "$key must be 64 lowercase hex characters"
+  done
+  [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]] || return 0
+  for key in CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY \
+    MAILBOX_VAULT_KEYS MAILBOX_VAULT_ACTIVE_KEY_ID MAILBOX_BROKER_PUBLIC_BASE_URL MAILBOX_ALLOWED_REDIRECT_ORIGINS \
+    GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOGLE_OAUTH_REDIRECT_URI \
+    MAILBOX_BROKER_DATABASE_URL MAILBOX_BROKER_MIGRATION_DATABASE_URL \
+    CLERK_MAILBOX_SERVICE_AUDIENCE CLERK_MAILBOX_APP_API_SUBJECT CLERK_MAILBOX_WORKER_SUBJECT CLERK_MAILBOX_BROKER_SUBJECT \
+    MAILBOX_SERVICE_TOKEN_ISSUER MAILBOX_SERVICE_TOKEN_AUDIENCE MAILBOX_SERVICE_JWKS_URL; do
+    [[ -n "${!key:-}" ]] || die "$key is required when MAILBOX_FEATURE_ENABLED=true"
+  done
+  [[ "$MAILBOX_SERVICE_TOKEN_ISSUER" == "${CLERK_ISSUER_URL:-}" ]] || die "MAILBOX_SERVICE_TOKEN_ISSUER must equal CLERK_ISSUER_URL"
+  [[ "$MAILBOX_SERVICE_JWKS_URL" == "${CLERK_JWKS_URL:-}" ]] || die "MAILBOX_SERVICE_JWKS_URL must equal CLERK_JWKS_URL"
+  [[ "$MAILBOX_SERVICE_TOKEN_AUDIENCE" == "$CLERK_MAILBOX_SERVICE_AUDIENCE" ]] || die "MAILBOX_SERVICE_TOKEN_AUDIENCE must equal CLERK_MAILBOX_SERVICE_AUDIENCE"
 }
 
 compose() {
@@ -218,10 +246,10 @@ mailbox_broker_image_exists() {
   return 1
 }
 
-validate_env_file "$INCOMING_ENV_FILE"
-if [[ -e "$TARGET_ENV_FILE" ]]; then validate_env_file "$TARGET_ENV_FILE"; fi
-load_env_file "$INCOMING_ENV_FILE"
+validate_env_file "$COMPOSE_ENV_FILE"
+load_env_file "$COMPOSE_ENV_FILE"
 validate_auth_values
+validate_required_values
 export IMAGE_TAG
 # Phase 3D-A Task 5 (controller ruling): MAILBOX_FEATURE_ENABLED is only
 # known once the production env file is loaded above, so the mailbox
@@ -243,24 +271,10 @@ fi
 state_dir=$(dirname -- "$STATE_FILE")
 mkdir -p "$state_dir"
 chmod 0755 "$state_dir"
-env_backup=$(mktemp)
-target_env_tmp=""
-had_target=0
-if [[ -e "$TARGET_ENV_FILE" ]]; then had_target=1; fi
-cleanup() { rm -f -- "$env_backup" "$target_env_tmp"; }
-trap cleanup EXIT
 
 rollback() {
   local status=$1 rollback_status=0
   trap - ERR
-  if [[ "$INCOMING_ENV_FILE" != "$TARGET_ENV_FILE" ]]; then
-    if ((had_target == 1)); then
-      install -o root -g root -m 0600 "$env_backup" "$TARGET_ENV_FILE" || true
-      validate_env_file "$TARGET_ENV_FILE" || true
-    else
-      rm -f -- "$TARGET_ENV_FILE" || true
-    fi
-  fi
   if [[ -n "$previous_tag" ]]; then
     printf 'Deployment failed; restoring prior image tag\n' >&2
     IMAGE_TAG="$previous_tag"
@@ -311,19 +325,6 @@ rollback() {
 }
 trap 'rollback "$?"' ERR
 
-if [[ "$INCOMING_ENV_FILE" != "$TARGET_ENV_FILE" ]]; then
-  target_env_dir=$(dirname -- "$TARGET_ENV_FILE")
-  install -d -m 0755 "$target_env_dir"
-  if [[ -e "$TARGET_ENV_FILE" ]]; then cp --preserve=mode,ownership "$TARGET_ENV_FILE" "$env_backup"; fi
-  target_env_tmp=$(mktemp "$target_env_dir/.production.env.XXXXXX")
-  install -o root -g root -m 0600 "$INCOMING_ENV_FILE" "$target_env_tmp"
-  mv -f -- "$target_env_tmp" "$TARGET_ENV_FILE"
-  target_env_tmp=""
-  validate_env_file "$TARGET_ENV_FILE"
-  COMPOSE_ENV_FILE="$TARGET_ENV_FILE"
-  export COMPOSE_ENV_FILE
-fi
-
 compose pull
 compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
@@ -331,7 +332,7 @@ if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
   compose run --rm mailbox-broker-migrate
 fi
 compose up -d "${APPLICATION_SERVICES[@]}"
-"$SCRIPT_DIR/health-check.sh"
+PRODUCTION_ENV_FILE="$COMPOSE_ENV_FILE" "$SCRIPT_DIR/health-check.sh"
 verify_running_images "$IMAGE_TAG" "${APPLICATION_SERVICES[@]}"
 
 tmp_state=$(mktemp "$state_dir/.deployed-image-tag.XXXXXX")
