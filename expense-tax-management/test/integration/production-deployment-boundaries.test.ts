@@ -275,13 +275,87 @@ esac
     }
   });
 
-  it("requires regular root-owned 0600 dotenv files before and after install", () => {
+  it("validates the family-config env file and never persists production env", () => {
     const deploy = readProductionFile("deploy.sh");
     expect(deploy).toContain("-f");
     expect(deploy).toContain("! -L");
     expect(deploy).toContain("0600");
-    expect(deploy).toContain("validate_env_file");
-    expect(deploy).toContain("install -o root -g root -m 0600");
+    expect(deploy).toContain('COMPOSE_ENV_FILE="${DEPLOY_ENV_FILE:-}"');
+    expect(deploy).toContain("DEPLOY_ENV_FILE is required");
+    expect(deploy).toContain('validate_env_file "$COMPOSE_ENV_FILE"');
+    expect(deploy).not.toContain("/etc/expense-tax-management/production.env");
+    expect(deploy).not.toContain("env_backup");
+    expect(deploy).not.toContain("install -o root -g root -m 0600");
+    const health = readProductionFile("health-check.sh");
+    expect(health).toContain('COMPOSE_ENV_FILE="${PRODUCTION_ENV_FILE:?PRODUCTION_ENV_FILE is required}"');
+    expect(health).not.toContain("/etc/expense-tax-management/production.env");
+  });
+
+  it("requires production values and mailbox token invariants", () => {
+    const deploy = readProductionFile("deploy.sh");
+    const fn = (name: string): string => {
+      const match = deploy.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "mu"));
+      if (!match) throw new Error(`could not extract function: ${name}`);
+      return match[0];
+    };
+    const hex = "a".repeat(64);
+    const base: Record<string, string> = {
+      OPENAI_API_KEY: "sk-test",
+      OPENROUTER_API_KEY: "or-test",
+      APP_DATABASE_URL: "postgresql://app-runtime@postgres:5432/app",
+      APP_MIGRATION_DATABASE_URL: "postgresql://app-migrator@postgres:5432/app",
+      FOUNDRY_DATABASE_URL: "postgresql://foundry-runtime@postgres:5432/foundry",
+      FOUNDRY_MIGRATION_DATABASE_URL: "postgresql://foundry-migrator@postgres:5432/foundry",
+      CLERK_APP_MACHINE_SECRET_KEY: "ak_app",
+      CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_foundry",
+      CLERK_WEBHOOK_SIGNING_SECRET: "whsec_test",
+      STORAGE_URL_SIGNING_KEY: hex,
+      INBOUND_WEBHOOK_SIGNING_KEY: hex,
+      INBOUND_ROUTING_TOKEN_SECRET: hex,
+    };
+    const mailbox: Record<string, string> = {
+      MAILBOX_FEATURE_ENABLED: "true",
+      CLERK_ISSUER_URL: "https://clerk.example",
+      CLERK_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+      CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailbox",
+      CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY: "ak_mailbox_app",
+      CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_mailbox_worker",
+      CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY: "ak_mailbox_broker",
+      CLERK_MAILBOX_APP_API_SUBJECT: "app-api-mailbox",
+      CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox",
+      CLERK_MAILBOX_BROKER_SUBJECT: "mailbox-broker-app",
+      MAILBOX_VAULT_KEYS: "k1:base64key",
+      MAILBOX_VAULT_ACTIVE_KEY_ID: "k1",
+      MAILBOX_BROKER_PUBLIC_BASE_URL: "https://expense-mailbox.example",
+      MAILBOX_ALLOWED_REDIRECT_ORIGINS: "https://expense.example",
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REDIRECT_URI: "https://expense-mailbox.example/oauth/google/callback",
+      MAILBOX_BROKER_DATABASE_URL: "postgresql://vault-runtime@postgres:5432/mailbox_vault",
+      MAILBOX_BROKER_MIGRATION_DATABASE_URL: "postgresql://vault-migrator@postgres:5432/mailbox_vault",
+      MAILBOX_SERVICE_TOKEN_ISSUER: "https://clerk.example",
+      MAILBOX_SERVICE_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+      MAILBOX_SERVICE_TOKEN_AUDIENCE: "mch_mailbox",
+    };
+    const run = (env: Record<string, string>) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -Eeuo pipefail\n${fn("die")}\n${fn("validate_required_values")}\nvalidate_required_values`],
+        { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" },
+      );
+
+    expect(run(base).status).toBe(0);
+    expect(run({ ...base, OPENAI_API_KEY: "" }).stderr).toContain("OPENAI_API_KEY is required");
+    expect(run({ ...base, STORAGE_URL_SIGNING_KEY: "not-hex" }).stderr).toContain(
+      "STORAGE_URL_SIGNING_KEY must be 64 lowercase hex characters",
+    );
+    expect(run({ ...base, ...mailbox }).status).toBe(0);
+    expect(
+      run({ ...base, ...mailbox, MAILBOX_SERVICE_TOKEN_ISSUER: "https://other.example" }).stderr,
+    ).toContain("MAILBOX_SERVICE_TOKEN_ISSUER must equal CLERK_ISSUER_URL");
+    expect(run({ ...base, MAILBOX_FEATURE_ENABLED: "true" }).stderr).toContain(
+      "is required when MAILBOX_FEATURE_ENABLED=true",
+    );
   });
 
   it("deploys migrations before services and rolls back to recorded prior tag", () => {
@@ -337,6 +411,25 @@ esac
     expect(remoteCleanupIndex).toBeGreaterThan(-1);
   });
 
+  it("loads production env on the VPS through family config, with no GCP credentials in CI", () => {
+    const workflow = readFileSync(
+      path.join(repoRoot, "../.github/workflows/expense-tax-deploy.yml"),
+      "utf8",
+    );
+
+    expect(workflow).not.toContain("google-github-actions/auth");
+    expect(workflow).not.toContain("id-token: write");
+    expect(workflow).not.toContain("gcloud secrets");
+    expect(workflow).not.toContain("expense-tax-production.env");
+    expect(workflow).toContain("common/config/family_config.py");
+    expect(workflow).toContain(
+      "sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/family_config.py /opt/expense-tax-management/app/family_config.py",
+    );
+    expect(workflow).toContain(
+      "FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json /opt/expense-tax-management/app/family_config.py run expense-tax-management/production --env-file-var DEPLOY_ENV_FILE -- /opt/expense-tax-management/app/deploy.sh",
+    );
+  });
+
   it("pins uv builder and requires frozen lockfile sync", () => {
     const dockerfile = readFileSync(
       path.join(repoRoot, "services/ai-worker/Dockerfile"),
@@ -350,13 +443,14 @@ esac
     expect(dockerfile).not.toContain("|| uv sync");
   });
 
-  it("uses gitignored .keys output by default for GCP bootstrap metadata", () => {
+  it("prints GCP bootstrap metadata instead of writing repository key files", () => {
     const bootstrap = readFileSync(
       path.join(repoRoot, "infrastructure/gcp/expense-tax/bootstrap.sh"),
       "utf8",
     );
     const gitignore = readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
-    expect(bootstrap).toContain(".keys/gcp/expense-tax-bootstrap-outputs.json");
+    expect(bootstrap).toContain('OUTPUT_FILE="${1:-/dev/stdout}"');
+    expect(bootstrap).not.toContain(".keys/");
     expect(gitignore).toContain(".keys/*");
   });
 

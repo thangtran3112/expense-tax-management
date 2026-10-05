@@ -37,6 +37,11 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Use tests first for behavior changes; config-only changes need direct verification.
 - Smallest correct diff.
 
+## Env and Secrets
+
+- Single source for all family-app env and secrets: Firestore `family-config` (`tobytran-portfolio`): `shared/*` reused values, `apps/<app>/profiles/<profile>` app env; access only via `common/config/family_config.py`.
+- Laptop and VPS mirror: both load env at runtime through that CLI; no env/key files in the repo; GitHub keeps CI copies only, refreshed from Firestore.
+
 ## Authorization
 
 - Explicit Personal/business scope on every customer resource.
@@ -73,7 +78,6 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 
 - Production mutation requires explicit deployment approval.
 - VPS hosts APIs, Temporal, workers, and stateful orchestration; no always-on GCP compute.
-- Current production GCP owns Secret Manager/IAM/GitHub OIDC/WIF; Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
-- Secret Manager production bundle retains exactly one non-destroyed version.
+- Production GCP owns the Cloudflare Terraform WIF and state; family config lives in Firestore `family-config` (`tobytran-portfolio`); Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
 - Temporal database bootstrap remains an explicit operator-only Task 8; normal deploy never runs `bootstrap-temporal-db.sh`.
 - Current infrastructure sources: `infrastructure/vps/`, `infrastructure/cloudflare/expense-tax/`, `.github/workflows/expense-tax-deploy.yml`.

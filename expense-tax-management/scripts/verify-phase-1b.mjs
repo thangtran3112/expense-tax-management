@@ -58,12 +58,6 @@ function run(label, command, args, env = process.env) {
   console.log(`PASS ${label}`);
 }
 
-run("Production secret bundle tests", "pnpm", [
-  "exec",
-  "vitest",
-  "run",
-  "scripts/lib/production-secret-bundle.test.mjs",
-]);
 run("GCP infrastructure static policy", "node", [
   "scripts/check-phase-1b-infrastructure.mjs",
 ]);

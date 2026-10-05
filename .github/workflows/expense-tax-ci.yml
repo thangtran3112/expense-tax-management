@@ -5,6 +5,7 @@ on:
     branches: [main, master]
     paths:
       - "expense-tax-management/**"
+      - "common/config/**"
       - "infrastructure/docker-compose.common.yml"
       - ".github/workflows/expense-tax-ci.yml"
   pull_request:

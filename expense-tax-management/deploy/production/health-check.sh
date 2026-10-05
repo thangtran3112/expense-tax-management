@@ -4,7 +4,7 @@ set -Eeuo pipefail
 attempts="${HEALTH_CHECK_ATTEMPTS:-30}"
 delay="${HEALTH_CHECK_DELAY_SECONDS:-2}"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-COMPOSE_ENV_FILE="${PRODUCTION_ENV_FILE:-/etc/expense-tax-management/production.env}"
+COMPOSE_ENV_FILE="${PRODUCTION_ENV_FILE:?PRODUCTION_ENV_FILE is required}"
 compose() {
   docker compose --project-name expense-tax-production --env-file "$COMPOSE_ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" "$@"
 }

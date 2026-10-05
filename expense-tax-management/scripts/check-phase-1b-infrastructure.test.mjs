@@ -1,15 +1,9 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
-const syncScript = join(
-  projectRoot,
-  "infrastructure/gcp/expense-tax/sync-production-secret.sh",
-);
 const bootstrapScript = join(
   projectRoot,
   "infrastructure/gcp/expense-tax/bootstrap.sh",
@@ -30,110 +24,7 @@ function commandBlocks(source, prefix) {
   return blocks;
 }
 
-const mockGcloud = `#!/usr/bin/env bash
-set -eu
-printf '%s\\n' "$*" >> "$MOCK_LOG"
-case "$1:$2:$3" in
-  secrets:versions:list)
-    count="$(wc -l < "$LIST_COUNT")"
-    printf '%s\\n' "$((count + 1))" > "$LIST_COUNT"
-    if [[ "$MOCK_MODE" == "access-failure" ]]; then
-      printf '%s\\n' '[{"name":"projects/test/secrets/expense-tax-production-env/versions/1","state":"ENABLED"}]'
-    else
-      if [[ "$MOCK_MODE" == "success" && "$count" -ge 1 ]]; then
-        printf '%s\\n' '[{"name":"projects/test/secrets/expense-tax-production-env/versions/3","state":"ENABLED"}]'
-      elif [[ "$count" == "0" ]]; then
-        printf '%s\\n' '[{"name":"projects/test/secrets/expense-tax-production-env/versions/1","state":"ENABLED"},{"name":"projects/test/secrets/expense-tax-production-env/versions/2","state":"DISABLED"}]'
-      else
-        printf '%s\\n' '[{"name":"projects/test/secrets/expense-tax-production-env/versions/1","state":"ENABLED"},{"name":"projects/test/secrets/expense-tax-production-env/versions/2","state":"DISABLED"},{"name":"projects/test/secrets/expense-tax-production-env/versions/3","state":"ENABLED"}]'
-      fi
-    fi
-    ;;
-  secrets:versions:access)
-    if [[ "$4" == "latest" && "$MOCK_MODE" == "access-failure" ]]; then
-      printf '%s\\n' 'permission denied' >&2
-      exit 23
-    fi
-    cat "$MOCK_PAYLOAD"
-    ;;
-  secrets:versions:add)
-    for arg in "$@"; do
-      [[ "$arg" == --data-file=* ]] && cp "\${arg#--data-file=}" "$MOCK_PAYLOAD"
-    done
-    printf '%s\\n' 'projects/test/secrets/expense-tax-production-env/versions/3'
-    ;;
-  secrets:versions:destroy)
-    [[ "$4" == "1" && "$MOCK_MODE" == "destroy-failure" ]] && exit 31
-    ;;
-esac
-`;
-
-function runSync(env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(syncScript, [], { cwd: projectRoot, env });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
-  });
-}
-
-async function fixture(mode) {
-  const root = await mkdtemp(join(tmpdir(), "phase-1b-gcp-test-"));
-  const bin = join(root, "gcloud");
-  await writeFile(bin, mockGcloud);
-  await chmod(bin, 0o700);
-  await writeFile(join(root, ".zshrc"), [
-    "set -x",
-    "printf '%s\\n' \"startup-openai=$OPENAI_API_KEY\"",
-    "export OPENAI_API_KEY=test-openai",
-    "export OPENROUTER_API_KEY=test-openrouter",
-    "export CLERK_APP_MACHINE_SECRET_KEY=test-clerk-app",
-    "export CLERK_FOUNDRY_MACHINE_SECRET_KEY=test-clerk-foundry",
-    "export AUTH_PROVIDER=clerk",
-    "export CLERK_ISSUER_URL=https://clerk.tobytran.dev",
-    "export CLERK_JWKS_URL=https://clerk.tobytran.dev/.well-known/jwks.json",
-    "export CLERK_TENANT_AUDIENCE=expense-app",
-    "export CLERK_PLATFORM_AUDIENCE=expense-foundry-platform",
-    "export CLERK_APP_SERVICE_AUDIENCE=mch_3JAI0juruFRPSkrE1rpcDKx1k1i",
-    "export CLERK_FOUNDRY_SERVICE_AUDIENCE=mch_3JAIAMNUiVXteVOki8QENYHvJjp",
-    "export CLERK_APP_SERVICE_SUBJECT=mch_3JAIPnx8itUTJsizuEGewr6NGBX",
-    "export CLERK_FOUNDRY_SERVICE_SUBJECT=mch_3JAIi2BwnqBf8bNzbjTtjJa6nGw",
-    "printf '%s\\n' \"startup-openrouter=$OPENROUTER_API_KEY\"",
-  ].join("\n"));
-  const webhookSecret = join(root, "clerk-webhook-signing-secret");
-  await writeFile(webhookSecret, "whsec_test_webhook_secret\n", { mode: 0o600 });
-  const database = join(root, "database.env");
-  await writeFile(database, [
-    "APP_DATABASE_URL=postgresql://app@127.0.0.1:15432/expense_tax_db",
-    "APP_MIGRATION_DATABASE_URL=postgresql://migrator@127.0.0.1:15432/expense_tax_db",
-    "FOUNDRY_DATABASE_URL=postgresql://foundry@127.0.0.1:15432/expense_tax_db",
-    "FOUNDRY_MIGRATION_DATABASE_URL=postgresql://foundry-migrator@127.0.0.1:15432/expense_tax_db",
-  ].join("\n"));
-  const log = join(root, "gcloud.log");
-  const payload = join(root, "payload.env");
-  await writeFile(join(root, "list.count"), "");
-  await writeFile(payload, "");
-  return {
-    root,
-    env: {
-      ...process.env,
-      PATH: `${root}:${process.env.PATH}`,
-      HOME: root,
-      DATABASE_ENV_PATH: database,
-      CLERK_WEBHOOK_SIGNING_SECRET_FILE: webhookSecret,
-      MOCK_LOG: log,
-      MOCK_PAYLOAD: payload,
-      LIST_COUNT: join(root, "list.count"),
-      MOCK_MODE: mode,
-    },
-    log,
-  };
-}
-
-describe("production secret sync behavior", () => {
+describe("GCP bootstrap static policy", () => {
   it("uses valid billing account identifier and rejects known typo", async () => {
     const bootstrap = await readFile(bootstrapScript, "utf8");
 
@@ -180,70 +71,5 @@ describe("production secret sync behavior", () => {
     expect(commandBlocks(bootstrap, "gcloud secrets add-iam-policy-binding ")).toEqual([
       expect.stringMatching(/--role="roles\/secretmanager\.secretAccessor"[\s\S]*--member="serviceAccount:\$\{SERVICE_ACCOUNT_EMAIL\}"/u),
     ]);
-  });
-
-  it("does not leak startup output or API-key values", async () => {
-    const test = await fixture("success");
-    const result = await runSync(test.env);
-
-    expect(result.stdout).not.toContain("test-openai");
-    expect(result.stdout).not.toContain("test-openrouter");
-    expect(result.stderr).not.toContain("test-openai");
-    expect(result.stderr).not.toContain("test-openrouter");
-  });
-
-  it("requires a protected webhook secret file and uploads its value", async () => {
-    const test = await fixture("success");
-    const result = await runSync(test.env);
-    const payload = await readFile(join(test.root, "payload.env"), "utf8");
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(payload).toContain("CLERK_WEBHOOK_SIGNING_SECRET=whsec_test_webhook_secret");
-    expect(result.stdout).not.toContain("whsec_test_webhook_secret");
-    expect(result.stderr).not.toContain("whsec_test_webhook_secret");
-  });
-
-  it("rejects a webhook secret file without mode 0600", async () => {
-    const test = await fixture("success");
-    await chmod(join(test.root, "clerk-webhook-signing-secret"), 0o644);
-
-    const result = await runSync(test.env);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("mode 0600");
-  });
-
-  it.each([
-    ["bare whsec_ prefix", "whsec_"],
-    ["whitespace-only content", " \t\n"],
-  ])("rejects webhook secret file with %s", async (_description, value) => {
-    const test = await fixture("success");
-    await writeFile(join(test.root, "clerk-webhook-signing-secret"), value, { mode: 0o600 });
-
-    const result = await runSync(test.env);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("whsec_");
-  });
-
-  it("aborts on current-version access failure before uploading", async () => {
-    const test = await fixture("access-failure");
-    const result = await runSync(test.env);
-    const log = await readFile(test.log, "utf8");
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("refusing destructive rotation");
-    expect(log).not.toContain("versions add");
-  });
-
-  it("attempts every old destruction and rejects a failed postcondition", async () => {
-    const test = await fixture("destroy-failure");
-    const result = await runSync(test.env);
-    const log = await readFile(test.log, "utf8");
-
-    expect(result.status).not.toBe(0);
-    expect(log, result.stderr).toContain("versions destroy 1");
-    expect(log).toContain("versions destroy 2");
-    expect(result.stderr).toContain("postcondition failed");
   });
 });
