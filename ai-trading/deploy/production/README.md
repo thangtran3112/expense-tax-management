@@ -26,7 +26,7 @@ On the host:
 3. GCP identity for the Terraform workflow: run `infrastructure/cloudflare/ai-trading/bootstrap-wif.sh`.
 4. GitHub environment `ai-trading-production`:
    - vars `VPS_HOST`, `VPS_PORT`, `VPS_USER`, `CLOUDFLARE_ACCOUNT_ID`, `TF_STATE_BUCKET`, `GCP_AI_TRADING_CF_WORKLOAD_IDENTITY_PROVIDER`, `GCP_AI_TRADING_CF_SERVICE_ACCOUNT`;
-   - secrets `VPS_DEPLOY_SSH_KEY`, `VPS_DEPLOY_KNOWN_HOSTS`, `AI_TRADING_CLOUDFLARE_API_TOKEN`, and `AI_TRADING_ACCESS_ALLOWED_EMAILS` (a JSON list such as `["<allowed-email-1>","<allowed-email-2>"]`).
+   - secrets `VPS_DEPLOY_SSH_KEY`, `VPS_DEPLOY_KNOWN_HOSTS`, `AI_TRADING_CLOUDFLARE_API_TOKEN`, and `AI_TRADING_ACCESS_ALLOWED_EMAILS` (a JSON list such as `["<allowed-email-1>","<allowed-email-2>"]`). The two allowed emails must differ within their first 29 characters, because ttyd truncates the identity at 29 characters and two emails sharing that prefix would share one terminal session.
 5. LLM keys:
    - Create one Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a monthly spend limit (start at $10).
    - If an OpenAI project budget only alerts, fund that project with prepaid credit and turn auto-recharge off.
@@ -54,7 +54,7 @@ On the host:
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
 5. ai-hedge-fund opens its terminal UI and reaches a backtest screen (with a data key) or its missing-key prompt.
-6. Vibe-Trading opens, accepts the access key, and answers one chat request.
+6. Vibe-Trading opens, the access key is saved in Settings > Local API access > Server API key, and it answers one chat request.
 
 ## Operations
 

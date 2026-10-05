@@ -6,7 +6,7 @@
 set -eu
 : "${APP_COMMAND:?APP_COMMAND is required}"
 : "${TTYD_BASE_PATH:?TTYD_BASE_PATH is required}"
-set -- --port 7681 --writable --check-origin --base-path "$TTYD_BASE_PATH" --terminal-type xterm-256color
+set -- --port 7681 --writable --check-origin --base-path "$TTYD_BASE_PATH" --terminal-type xterm-256color --client-option disableLeaveAlert=true
 if [ -n "${TTYD_AUTH_HEADER:-}" ]; then
   set -- "$@" --auth-header "$TTYD_AUTH_HEADER"
 fi

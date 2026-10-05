@@ -49,7 +49,7 @@ export const hubApps: readonly HubApp[] = [
     slug: "vibe-trading",
     kind: "external",
     url: vibeTradingUrl,
-    firstVisitNote: "On the first visit in each browser, paste the Vibe-Trading access key when it asks. The key is stored with the other ai-trading secrets.",
+    firstVisitNote: "On the first visit in each browser, open Settings, find Local API access, paste the Vibe-Trading access key into Server API key, and save. The key is stored with the other ai-trading secrets.",
     name: "Vibe-Trading",
     summary: "A research agent you talk to in plain English, with charts, strategy backtests, and a large skill library.",
     goodFor: "Exploring an idea or backtesting a strategy described in words.",

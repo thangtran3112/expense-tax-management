@@ -27,6 +27,6 @@ Runs the release 1 stack on a laptop, with Caddy standing in for the Cloudflare 
      -f ai-trading/deploy/local/docker-compose.override.yml up -d --wait
    ```
 
-4. Open http://localhost:8080 for the hub. Vibe-Trading is at http://localhost:8899; paste `local-dev-key` when it asks.
+4. Open http://localhost:8080 for the hub. Vibe-Trading is at http://localhost:8899; on first visit open Settings > Local API access, paste `local-dev-key` into Server API key, and save.
 
 5. Stop the stack: run the same compose command with `down` instead of `up -d --wait`.

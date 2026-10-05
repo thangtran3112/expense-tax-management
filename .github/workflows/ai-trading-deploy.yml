@@ -30,6 +30,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           submodules: true
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -59,6 +60,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           sparse-checkout: ai-trading/deploy/production
+          persist-credentials: false
       - name: Install pinned SSH identity
         env:
           VPS_DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
