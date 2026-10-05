@@ -64,10 +64,12 @@ problem rather than silently leaving two live versions.
 ## Masking
 
 Outside GitHub Actions (`GITHUB_ACTIONS` not `true`), any command that calls
-gcloud refuses to run unless `CLOUDSDK_ACTIVE_CONFIG_NAME` is set -- the
-operator machine's default gcloud configuration is a different (work)
-account, and this guard stops a secret command from silently running
-against it. `check` never calls gcloud and needs no configuration.
+gcloud refuses to run unless `CLOUDSDK_ACTIVE_CONFIG_NAME` is set to exactly
+`personal` -- the operator machine's default gcloud configuration
+(`chartflow`) is a different (work) account, and any other explicit value is
+just as wrong a target as the default, so this guard stops a secret command
+from silently running against it. `check` never calls gcloud and needs no
+configuration.
 
 Under GitHub Actions, `render`, `exec`, and `get-file` print
 `::add-mask::<value>` for every value they read from Secret Manager, one

@@ -34,11 +34,12 @@ done
 
 [[ -n "$PROJECT" && -n "$BUCKET" ]] || usage
 
-# Mirrors infrastructure/cloudflare/expense-tax/bootstrap-state.sh's guard:
-# the operator machine's default gcloud configuration is a different (work)
-# account, so this refuses to run against it by surprise.
-if [[ "${GITHUB_ACTIONS:-}" != "true" && -z "${CLOUDSDK_ACTIVE_CONFIG_NAME:-}" ]]; then
-  echo "CLOUDSDK_ACTIVE_CONFIG_NAME must be set outside GitHub Actions" >&2
+# Controller ruling (ai-trading/AGENTS.md): outside GitHub Actions,
+# CLOUDSDK_ACTIVE_CONFIG_NAME must be exactly "personal" -- the operator
+# machine's default config ("chartflow") is a different (work) account,
+# and any other explicit value is just as wrong a target as the default.
+if [[ "${GITHUB_ACTIONS:-}" != "true" && "${CLOUDSDK_ACTIVE_CONFIG_NAME:-}" != "personal" ]]; then
+  echo "CLOUDSDK_ACTIVE_CONFIG_NAME must be set to 'personal' outside GitHub Actions" >&2
   exit 1
 fi
 

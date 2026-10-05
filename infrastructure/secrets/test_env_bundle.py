@@ -62,6 +62,11 @@ case "$sub" in
     [[ -f "$STATE_DIR/$secret/$version.state" ]] || { echo "version not found: $version" >&2; exit 1; }
     [[ "$(cat "$STATE_DIR/$secret/$version.state")" == "ENABLED" ]] || { echo "version destroyed: $version" >&2; exit 1; }
     cat "$STATE_DIR/$secret/$version.data"
+    # Test hook only: simulates a corrupted re-read so push's hash check
+    # can be exercised without a real backend ever returning bad bytes.
+    if [[ "${FAKE_GCLOUD_CORRUPT_ACCESS:-}" == "1" ]]; then
+      printf '\xffCORRUPT'
+    fi
     ;;
   list)
     secret="$4"
@@ -166,6 +171,40 @@ class ParseBundleGrammarTests(unittest.TestCase):
         with self.assertRaises(bundle_lib.BundleError):
             bundle_lib.parse_bundle("[a]\r\nK=v\r\n")
 
+    def test_embedded_cr_mid_value_is_an_error(self):
+        # CR forbidden anywhere in the line, not just as a trailing line
+        # ending -- a value with a hidden embedded CR must still be rejected.
+        with self.assertRaises(bundle_lib.BundleError) as ctx:
+            bundle_lib.parse_bundle("[a]\nKEY=value\rhidden\n")
+        self.assertEqual(ctx.exception.line, 2)
+
+
+class WriteFileModeTests(unittest.TestCase):
+    def test_write_file_is_0600_even_with_umask_zero(self):
+        old_umask = os.umask(0)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "secret.env")
+                bundle_lib.write_file(path, b"data")
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+                with open(path, "rb") as fh:
+                    self.assertEqual(fh.read(), b"data")
+        finally:
+            os.umask(old_umask)
+
+    def test_write_file_corrects_mode_of_a_preexisting_wider_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "secret.env")
+            with open(path, "wb") as fh:
+                fh.write(b"old")
+            os.chmod(path, 0o644)  # simulate a file that pre-existed wide-open
+
+            bundle_lib.write_file(path, b"new", 0o600)
+
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), b"new")
+
 
 class RenderCommandTests(unittest.TestCase):
     def test_render_writes_exact_files_and_modes_from_bundle_file(self):
@@ -266,7 +305,7 @@ class GetFileAndPushTests(unittest.TestCase):
         self.fake_env = {
             "PATH": self.bin_dir + os.pathsep + os.environ["PATH"],
             "FAKE_GCLOUD_STATE_DIR": self.state_dir,
-            "CLOUDSDK_ACTIVE_CONFIG_NAME": "test",
+            "CLOUDSDK_ACTIVE_CONFIG_NAME": "personal",
         }
 
     def test_get_file_is_byte_exact_through_fake_gcloud(self):
@@ -325,6 +364,32 @@ class GetFileAndPushTests(unittest.TestCase):
         with open(os.path.join(secret_dir, "2.data")) as fh:
             self.assertEqual(fh.read(), "[deploy]\nVPS_HOST=1.2.3.4\n")
 
+    def test_push_fails_on_verification_hash_mismatch_and_leaves_old_version(self):
+        secret_dir = os.path.join(self.state_dir, "ai-trading-env-bundle")
+        os.makedirs(secret_dir)
+        with open(os.path.join(secret_dir, "1.data"), "w") as fh:
+            fh.write("[deploy]\nOLD=1\n")
+        with open(os.path.join(secret_dir, "1.state"), "w") as fh:
+            fh.write("ENABLED")
+
+        bundle_path = os.path.join(self.tmp.name, "new-bundle.env")
+        with open(bundle_path, "w") as fh:
+            fh.write("[deploy]\nVPS_HOST=1.2.3.4\n")
+
+        env = dict(self.fake_env)
+        env["FAKE_GCLOUD_CORRUPT_ACCESS"] = "1"  # fake gcloud returns altered bytes on re-read
+        result = run_cli(["push", "ai-trading", bundle_path], env=env)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"hash mismatch", result.stderr)
+        # The secret value must never be printed, success or failure.
+        self.assertNotIn(b"1.2.3.4", result.stdout)
+        self.assertNotIn(b"1.2.3.4", result.stderr)
+        # The older (still-good) version must survive a failed verification:
+        # the destroy loop must never run before the hash check passes.
+        with open(os.path.join(secret_dir, "1.state")) as fh:
+            self.assertEqual(fh.read().strip(), "ENABLED")
+
     def test_push_refuses_invalid_bundle_without_calling_gcloud(self):
         bundle_path = os.path.join(self.tmp.name, "bad-bundle.env")
         with open(bundle_path, "w") as fh:
@@ -370,6 +435,25 @@ class CloudsdkGuardTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b"CLOUDSDK_ACTIVE_CONFIG_NAME", result.stderr)
+            self.assertIn(b"personal", result.stderr)  # names the expected value
+
+    def test_pull_refuses_with_wrong_cloudsdk_config_outside_actions(self):
+        # Controller ruling: only the exact value "personal" is accepted.
+        # "chartflow" (the operator machine's default, a work account) must
+        # be refused just like an unset value -- and without ever touching
+        # gcloud (no fake gcloud is put on PATH for this test).
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = os.path.join(tmp, "out.env")
+            env = {"PATH": "/usr/bin:/bin", "CLOUDSDK_ACTIVE_CONFIG_NAME": "chartflow"}
+            result = subprocess.run(
+                [sys.executable, ENV_BUNDLE, "pull", "ai-trading", out_file],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"CLOUDSDK_ACTIVE_CONFIG_NAME", result.stderr)
+            self.assertIn(b"personal", result.stderr)
 
     def test_pull_allowed_under_github_actions_without_cloudsdk_config(self):
         with tempfile.TemporaryDirectory() as tmp:

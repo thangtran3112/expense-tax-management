@@ -15,6 +15,7 @@ import sys
 from collections import OrderedDict
 
 DEFAULT_PROJECT = "tobytran-portfolio"
+REQUIRED_CLOUDSDK_CONFIG = "personal"
 
 SECTION_RE = re.compile(r"^\[([a-z0-9][a-z0-9-]*)\]$")
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -48,8 +49,8 @@ def parse_bundle(text: str) -> "OrderedDict[str, OrderedDict[str, str]]":
     for line_no, line in enumerate(lines, start=1):
         if "\x00" in line:
             raise BundleError(line_no, "NUL byte is not allowed")
-        if line.endswith("\r"):
-            raise BundleError(line_no, "CR line ending is not allowed (use LF)")
+        if "\r" in line:
+            raise BundleError(line_no, "CR is not allowed (use LF, no embedded CR)")
 
         if line.strip() == "" or line.startswith("#"):
             continue
@@ -100,13 +101,17 @@ def is_github_actions() -> bool:
 
 
 def check_cloudsdk_guard() -> None:
-    """Outside GitHub Actions, refuse to call gcloud without an explicit
-    gcloud configuration -- the operator machine's default config is a
-    different (work) account."""
-    if not is_github_actions() and not os.environ.get("CLOUDSDK_ACTIVE_CONFIG_NAME"):
+    """Outside GitHub Actions, refuse to call gcloud unless
+    CLOUDSDK_ACTIVE_CONFIG_NAME is exactly "personal" (controller ruling,
+    ai-trading/AGENTS.md) -- the operator machine's default config
+    ("chartflow") is a different (work) account, and any other explicit
+    value is just as wrong a target as the default."""
+    if is_github_actions():
+        return
+    if os.environ.get("CLOUDSDK_ACTIVE_CONFIG_NAME") != REQUIRED_CLOUDSDK_CONFIG:
         print(
-            "CLOUDSDK_ACTIVE_CONFIG_NAME must be set outside GitHub Actions"
-            " before calling gcloud",
+            f"CLOUDSDK_ACTIVE_CONFIG_NAME must be set to {REQUIRED_CLOUDSDK_CONFIG!r}"
+            " outside GitHub Actions before calling gcloud",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -140,9 +145,17 @@ def sha256_hex(data: bytes) -> str:
 
 
 def write_file(path: str, data: bytes, mode: int = 0o600) -> None:
-    with open(path, "wb") as fh:
+    """Create/overwrite `path` with `mode` from the moment it exists -- never
+    process-default-then-chmod, so secret contents are never briefly
+    readable under a wider mode."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)  # in case the file pre-existed with a wider mode
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "wb") as fh:  # fdopen now owns fd's lifecycle
         fh.write(data)
-    os.chmod(path, mode)
 
 
 def ensure_dir(path: str, mode: int = 0o700) -> None:
