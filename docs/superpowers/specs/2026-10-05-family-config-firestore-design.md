@@ -35,10 +35,10 @@ Success means:
 - **Region `northamerica-northeast1`** (Montréal), next to the OVH VPS.
 - **Shared values stored once, referenced by apps** instead of copied.
 - **Laptop and VPS mirror** (owner): both load env at runtime through the same CLI.
-- **VPS reads Firestore itself** (owner) with a dedicated read-only service account.
+- **VPS reads Firestore itself** (owner) with a dedicated service account.
   It does not receive a rendered file from CI.
-- **The VPS reader can read the whole database** (owner accepted). Firestore IAM is per
-  database, not per document.
+- **The VPS identity is deliberately broad** (owner decision, revised 2026-10-05): project-wide
+  roles for the GCP services family-app uses, with no per-resource conditions.
 - **No version history** (owner preference).
 - **Python standard-library CLI:** the VPS has `python3` (3.12) and `gcloud` but no
   Node. The laptop and CI runners have the same two tools. Python makes reference
@@ -76,10 +76,10 @@ Success means:
 Client SDKs can never read or write the database. All access goes through IAM:
 
 - The owner account (project owner) reads and writes.
-- Service account `family-config-reader@tobytran-portfolio.iam.gserviceaccount.com`
-  holds `roles/datastore.viewer` on the project with the IAM condition
-  `resource.name == "projects/tobytran-portfolio/databases/family-config"` (title
-  `family-config-only`). It reads this database only and cannot write.
+- Service account `family-config-reader@tobytran-portfolio.iam.gserviceaccount.com`, the
+  VPS identity, holds `roles/datastore.user`, `roles/secretmanager.secretAccessor`, and `roles/storage.objectAdmin` on `tobytran-portfolio`, plus
+  `roles/secretmanager.secretAccessor` and `roles/storage.objectAdmin` on
+  `expense-tax-tobytran-2026`. There are no per-resource conditions.
 
 ## Schema
 
@@ -260,7 +260,7 @@ It:
 3. Releases the deny-all Security Rules for `family-config` through the Firebase Rules
    API, unless the current release already has identical source.
 4. Creates service account `family-config-reader` if it does not exist.
-5. Adds the conditional `roles/datastore.viewer` binding.
+5. Grants the VPS identity its project-wide roles (unconditional).
 
 ### `infrastructure/gcp/family-config/install-reader-key.sh`
 
@@ -434,8 +434,8 @@ Also update:
   - the VPS reads Firestore at deploy time with `/etc/family-app/config-reader.json`;
   - `write-secrets.sh` and the persistent `/etc/family-app/ai-trading/*.env` files go
     away;
-  - if a workflow must read Firestore in CI, grant its service account the conditional
-    `roles/datastore.viewer`;
+  - if a workflow must read Firestore in CI, grant its service account
+    `roles/datastore.viewer` (or `roles/datastore.user`) on `tobytran-portfolio`;
 - to create the app-secret profiles (`tradingagents`, `ai-hedge-fund`, `vibe-trading`,
   and `cloudflared` if needed) and `TF_VAR_access_allowed_emails`; none of these values
   exist yet;
@@ -513,8 +513,8 @@ from the production env, which the current `deploy.sh` would reject.
 
 ## Trade-offs
 
-- The VPS reader can read every app's values, including the Cloudflare tokens and the
-  Postgres superuser password.
+- The VPS identity can read and write every app's values and use Secret Manager and
+  Storage in both projects.
 - There is no version history or backup. A deleted or overwritten value is gone.
   Firestore scheduled backups can be enabled later if wanted.
 - The VPS service-account key is long-lived; `install-reader-key.sh` rotates it.

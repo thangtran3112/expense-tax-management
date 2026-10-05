@@ -75,7 +75,7 @@ $CLI with-file shared/vps VPS_OPERATOR_SSH_PRIVATE_KEY -- ssh -i {} -p 2222 ubun
 | Where | How |
 |---|---|
 | Laptop | `gcloud auth print-access-token --configuration=personal` (override with `FAMILY_CONFIG_GCLOUD_CONFIG`). It never uses the active default configuration, which is a work account on the operator laptop. |
-| VPS | `FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json`: the key of service account `family-config-reader`, which is read-only and limited to this database. gcloud runs with a throwaway config directory. |
+| VPS | `FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json`: the key of service account `family-config-reader`, the VPS identity. It holds broad project roles (Firestore user, Secret Manager accessor, Storage object admin) with no per-resource conditions. gcloud runs with a throwaway config directory. |
 | GitHub Actions | Ambient gcloud credentials; every value used is registered with `::add-mask::`. |
 
 Other settings: `FAMILY_CONFIG_PROJECT`, `FAMILY_CONFIG_DATABASE`, and
@@ -84,8 +84,9 @@ Other settings: `FAMILY_CONFIG_PROJECT`, `FAMILY_CONFIG_DATABASE`, and
 ## Provisioning
 
 - `infrastructure/gcp/family-config/bootstrap.sh`: creates the database, releases the
-  deny-all rules, creates `family-config-reader`, and grants it `roles/datastore.viewer`
-  for this database only. Safe to re-run.
+  deny-all rules, creates `family-config-reader`, and grants it `roles/datastore.user`, `roles/secretmanager.secretAccessor`, and `roles/storage.objectAdmin`
+  on `tobytran-portfolio`, plus Secret Manager and Storage on `expense-tax-tobytran-2026`.
+  Safe to re-run.
 - `infrastructure/gcp/family-config/install-reader-key.sh`: streams a new reader key into
   the VPS at `/etc/family-app/config-reader.json` (root, `0600`), verifies a read on the
   VPS, then deletes the older keys. Re-run it to rotate.
