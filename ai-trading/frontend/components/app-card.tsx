@@ -24,18 +24,17 @@ function CardBody({ app }: { app: HubApp }) {
       <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">Good for:</span> {app.goodFor}
       </p>
-      <div className="mt-3 flex gap-2 overflow-hidden">
+      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Cost:</span> {app.costNote}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
         {app.tags.slice(0, 3).map((tag) => (
-          <span
-            key={tag}
-            title={tag}
-            className="max-w-[9rem] shrink-0 truncate rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-          >
+          <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             {tag}
           </span>
         ))}
       </div>
-      <div className="mt-4 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div className="mt-auto flex items-center justify-between gap-2 pt-4 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1">
           <device.Icon aria-hidden size={14} />
           {device.label}

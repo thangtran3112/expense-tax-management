@@ -64,7 +64,7 @@ export const hubApps: readonly HubApp[] = [
     terminalPath: "/u/ai-hedge-fund/",
     name: "AI Hedge Fund",
     category: "funds",
-    tags: ["Investor personas", "Backtests", "Needs Financial Datasets key"],
+    tags: ["Investor personas", "Backtests", "Paid data key"],
     icon: "hedgeFund",
     device: "keyboard",
     summary:

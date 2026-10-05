@@ -70,8 +70,9 @@ No marketing sections: no hero image, logo wall, testimonials, or sales CTA. Add
 - Content, top to bottom:
   1. A 40px icon tile (`--color-muted` background, Lucide icon, `aria-hidden`), then the name (h3, 18px, 600 weight) and a status badge on the same row.
   2. Summary: two lines, clamped.
-  3. Tags: up to three chips; no wrapping; truncate with the full text in `title`.
-  4. Footer row:
+  3. "Good for:" and "Cost:" lines (label in foreground, value in muted foreground, 12-13px), each clamped to two lines. Cost stays visible because paid keys and LLM spend matter to both users.
+  4. Tags: up to three short chips (about 22 characters at most). Chips wrap to a second row instead of truncating, so touch users see the full text.
+  5. Footer row, pinned to the bottom of the card so cards in a row align:
      - device hint, icon plus text: `Keyboard` "Keyboard recommended" or `Tablet` "Works on touch";
      - launch hint: `ArrowRight` "Open in hub" for terminal apps, `ExternalLink` "Opens in a new tab" for external apps.
 - Status badge: always an icon plus text, never color alone.
