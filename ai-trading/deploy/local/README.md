@@ -2,16 +2,17 @@
 
 Runs the release 1 stack on a laptop, with Caddy standing in for the Cloudflare Tunnel. Run every command from the repository root.
 
-1. Create local secrets (gitignored):
+1. Render env files from the Secret Manager bundle into a directory outside the repository (never commit or gitignore a secret file inside `ai-trading/`):
 
    ```bash
-   mkdir -p ai-trading/deploy/local/secrets
-   for f in ai-trading/deploy/production/env/*.env.example; do
-     cp "$f" "ai-trading/deploy/local/secrets/$(basename "$f" .example)"
-   done
+   export AI_TRADING_SECRETS_DIR="${TMPDIR:-/tmp}/ai-trading-local-env"
+   CLOUDSDK_ACTIVE_CONFIG_NAME=personal python3 infrastructure/secrets/env-bundle.py render ai-trading \
+     --out-dir "$AI_TRADING_SECRETS_DIR" tradingagents ai-hedge-fund vibe-trading
+   printf 'TUNNEL_TOKEN=unused-locally\n' >"$AI_TRADING_SECRETS_DIR/cloudflared.env"
+   chmod 0600 "$AI_TRADING_SECRETS_DIR/cloudflared.env"
    ```
 
-   In the copies, delete every line whose value is `replace-me`. Then set `API_AUTH_KEY=local-dev-key` in `vibe-trading.env` and `TUNNEL_TOKEN=unused-locally` in `cloudflared.env`. Add provider keys only if you want real LLM runs.
+   `vibe-trading.env` carries the real shared `API_AUTH_KEY` from the bundle; paste that value into Settings in step 4 below.
 
 2. Build the images:
 
