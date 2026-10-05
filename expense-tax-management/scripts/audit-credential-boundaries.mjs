@@ -1,14 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeScript = path.join(repoRoot, "scripts", "compose.sh");
-const envFile = process.env.EXPENSE_TAX_ENV_FILE ??
-  (existsSync(path.join(repoRoot, ".env"))
-    ? path.join(repoRoot, ".env")
-    : path.join(repoRoot, ".env.example"));
+const envFile = process.env.EXPENSE_TAX_ENV_FILE ?? path.join(repoRoot, ".env.example");
 
 let failures = 0;
 
