@@ -5,6 +5,11 @@ temp/
 packages/deer-flow/
 packages/ag-ui/
 
+# The root .gitignore (Python template) ignores every lib/ and env/ directory;
+# these two belong to ai-trading and must be committed.
+!frontend/lib/
+!deploy/production/env/
+
 # Real env files never live in the repository; only *.env.example templates do.
 deploy/production/env/*.env
 deploy/local/secrets/
