@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -51,12 +52,41 @@ describe("Cloudflare workflow condition checks", () => {
     const runs = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
     expect(workflow).not.toContain("upload-artifact");
     expect(workflow).not.toContain("download-artifact");
-    expect(runs(jobs.plan)).not.toContain("-out");
     expect(runs(jobs.apply)).toContain("terraform plan -out=tfplan");
     expect(runs(jobs.apply)).toContain("terraform apply -auto-approve tfplan");
     expect(workflow).toContain("GCP_CLOUDFLARE_WORKLOAD_IDENTITY_PROVIDER");
     expect(workflow).toContain("GCP_CLOUDFLARE_SERVICE_ACCOUNT");
     expect(workflow).not.toContain("terraform apply -auto-approve\n");
+  });
+
+  it("binds the applied change set to the reviewed plan without moving the plan file", () => {
+    const jobs = YAML.parse(workflow).jobs;
+    const runs = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
+    expect(jobs.plan.outputs?.change_digest).toBe("${{ steps.plan.outputs.change_digest }}");
+    expect(runs(jobs.plan)).toContain("plan-change-digest.sh");
+    expect(runs(jobs.plan)).toContain("rm -f tfplan");
+    expect(runs(jobs.apply)).toContain("plan-change-digest.sh");
+    expect(workflow).toContain("needs.plan.outputs.change_digest");
+    for (const name of ["plan", "apply"]) {
+      const setup = jobs[name].steps.find((step) => String(step.uses ?? "").startsWith("hashicorp/setup-terraform"));
+      expect(setup?.with?.terraform_wrapper).toBe(false);
+    }
+  });
+
+  it("digests planned addresses and actions only", () => {
+    const script = join(repoRoot, "infrastructure/cloudflare/expense-tax/plan-change-digest.sh");
+    const digest = (plan) => execFileSync("bash", [script], { input: JSON.stringify(plan), encoding: "utf8" }).trim();
+    const change = (address, actions, after) => ({ address, change: { actions, after } });
+    const reviewed = { resource_changes: [change("b.record", ["update"], { content: "secret-one" }), change("a.tunnel", ["no-op"], {})] };
+    const sameActionsNewValues = { resource_changes: [change("b.record", ["update"], { content: "secret-two" })] };
+    const extraAction = { resource_changes: [...reviewed.resource_changes, change("c.record", ["delete"], {})] };
+
+    expect(digest(reviewed)).toMatch(/^[0-9a-f]{64}$/u);
+    expect(digest(sameActionsNewValues)).toBe(digest(reviewed));
+    expect(digest(extraAction)).not.toBe(digest(reviewed));
+    expect(digest({ resource_changes: [] })).not.toBe(digest(reviewed));
+    expect(digest(reviewed)).not.toContain("secret");
+    expect(() => execFileSync("bash", [script], { input: "", stdio: ["pipe", "pipe", "pipe"] })).toThrow();
   });
 
   it("keeps the Cloudflare API token out of plans and state", () => {
