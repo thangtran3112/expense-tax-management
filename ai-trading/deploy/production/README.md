@@ -26,7 +26,7 @@ On the host:
 3. GCP identity for the Terraform workflow: run `infrastructure/cloudflare/ai-trading/bootstrap-wif.sh`.
 4. GitHub environment `ai-trading-production`:
    - vars `VPS_HOST`, `VPS_PORT`, `VPS_USER`, `CLOUDFLARE_ACCOUNT_ID`, `TF_STATE_BUCKET`, `GCP_AI_TRADING_CF_WORKLOAD_IDENTITY_PROVIDER`, `GCP_AI_TRADING_CF_SERVICE_ACCOUNT`;
-   - secrets `VPS_DEPLOY_SSH_KEY`, `VPS_DEPLOY_KNOWN_HOSTS`, `AI_TRADING_CLOUDFLARE_API_TOKEN`, and `AI_TRADING_ACCESS_ALLOWED_EMAILS` (a JSON list such as `["a@example.com","b@example.com"]`).
+   - secrets `VPS_DEPLOY_SSH_KEY`, `VPS_DEPLOY_KNOWN_HOSTS`, `AI_TRADING_CLOUDFLARE_API_TOKEN`, and `AI_TRADING_ACCESS_ALLOWED_EMAILS` (a JSON list such as `["<allowed-email-1>","<allowed-email-2>"]`).
 5. LLM keys:
    - Create one Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a monthly spend limit (start at $10).
    - If an OpenAI project budget only alerts, fund that project with prepaid credit and turn auto-recharge off.
@@ -59,7 +59,7 @@ On the host:
 ## Operations
 
 - Logs: `sudo docker compose -p ai-trading --env-file /opt/family-app/ai-trading/images.env -f /opt/family-app/ai-trading/docker-compose.yml logs -f <service>`
-- Redeploy the current tag: `sudo env IMAGE_TAG=$(cat /opt/family-app/ai-trading/last-good-tag) /opt/family-app/ai-trading/deploy.sh`. The GHCR login is needed only if the images are no longer cached on the host.
+- Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow; it logs in to GHCR for the run. For a manual run on the host instead: `docker login ghcr.io` with a read-only token, then `sudo env IMAGE_TAG=$(cat /opt/family-app/ai-trading/last-good-tag) /opt/family-app/ai-trading/deploy.sh`, then `docker logout ghcr.io` (`deploy.sh` always runs `docker compose pull`, so every redeploy needs registry access while the GHCR packages are private).
 - Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in the bundle, rerun `write-secrets.sh`, redeploy, and paste the new key in each browser.
 - Upstream updates arrive as one grouped Dependabot pull request per week. Merge it to `dev` when CI is green, then release to `main`.
 
