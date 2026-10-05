@@ -11,7 +11,7 @@ containers=()
 
 cleanup() {
   if ((${#containers[@]})); then
-    docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
+    docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -38,7 +38,7 @@ expect_status() {
   shift 2
   local deadline=$((SECONDS + ${WAIT_SECONDS:-60}))
   while ((SECONDS < deadline)); do
-    got="$(curl -s -o /dev/null -w '%{http_code}' "$@" "$url" || true)"
+    got="$(curl -s --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "$@" "$url" || true)"
     if [[ "$got" == "$want" ]]; then
       echo "ok   $want $url"
       return 0
@@ -50,7 +50,7 @@ expect_status() {
 
 # expect_body TEXT URL: the page must contain TEXT.
 expect_body() {
-  curl -fsS "$2" | grep -qF "$1" || fail "$2 does not contain $1"
+  curl -fsS --connect-timeout 5 --max-time 10 "$2" | grep -qF "$1" || fail "$2 does not contain $1"
   echo "ok   $2 contains $1"
 }
 
@@ -103,6 +103,9 @@ smoke_vibe() {
   expect_status 200 "$url" "${site[@]}" -H "Authorization: Bearer smoke-key" -H "X-Forwarded-Proto: https"
   # ... without the forwarded scheme the same-site check rejects it ...
   expect_status 403 "$url" "${site[@]}" -H "Authorization: Bearer smoke-key"
+  # ... a cross-site Origin is rejected even with the forwarded scheme and the right key ...
+  expect_status 403 "$url" -X POST -H "Origin: https://evil.example.test" -H "Host: vibe.example.test" \
+    -H "Authorization: Bearer smoke-key" -H "X-Forwarded-Proto: https"
   # ... and a wrong key is refused.
   expect_status 401 "$url" "${site[@]}" -H "Authorization: Bearer wrong-key" -H "X-Forwarded-Proto: https"
 }
