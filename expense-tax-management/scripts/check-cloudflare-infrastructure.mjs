@@ -110,10 +110,21 @@ includes(workflowRaw, "terraform init");
 includes(workflowRaw, "terraform validate");
 includes(workflowRaw, "terraform plan");
 includes(workflowRaw, "terraform apply");
-includes(workflowRaw, "actions/upload-artifact@v4");
-includes(workflowRaw, "actions/download-artifact@v4");
-includes(workflowRaw, "retention-days: 1");
-includes(workflowRaw, "terraform apply -auto-approve tfplan");
+// Saved plans embed input variable values and the prior state (including the
+// tunnel token output); on a public repository artifacts are downloadable by
+// any signed-in GitHub user. Plans must never leave the job that created them.
+excludes(workflowRaw, "upload-artifact", "Terraform plan artifact upload");
+excludes(workflowRaw, "download-artifact", "Terraform plan artifact download");
+const jobRuns = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
+excludes(jobRuns(planJob), "-out", "saved plan file in review-only plan job");
+includes(jobRuns(applyJob), "terraform plan -out=tfplan", "apply job creates its own plan");
+includes(jobRuns(applyJob), "terraform apply -auto-approve tfplan", "apply job applies only its own plan");
+const variables = read("variables.tf");
+const tokenVariable = variables.match(/variable "cloudflare_api_token" \{[\s\S]*?\n\}/u)?.[0] ?? "";
+if (!/ephemeral\s+=\s+true/u.test(tokenVariable)) {
+  failures.push("missing: ephemeral Cloudflare API token variable (kept out of plans and state)");
+}
+includes(main, 'required_version = ">= 1.10.0"', "Terraform version supporting ephemeral variables");
 includes(workflowRaw, "GCP_CLOUDFLARE_WORKLOAD_IDENTITY_PROVIDER");
 includes(workflowRaw, "GCP_CLOUDFLARE_SERVICE_ACCOUNT");
 excludes(workflowRaw, "GCP_WORKLOAD_IDENTITY_PROVIDER", "shared application WIF provider");

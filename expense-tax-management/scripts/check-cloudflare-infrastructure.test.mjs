@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import YAML from "yaml";
 import {
   APPLY_CONDITION,
   TRUSTED_PLAN_CONDITION,
@@ -45,14 +46,24 @@ describe("Cloudflare workflow condition checks", () => {
     )).toBe(false);
   });
 
-  it("applies the reviewed plan artifact and uses the dedicated identity", () => {
-    expect(workflow).toContain("actions/upload-artifact@v4");
-    expect(workflow).toContain("retention-days: 1");
-    expect(workflow).toContain("actions/download-artifact@v4");
-    expect(workflow).toContain("terraform apply -auto-approve tfplan");
+  it("never moves saved Terraform plans between jobs and uses the dedicated identity", () => {
+    const jobs = YAML.parse(workflow).jobs;
+    const runs = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
+    expect(workflow).not.toContain("upload-artifact");
+    expect(workflow).not.toContain("download-artifact");
+    expect(runs(jobs.plan)).not.toContain("-out");
+    expect(runs(jobs.apply)).toContain("terraform plan -out=tfplan");
+    expect(runs(jobs.apply)).toContain("terraform apply -auto-approve tfplan");
     expect(workflow).toContain("GCP_CLOUDFLARE_WORKLOAD_IDENTITY_PROVIDER");
     expect(workflow).toContain("GCP_CLOUDFLARE_SERVICE_ACCOUNT");
     expect(workflow).not.toContain("terraform apply -auto-approve\n");
+  });
+
+  it("keeps the Cloudflare API token out of plans and state", () => {
+    const variables = readFileSync(join(repoRoot, "infrastructure/cloudflare/expense-tax/variables.tf"), "utf8");
+    const tokenVariable = variables.match(/variable "cloudflare_api_token" \{[\s\S]*?\n\}/u)?.[0] ?? "";
+    expect(tokenVariable).toMatch(/ephemeral\s+=\s+true/u);
+    expect(main).toContain('required_version = ">= 1.10.0"');
   });
 
   it("requires pinned SSH host keys and dedicated state identity", () => {

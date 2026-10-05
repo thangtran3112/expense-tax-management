@@ -57,6 +57,25 @@ explicitly granted by the owner before its mutating steps run.
   `infrastructure/cloudflare/expense-tax/` without the owner watching the
   `plan` output first (both are explicitly operator/approval-gated in their
   own READMEs).
+- Never run `.github/workflows/expense-tax-cloudflare.yml` on a `main` commit
+  that predates the plan-artifact fix (the dev→`main` release carries it).
+  Never save, upload, or share a Terraform plan file: it embeds input values
+  and the prior state, including the tunnel token.
+
+### Credential rotation after plan-artifact exposure (do before Phase 1)
+
+Six `main` runs of the Cloudflare workflow (2026-09-11 and 2026-09-12)
+uploaded saved plans as 1-day artifacts on this public repository. Those
+plans contained `TF_VAR_cloudflare_api_token` and the state's `tunnel_token`
+output. The artifacts have expired, but treat both credentials as exposed.
+
+| # | Where | Action |
+|---|---|---|
+| R.1 | Cloudflare dashboard | Roll the API token used by `CLOUDFLARE_API_TOKEN` (same permissions: Account Cloudflare Tunnel Edit, Zone DNS Edit), then update the GitHub `CLOUDFLARE_API_TOKEN` secret and any local operator copy. |
+| R.2 | Cloudflare dashboard | Networking > Tunnels > `expense-tax` > Overview > **Refresh token**. Existing connections stay up; new ones need the new token. Then force-disconnect stale connections. |
+| R.3 | operator machine | Save the new token to a local mode-0600 file (never paste it into a terminal command), then run `infrastructure/vps/bootstrap-cloudflared.sh --host HOST --user USER --key PATH --ssh-port PORT --known-hosts-file PATH --tunnel-token-file PATH`. It installs `/etc/cloudflared/expense-tax-tunnel.token` and restarts `expense-tax-cloudflared.service`. Single connector: expect a brief interruption. Verify every tunnel hostname responds, then delete the local token file. |
+
+STOP: owner approval required before R.2/R.3 (production traffic path).
 
 ---
 

@@ -105,17 +105,12 @@ jobs:
         working-directory: infrastructure/cloudflare/expense-tax
         run: terraform validate
 
+      # Review-only plan. Saved plan files embed variable values and the prior
+      # state (including the tunnel token), so plans never leave the job that
+      # creates them; the apply job plans and applies within one job.
       - name: Terraform plan
         working-directory: infrastructure/cloudflare/expense-tax
-        run: terraform plan -out=tfplan
-
-      - name: Upload reviewed Terraform plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: expense-tax-cloudflare-tfplan
-          path: infrastructure/cloudflare/expense-tax/tfplan
-          retention-days: 1
-          if-no-files-found: error
+        run: terraform plan
 
   apply:
     name: Terraform apply
@@ -135,12 +130,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download reviewed Terraform plan
-        uses: actions/download-artifact@v4
-        with:
-          name: expense-tax-cloudflare-tfplan
-          path: infrastructure/cloudflare/expense-tax
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -155,6 +144,10 @@ jobs:
       - name: Terraform init
         working-directory: infrastructure/cloudflare/expense-tax
         run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Terraform plan
+        working-directory: infrastructure/cloudflare/expense-tax
+        run: terraform plan -out=tfplan
 
       - name: Terraform apply
         working-directory: infrastructure/cloudflare/expense-tax

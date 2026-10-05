@@ -4,10 +4,12 @@ variable "cloudflare_account_id" {
   sensitive   = true
 }
 
+# Ephemeral: never persisted in saved plans or state (Terraform >= 1.10).
 variable "cloudflare_api_token" {
   type        = string
   description = "Cloudflare API token with Account Cloudflare Tunnel Edit and Zone DNS Edit."
   sensitive   = true
+  ephemeral   = true
 }
 
 variable "zone_name" {
