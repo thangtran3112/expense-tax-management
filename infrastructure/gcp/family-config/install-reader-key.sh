@@ -42,8 +42,18 @@ echo "installed new reader key at $host:$REMOTE_KEY"
 remote_dir="/tmp/family-config-verify-$$"
 ssh "${ssh_opts[@]}" "$target" "install -d -m 0700 $remote_dir"
 scp "${scp_opts[@]}" "$CLI" "$target:$remote_dir/family_config.py"
-ssh "${ssh_opts[@]}" "$target" \
-  "trap 'rm -rf $remote_dir' EXIT; sudo env FAMILY_CONFIG_CREDENTIALS=$REMOTE_KEY python3 $remote_dir/family_config.py keys expense-tax-management/production >/dev/null"
+# A brand-new key can take a few seconds before Google accepts it.
+verified=0
+for attempt in 1 2 3 4 5 6; do
+  if ssh "${ssh_opts[@]}" "$target" \
+    "sudo env FAMILY_CONFIG_CREDENTIALS=$REMOTE_KEY python3 $remote_dir/family_config.py keys expense-tax-management/production >/dev/null"; then
+    verified=1
+    break
+  fi
+  ((attempt < 6)) && sleep 10
+done
+ssh "${ssh_opts[@]}" "$target" "rm -rf $remote_dir" || true
+((verified == 1)) || { echo "the VPS could not read Firestore with the new key; older keys were kept" >&2; exit 1; }
 echo "verified Firestore reads on $host with the new key"
 
 for key_id in $old_keys; do

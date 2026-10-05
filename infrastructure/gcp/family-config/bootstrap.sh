@@ -72,16 +72,25 @@ else
   g iam service-accounts create "$READER" --display-name="Family config reader (VPS)"
 fi
 
+# The VPS identity is deliberately broad (owner decision): project-wide roles for
+# the GCP services family-app uses, with no per-resource conditions.
+grant() {
+  local project="$1" role="$2" attempts="$3" attempt
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    if gcloud --configuration="$CONFIGURATION" projects add-iam-policy-binding "$project" \
+      --member="serviceAccount:$READER_EMAIL" --role="$role" --condition=None --quiet >/dev/null; then
+      return 0
+    fi
+    ((attempt < attempts)) && sleep 5
+  done
+  return 1
+}
 # A new service account can take a few seconds to become visible to IAM.
-for attempt in 1 2 3 4 5 6; do
-  if gcloud --configuration="$CONFIGURATION" projects add-iam-policy-binding "$PROJECT" \
-    --member="serviceAccount:$READER_EMAIL" \
-    --role=roles/datastore.viewer \
-    --condition="expression=resource.name == \"projects/$PROJECT/databases/$DATABASE\",title=family-config-only" \
-    --quiet >/dev/null; then
-    break
-  fi
-  ((attempt < 6)) || exit 1
-  sleep 5
+for role in roles/datastore.user roles/secretmanager.secretAccessor roles/storage.objectAdmin; do
+  grant "$PROJECT" "$role" 6 || { echo "could not grant $role on $PROJECT" >&2; exit 1; }
 done
-echo "family-config ready: database $DATABASE ($LOCATION), reader $READER_EMAIL"
+# Expense production project; its organization policy may refuse outside members.
+for role in roles/secretmanager.secretAccessor roles/storage.objectAdmin; do
+  grant expense-tax-tobytran-2026 "$role" 1 || echo "warning: could not grant $role on expense-tax-tobytran-2026" >&2
+done
+echo "family-config ready: database $DATABASE ($LOCATION), VPS identity $READER_EMAIL"

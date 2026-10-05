@@ -422,11 +422,13 @@ class ProvisioningScriptTest(unittest.TestCase):
             "--delete-protection",
             "--type=firestore-native",
             "allow read, write: if false;",
-            "roles/datastore.viewer",
-            'resource.name == \\"projects/$PROJECT/databases/$DATABASE\\"',
-            "family-config-only",
+            "roles/datastore.user",
+            "roles/secretmanager.secretAccessor",
+            "roles/storage.objectAdmin",
+            "--condition=None",
         ):
             self.assertIn(expected, text)
+        self.assertNotIn("family-config-only", text)
 
     def test_reader_key_is_streamed_and_verified_before_old_keys_go(self):
         text = self.read("install-reader-key.sh")

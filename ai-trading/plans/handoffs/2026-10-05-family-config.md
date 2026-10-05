@@ -19,7 +19,7 @@ this session's job.
 | Database | Firestore `family-config`, project `tobytran-portfolio`, `northamerica-northeast1` |
 | Client access | none (deny-all Security Rules); access is IAM only |
 | Writers | the owner account (gcloud configuration `personal`) |
-| VPS reader | `family-config-reader@tobytran-portfolio.iam.gserviceaccount.com`, read-only (`roles/datastore.viewer`) on this database only; key at `/etc/family-app/config-reader.json` once the owner installs it |
+| VPS identity | `family-config-reader@tobytran-portfolio.iam.gserviceaccount.com` with broad project roles (Firestore user, Secret Manager accessor, Storage object admin; no per-resource conditions); key installed at `/etc/family-app/config-reader.json` |
 | CLI | `common/config/family_config.py` (Python 3.10+, standard library only, gcloud for tokens) |
 | Rule | `expense-tax-management/AGENTS.md`, section "Env and Secrets" |
 
@@ -91,8 +91,8 @@ printing values, and on the laptop always uses gcloud configuration `personal`.
    `ai-trading-env-bundle` secret resource and both accessor bindings, including the
    binding on `expense-tax-env-files`; that secret is deleted after the family-config
    rollout. If a workflow must read Firestore in CI, grant its service account
-   `roles/datastore.viewer` with the condition
-   `resource.name == "projects/tobytran-portfolio/databases/family-config"`.
+   `roles/datastore.viewer` (or `roles/datastore.user`) on `tobytran-portfolio`. Keep IAM
+   simple: project-level roles, no per-resource conditions (owner preference).
 3. **Deploy like expense.** The VPS reads Firestore itself at deploy time with
    `/etc/family-app/config-reader.json`.
    - Copy `common/config/family_config.py` with the deploy files.
@@ -120,5 +120,5 @@ printing values, and on the laptop always uses gcloud configuration `personal`.
 - Never print, log, or commit values. Names and targets are fine.
 - On the laptop, never use the default gcloud configuration (`chartflow`, a work
   account); the CLI already passes `--configuration=personal`.
-- The VPS reader key is installed by `infrastructure/gcp/family-config/install-reader-key.sh`,
-  an owner-confirmed step. If it is not installed yet, ask the owner before running it.
+- The VPS key is already installed (2026-10-05). Rotate it with
+  `infrastructure/gcp/family-config/install-reader-key.sh`, an owner-confirmed step.
