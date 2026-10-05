@@ -267,6 +267,7 @@ Every step marked **(user)** needs the user at a console or device. Record each 
 - [ ] **Step 4 (user): GCP identity for the Terraform workflow.** Run `infrastructure/cloudflare/ai-trading/bootstrap-wif.sh` with the user's `gcloud` login.
 - [ ] **Step 5 (user): GitHub environment.**
   - Create `ai-trading-production` with the vars and secrets listed in Shared Interfaces.
+  - Before saving `AI_TRADING_ACCESS_ALLOWED_EMAILS`, confirm the two emails differ within their first 29 characters. ttyd truncates the identity at 29 characters, and two emails sharing that prefix would share one terminal session.
   - `VPS_*` and the deploy SSH key can reuse the expense `production` environment's values for the same VPS.
 - [ ] **Step 6 (user): LLM keys and spend limits.**
   - One Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a $10 monthly limit.
