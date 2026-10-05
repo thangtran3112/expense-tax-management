@@ -41,9 +41,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$HEAD_REF" in
-            feature/*) ;;
+            feature/* | dependabot/*) ;;
             *)
-              echo "Pull requests to dev must originate from feature/*; got: $HEAD_REF"
+              echo "Pull requests to dev must originate from feature/* or dependabot/*; got: $HEAD_REF"
               exit 1
               ;;
           esac
