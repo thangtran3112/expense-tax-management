@@ -4,11 +4,10 @@ variable "cloudflare_account_id" {
   sensitive   = true
 }
 
-variable "cloudflare_api_token" {
+variable "state_bucket" {
   type        = string
-  description = "Cloudflare API token with Access, Tunnel, and DNS write permissions."
-  sensitive   = true
-  ephemeral   = true
+  description = "GCS bucket holding Terraform state, used to read the Zero Trust root's outputs."
+  default     = "tobytran-portfolio-tfstate"
 }
 
 variable "zone_name" {

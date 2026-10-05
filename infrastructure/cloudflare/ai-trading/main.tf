@@ -13,13 +13,21 @@ terraform {
   }
 }
 
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
-}
+provider "cloudflare" {}
 
 data "cloudflare_zone" "main" {
   filter = {
     name = var.zone_name
+  }
+}
+
+# Identity provider ID from the account-wide Zero Trust root.
+data "terraform_remote_state" "zero_trust" {
+  backend = "gcs"
+
+  config = {
+    bucket = var.state_bucket
+    prefix = "cloudflare/zero-trust"
   }
 }
 
@@ -83,19 +91,7 @@ resource "cloudflare_dns_record" "tunnel" {
   comment = "ai-trading tunnel (${each.key})"
 }
 
-data "cloudflare_zero_trust_tunnel_cloudflared_token" "ai_trading" {
-  account_id = var.cloudflare_account_id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.ai_trading.id
-}
-
 # --- Access -----------------------------------------------------------------
-
-resource "cloudflare_zero_trust_access_identity_provider" "one_time_pin" {
-  account_id = var.cloudflare_account_id
-  name       = "One-time PIN"
-  type       = "onetimepin"
-  config     = {}
-}
 
 resource "cloudflare_zero_trust_access_policy" "family" {
   account_id       = var.cloudflare_account_id
@@ -110,7 +106,7 @@ resource "cloudflare_zero_trust_access_application" "ai_trading" {
   name                      = "ai-trading"
   type                      = "self_hosted"
   session_duration          = "720h"
-  allowed_idps              = [cloudflare_zero_trust_access_identity_provider.one_time_pin.id]
+  allowed_idps              = [data.terraform_remote_state.zero_trust.outputs.one_time_pin_idp_id]
   auto_redirect_to_identity = true
   app_launcher_visible      = false
 
