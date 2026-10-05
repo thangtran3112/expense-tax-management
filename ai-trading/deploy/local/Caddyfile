@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+# Hub and terminals, like trading.tobytran.dev behind the tunnel.
+:8080 {
+	handle /u/tradingagents* {
+		reverse_proxy ta-terminal:7681 {
+			header_up Cf-Access-Authenticated-User-Email local-dev@example.test
+		}
+	}
+	handle /u/ai-hedge-fund* {
+		reverse_proxy ahf-terminal:7681 {
+			header_up Cf-Access-Authenticated-User-Email local-dev@example.test
+		}
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# Vibe-Trading, like vibe-trading.tobytran.dev.
+:8899 {
+	reverse_proxy vibe-trading:8899
+}
