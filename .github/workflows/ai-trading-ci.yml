@@ -1,0 +1,99 @@
+name: ai-trading-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ai-trading/**"
+      - "!ai-trading/plans/**"
+      - "!ai-trading/**/*.md"
+      - ".gitmodules"
+      - ".github/workflows/ai-trading-ci.yml"
+  pull_request:
+    branches: [dev]
+    paths:
+      - "ai-trading/**"
+      - "!ai-trading/plans/**"
+      - "!ai-trading/**/*.md"
+      - ".gitmodules"
+      - ".github/workflows/ai-trading-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ai-trading-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  hub:
+    name: Hub web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-trading/frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ai-trading/frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+
+  scripts:
+    name: Scripts and compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Terminal session names
+        run: sh ai-trading/deploy/upstream/terminal/test-session.sh
+      - name: Shellcheck
+        run: |
+          shellcheck ai-trading/deploy/upstream/terminal/*.sh ai-trading/deploy/ci/*.sh \
+            ai-trading/deploy/production/*.sh infrastructure/cloudflare/ai-trading/*.sh
+      - name: Validate compose files
+        run: |
+          set -euo pipefail
+          secrets="$RUNNER_TEMP/ai-trading-secrets"
+          mkdir -p "$secrets"
+          for name in tradingagents ai-hedge-fund vibe-trading cloudflared; do : >"$secrets/$name.env"; done
+          export AI_TRADING_SECRETS_DIR="$secrets"
+          export AI_TRADING_IMAGE_TAG=0123456789abcdef0123456789abcdef01234567
+          docker compose -f ai-trading/deploy/production/docker-compose.yml config --quiet
+          docker compose -f ai-trading/deploy/production/docker-compose.yml \
+            -f ai-trading/deploy/local/docker-compose.override.yml config --quiet
+
+  images:
+    name: Images and smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images
+        uses: docker/bake-action@v7
+        env:
+          TAG: ci
+        with:
+          files: |
+            ai-trading/deploy/docker-bake.hcl
+            ai-trading/deploy/docker-bake.ci.hcl
+          load: true
+      - name: Smoke tests
+        env:
+          TAG: ci
+        run: ai-trading/deploy/ci/smoke-test.sh all
