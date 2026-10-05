@@ -240,7 +240,7 @@ export interface ExpenseTable {
   currency: string;
   incurred_on: NullableDate;
   readonly tax_year: Generated<number>;
-  source: "manual" | "ocr" | "forwarded_email";
+  source: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
   status: "draft" | "ready" | "archived";
   version: Generated<number>;
   readonly created_at: GeneratedTimestamp;
@@ -418,6 +418,21 @@ export interface ProcessingJobTable {
   updated_at: GeneratedTimestamp;
   dispatched_at: NullableTimestamp;
   completed_at: NullableTimestamp;
+  dispatch_generation: Generated<number>;
+  dispatch_namespace: Generated<string>;
+}
+
+/**
+ * Singleton row (app.temporal_dispatch_routing). Runtime role has
+ * SELECT-only grants on this table; only the migrator/owner role (used by
+ * the `advance` operator command) may UPDATE it.
+ */
+export interface TemporalDispatchRoutingTable {
+  readonly singleton: Generated<boolean>;
+  readonly generation: number;
+  readonly temporal_namespace: string;
+  readonly task_queue: string;
+  readonly updated_at: GeneratedTimestamp;
 }
 
 export interface ProcessingJobDispatchOutboxTable {
@@ -549,9 +564,10 @@ export interface ExpenseSourceTable {
   readonly personal_profile_id: string | null;
   readonly business_id: string | null;
   readonly expense_id: string;
-  readonly source_type: "manual_upload" | "forwarded_email";
+  readonly source_type: "manual_upload" | "forwarded_email" | "connected_mailbox";
   readonly source_file_id: string | null;
   readonly inbound_email_id: string | null;
+  readonly mailbox_candidate_id: string | null;
   readonly metadata: JsonValue;
   readonly created_at: GeneratedTimestamp;
 }
@@ -598,6 +614,266 @@ export interface EntitlementSnapshotOutboxTable {
   readonly created_at: GeneratedTimestamp;
 }
 
+export interface TagTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  key: string;
+  name: string;
+  color: NullableText;
+  origin: "custom" | "rule";
+  status: "active" | "archived";
+  version: Generated<number>;
+  created_by_user_id: string | null;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
+export interface ExpenseTagTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly personal_profile_id: string | null;
+  readonly business_id: string | null;
+  readonly expense_id: string;
+  readonly tag_id: string;
+  source: "manual" | "rule" | "historical" | "ai";
+  confidence: string;
+  rule_version: number | null;
+  suggestion_id: string | null;
+  status: "active" | "removed";
+  version: Generated<number>;
+  applied_by_user_id: string | null;
+  removed_by_user_id: string | null;
+  applied_at: NullableTimestamp;
+  removed_at: NullableTimestamp;
+  readonly created_at: GeneratedTimestamp;
+}
+
+export interface ExpenseSpendingCategoryDecisionTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly personal_profile_id: string | null;
+  readonly business_id: string | null;
+  readonly expense_id: string;
+  prior_spending_category_id: string | null;
+  new_spending_category_id: string | null;
+  source: "manual" | "manual_baseline" | "historical" | "ai";
+  actor_user_id: string | null;
+  expense_version: number;
+  suggestion_id: string | null;
+  readonly created_at: GeneratedTimestamp;
+}
+
+export interface ExpenseEnrichmentSuggestionTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly personal_profile_id: string | null;
+  readonly business_id: string | null;
+  readonly expense_id: string;
+  readonly job_id: string;
+  readonly kind: "tag" | "spending_category" | "tax_category";
+  tag_id: string | null;
+  spending_category_id: string | null;
+  tax_category_definition_id: string | null;
+  business_tax_profile_id: string | null;
+  business_tax_profile_version: number | null;
+  taxonomy_version_id: string | null;
+  tax_year: number | null;
+  source: "historical" | "ai";
+  confidence: string;
+  evidence: ColumnType<JsonValue, JsonValue | undefined, JsonValue>;
+  evidence_hash: string;
+  status: "pending" | "accepted" | "rejected" | "superseded";
+  version: Generated<number>;
+  expense_version: number;
+  idempotency_key: string;
+  resolved_by_user_id: string | null;
+  resolved_at: NullableTimestamp;
+  readonly created_at: GeneratedTimestamp;
+}
+
+export interface EnrichmentOperationKeyTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly job_id: string;
+  readonly expense_id: string;
+  readonly kind: "tag" | "spending_category" | "tax_category" | "result";
+  readonly candidate_id: string | null;
+  readonly evidence_hash: string;
+  readonly operation_key: string;
+  readonly payload_hash: string;
+  response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
+  readonly created_at: GeneratedTimestamp;
+}
+
+export interface MailboxConnectionTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly personal_profile_id: string | null;
+  readonly business_id: string | null;
+  readonly owner_user_id: string;
+  provider: "gmail" | "outlook";
+  provider_account_id: string;
+  account_email: string;
+  status:
+    | "pending"
+    | "active"
+    | "paused"
+    | "reauth_required"
+    | "disconnecting"
+    | "revocation_pending"
+    | "revoked";
+  granted_scopes: ColumnType<string[], string[], string[]>;
+  timezone: string;
+  local_scan_time: string;
+  scan_enabled: boolean;
+  last_scan_at: NullableTimestamp;
+  next_schedule_at: NullableTimestamp;
+  vault_reference: string;
+  token_generation: Generated<number>;
+  connection_version: Generated<number>;
+  token_operation_lease_id: string | null;
+  token_operation_lease_expires_at: NullableTimestamp;
+  active_scan_run_id: string | null;
+  active_scan_lease_expires_at: NullableTimestamp;
+  /** Cursor fence columns (migration 019). Opaque beyond CAS/ordering. */
+  current_history_id: string | null;
+  current_cursor_digest: string | null;
+  pre_fence_token: string | null;
+  next_page_sequence: Generated<number>;
+  /** Fix round 2 -- explicit pre-fence/replay-in-progress state (replaces the string-tag overload of current_history_id). */
+  pre_fence_history_id: string | null;
+  /** Fix round 2 -- Gmail's own history.list continuation token; non-null means more history pages remain, cursor must not advance. */
+  history_page_token: string | null;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+  revoked_at: NullableTimestamp;
+}
+
+export interface MailboxOAuthAttemptTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly actor_user_id: string;
+  readonly state_digest: string;
+  readonly session_nonce_digest: string;
+  readonly redirect_origin: string;
+  readonly expires_at: Timestamp;
+  status: "pending" | "consumed" | "completed" | "expired" | "cancelled";
+  readonly created_at: GeneratedTimestamp;
+  consumed_at: NullableTimestamp;
+  completed_at: NullableTimestamp;
+}
+
+export interface MailboxReviewerGrantTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly user_id: string;
+  role: "reviewer" | "manager";
+  version: Generated<number>;
+  readonly created_at: GeneratedTimestamp;
+  revoked_at: NullableTimestamp;
+}
+
+export interface MailboxOperationKeyTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly connection_id: string | null;
+  readonly operation_key: string;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
+  readonly created_at: GeneratedTimestamp;
+}
+
+export interface MailboxScanRunTable {
+  readonly id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly initiated_by: string;
+  readonly entitlement_version: number;
+  readonly connection_version: number;
+  status: "pending" | "running" | "completed" | "partial" | "failed" | "skipped";
+  discovered_count: Generated<number>;
+  staged_count: Generated<number>;
+  review_count: Generated<number>;
+  duplicate_count: Generated<number>;
+  skipped_count: Generated<number>;
+  failed_count: Generated<number>;
+  error_code: NullableText;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  readonly created_at: GeneratedTimestamp;
+  started_at: NullableTimestamp;
+  completed_at: NullableTimestamp;
+}
+
+export interface MailboxCandidateTable {
+  readonly id: string;
+  readonly scan_run_id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly received_at: Timestamp;
+  readonly sender_address: string;
+  readonly sender_domain: string;
+  subject: string;
+  readonly content_hash: string;
+  attachment_manifest: ColumnType<JsonValue, JsonValue | undefined, JsonValue>;
+  classification: "receipt" | "ambiguous" | "not_receipt";
+  confidence: MoneyAmount;
+  evidence: ColumnType<string[], string[], string[]>;
+  candidate_personal_profile_id: string | null;
+  candidate_business_id: string | null;
+  status: "staged" | "review" | "queued" | "processed" | "duplicate" | "skipped" | "failed";
+  processing_job_id: string | null;
+  expense_id: string | null;
+  source_id: string | null;
+  duplicate_match_id: string | null;
+  version: Generated<number>;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  error_code: NullableText;
+  readonly provider_message_id: string;
+  provider_thread_id: string | null;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
+export interface MailboxScanPageOutcomeTable {
+  readonly id: string;
+  readonly scan_run_id: string;
+  readonly connection_id: string;
+  readonly tenant_id: string;
+  readonly page_sequence: number;
+  candidate_count: Generated<number>;
+  retry_count: Generated<number>;
+  status: "pending" | "completed" | "failed";
+  last_error_code: NullableText;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
+export interface MailboxIngestionOperationTable {
+  readonly id: string;
+  readonly tenant_id: string;
+  readonly connection_id: string;
+  readonly candidate_id: string;
+  readonly operation_kind:
+    | "issue_upload_grant"
+    | "upload_attachment"
+    | "submit_structured_result"
+    | "materialize_candidate";
+  readonly operation_key: string;
+  readonly idempotency_key: string;
+  readonly normalized_request_hash: string;
+  response_json: ColumnType<JsonValue | null, JsonValue | null | undefined, JsonValue | null>;
+  status: "pending" | "started" | "completed" | "failed";
+  version: Generated<number>;
+  error_code: NullableText;
+  readonly created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
+}
+
 export interface AppDatabase {
   readonly "app.service_metadata": ServiceMetadataTable;
   readonly "app.users": UserTable;
@@ -633,6 +909,7 @@ export interface AppDatabase {
   readonly "app.entitlement_snapshot_outbox": EntitlementSnapshotOutboxTable;
   readonly "app.processing_jobs": ProcessingJobTable;
   readonly "app.processing_job_dispatch_outbox": ProcessingJobDispatchOutboxTable;
+  readonly "app.temporal_dispatch_routing": TemporalDispatchRoutingTable;
   readonly "app.expense_files": ExpenseFileTable;
   readonly "app.upload_sessions": UploadSessionTable;
   readonly "app.export_bundles": ExportBundleTable;
@@ -644,4 +921,17 @@ export interface AppDatabase {
   readonly "app.expense_sources": ExpenseSourceTable;
   readonly "app.expense_dedup_fingerprints": ExpenseDedupFingerprintTable;
   readonly "app.expense_duplicate_matches": ExpenseDuplicateMatchTable;
+  readonly "app.tags": TagTable;
+  readonly "app.expense_tags": ExpenseTagTable;
+  readonly "app.expense_spending_category_decisions": ExpenseSpendingCategoryDecisionTable;
+  readonly "app.expense_enrichment_suggestions": ExpenseEnrichmentSuggestionTable;
+  readonly "app.enrichment_operation_keys": EnrichmentOperationKeyTable;
+  readonly "app.mailbox_connections": MailboxConnectionTable;
+  readonly "app.mailbox_oauth_attempts": MailboxOAuthAttemptTable;
+  readonly "app.mailbox_reviewer_grants": MailboxReviewerGrantTable;
+  readonly "app.mailbox_operation_keys": MailboxOperationKeyTable;
+  readonly "app.mailbox_scan_runs": MailboxScanRunTable;
+  readonly "app.mailbox_candidates": MailboxCandidateTable;
+  readonly "app.mailbox_scan_page_outcomes": MailboxScanPageOutcomeTable;
+  readonly "app.mailbox_ingestion_operations": MailboxIngestionOperationTable;
 }

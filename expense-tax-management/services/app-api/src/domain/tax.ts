@@ -252,38 +252,99 @@ export function createTaxDomain(database: Kysely<AppDatabase>): TaxDomain {
     },
     async updateProfile(input) {
       await requireRole(database, input, ["owner"]);
-      const updated = await database
-        .updateTable("app.business_tax_profiles")
-        .set({
-          ...(input.request.accountingMethod === undefined
-            ? {}
-            : { accounting_method: input.request.accountingMethod }),
-          ...(input.request.status === undefined ? {} : { status: input.request.status }),
-          version: sql<number>`version + 1`,
-          updated_at: new Date(),
-        })
-        .where("tenant_id", "=", input.tenantId)
-        .where("business_id", "=", input.businessId)
-        .where("tax_year", "=", input.taxYear)
-        .where("version", "=", input.request.expectedVersion)
-        .returningAll()
-        .executeTakeFirst();
-      if (!updated) throw DomainError.conflict();
-      return toProfile(updated);
+      return database.transaction().execute(async (transaction) => {
+        // Lock the profile row
+        const current = await transaction
+          .selectFrom("app.business_tax_profiles")
+          .select(["id", "version", "status"])
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .where("tax_year", "=", input.taxYear)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!current) throw DomainError.notFound();
+        if (current.version !== input.request.expectedVersion) throw DomainError.conflict();
+
+        const updated = await transaction
+          .updateTable("app.business_tax_profiles")
+          .set({
+            ...(input.request.accountingMethod === undefined
+              ? {}
+              : { accounting_method: input.request.accountingMethod }),
+            ...(input.request.status === undefined ? {} : { status: input.request.status }),
+            version: sql<number>`version + 1`,
+            updated_at: new Date(),
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .where("tax_year", "=", input.taxYear)
+          .where("version", "=", input.request.expectedVersion)
+          .returningAll()
+          .executeTakeFirst();
+        if (!updated) throw DomainError.conflict();
+
+        // Supersede pending tax suggestions whose stored snapshot matches this profile
+        // (profile version has changed, so snapshot is stale)
+        const now = new Date();
+        await transaction
+          .updateTable("app.expense_enrichment_suggestions")
+          .set({
+            status: "superseded",
+            resolved_at: now,
+            resolved_by_user_id: null,
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("kind", "=", "tax_category")
+          .where("business_tax_profile_id", "=", current.id)
+          .where("business_tax_profile_version", "=", input.request.expectedVersion)
+          .where("status", "=", "pending")
+          .execute();
+
+        return toProfile(updated);
+      });
     },
     async closeProfile(input) {
       await requireRole(database, input, ["owner"]);
-      const updated = await database
-        .updateTable("app.business_tax_profiles")
-        .set({ status: "closed", version: sql<number>`version + 1`, updated_at: new Date() })
-        .where("tenant_id", "=", input.tenantId)
-        .where("business_id", "=", input.businessId)
-        .where("tax_year", "=", input.taxYear)
-        .where("version", "=", input.expectedVersion)
-        .where("status", "!=", "closed")
-        .returning("id")
-        .executeTakeFirst();
-      if (!updated) throw DomainError.conflict();
+      return database.transaction().execute(async (transaction) => {
+        // Lock the profile row
+        const current = await transaction
+          .selectFrom("app.business_tax_profiles")
+          .select(["id", "version", "status"])
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .where("tax_year", "=", input.taxYear)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!current || current.status === "closed") throw DomainError.conflict();
+        if (current.version !== input.expectedVersion) throw DomainError.conflict();
+
+        const updated = await transaction
+          .updateTable("app.business_tax_profiles")
+          .set({ status: "closed", version: sql<number>`version + 1`, updated_at: new Date() })
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .where("tax_year", "=", input.taxYear)
+          .where("version", "=", input.expectedVersion)
+          .where("status", "!=", "closed")
+          .returning("id")
+          .executeTakeFirst();
+        if (!updated) throw DomainError.conflict();
+
+        // Supersede pending tax suggestions for this profile
+        const now = new Date();
+        await transaction
+          .updateTable("app.expense_enrichment_suggestions")
+          .set({
+            status: "superseded",
+            resolved_at: now,
+            resolved_by_user_id: null,
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("kind", "=", "tax_category")
+          .where("business_tax_profile_id", "=", current.id)
+          .where("status", "=", "pending")
+          .execute();
+      });
     },
     async getTreatment(input) {
       await requireRole(database, input, ["owner", "editor", "viewer"]);
@@ -299,83 +360,128 @@ export function createTaxDomain(database: Kysely<AppDatabase>): TaxDomain {
     },
     async upsertTreatment(input) {
       await requireRole(database, input, ["owner", "editor"]);
-      const expense = await database
-        .selectFrom("app.expenses")
-        .select(["tax_year", "business_id", "personal_profile_id"])
-        .where("id", "=", input.expenseId)
-        .where("tenant_id", "=", input.tenantId)
-        .where("status", "!=", "archived")
-        .executeTakeFirst();
-      if (!expense || expense.business_id !== input.businessId || expense.personal_profile_id !== null) {
-        throw DomainError.notFound();
-      }
-      const profile = await database
-        .selectFrom("app.business_tax_profiles")
-        .selectAll()
-        .where("id", "=", input.request.businessTaxProfileId)
-        .where("tenant_id", "=", input.tenantId)
-        .where("business_id", "=", input.businessId)
-        .where("tax_year", "=", expense.tax_year)
-        .where("status", "=", "active")
-        .executeTakeFirst();
-      if (!profile || profile.taxonomy_version_id !== input.request.taxonomyVersionId) {
-        throw DomainError.validation();
-      }
-      const category = await database
-        .selectFrom("app.tax_category_definitions")
-        .select("id")
-        .where("id", "=", input.request.taxCategoryDefinitionId)
-        .where("taxonomy_version_id", "=", input.request.taxonomyVersionId)
-        .where("status", "=", "active")
-        .executeTakeFirst();
-      if (!category) throw DomainError.validation();
-      const now = new Date();
-      const row = await database
-        .insertInto("app.expense_tax_treatments")
-        .values({
-          expense_id: input.expenseId,
-          tenant_id: input.tenantId,
-          business_id: input.businessId,
-          tax_year: expense.tax_year,
-          business_tax_profile_id: profile.id,
-          taxonomy_version_id: input.request.taxonomyVersionId,
-          tax_category_definition_id: category.id,
-          deductible_percent: input.request.deductiblePercent,
-          review_status: input.request.reviewStatus,
-          note: input.request.note ?? null,
-          version: 1,
-          created_by_user_id: input.actorUserId,
-          updated_by_user_id: input.actorUserId,
-          created_at: now,
-          updated_at: now,
-        })
-        .onConflict((conflict) =>
-          conflict.column("expense_id").doUpdateSet({
+      return database.transaction().execute(async (transaction) => {
+        const expense = await transaction
+          .selectFrom("app.expenses")
+          .select(["tax_year", "business_id", "personal_profile_id"])
+          .where("id", "=", input.expenseId)
+          .where("tenant_id", "=", input.tenantId)
+          .where("status", "!=", "archived")
+          .forUpdate()
+          .executeTakeFirst();
+        if (!expense || expense.business_id !== input.businessId || expense.personal_profile_id !== null) {
+          throw DomainError.notFound();
+        }
+        const profile = await transaction
+          .selectFrom("app.business_tax_profiles")
+          .selectAll()
+          .where("id", "=", input.request.businessTaxProfileId)
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .where("tax_year", "=", expense.tax_year)
+          .where("status", "=", "active")
+          .forUpdate()
+          .executeTakeFirst();
+        if (!profile || profile.taxonomy_version_id !== input.request.taxonomyVersionId) {
+          throw DomainError.validation();
+        }
+        const category = await transaction
+          .selectFrom("app.tax_category_definitions")
+          .select("id")
+          .where("id", "=", input.request.taxCategoryDefinitionId)
+          .where("taxonomy_version_id", "=", input.request.taxonomyVersionId)
+          .where("status", "=", "active")
+          .executeTakeFirst();
+        if (!category) throw DomainError.validation();
+        const now = new Date();
+        const row = await transaction
+          .insertInto("app.expense_tax_treatments")
+          .values({
+            expense_id: input.expenseId,
+            tenant_id: input.tenantId,
+            business_id: input.businessId,
+            tax_year: expense.tax_year,
             business_tax_profile_id: profile.id,
             taxonomy_version_id: input.request.taxonomyVersionId,
             tax_category_definition_id: category.id,
             deductible_percent: input.request.deductiblePercent,
             review_status: input.request.reviewStatus,
             note: input.request.note ?? null,
-            version: sql<number>`expense_tax_treatments.version + 1`,
+            version: 1,
+            created_by_user_id: input.actorUserId,
             updated_by_user_id: input.actorUserId,
+            created_at: now,
             updated_at: now,
-          }),
-        )
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return toTreatment(row);
+          })
+          .onConflict((conflict) =>
+            conflict.column("expense_id").doUpdateSet({
+              business_tax_profile_id: profile.id,
+              taxonomy_version_id: input.request.taxonomyVersionId,
+              tax_category_definition_id: category.id,
+              deductible_percent: input.request.deductiblePercent,
+              review_status: input.request.reviewStatus,
+              note: input.request.note ?? null,
+              version: sql<number>`expense_tax_treatments.version + 1`,
+              updated_by_user_id: input.actorUserId,
+              updated_at: now,
+            }),
+          )
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        // Supersede pending tax suggestions for this expense (treatment update invalidates them)
+        await transaction
+          .updateTable("app.expense_enrichment_suggestions")
+          .set({
+            status: "superseded",
+            resolved_at: now,
+            resolved_by_user_id: null,
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("expense_id", "=", input.expenseId)
+          .where("kind", "=", "tax_category")
+          .where("status", "=", "pending")
+          .execute();
+
+        return toTreatment(row);
+      });
     },
     async deleteTreatment(input) {
       await requireRole(database, input, ["owner", "editor"]);
-      const deleted = await database
-        .deleteFrom("app.expense_tax_treatments")
-        .where("expense_id", "=", input.expenseId)
-        .where("tenant_id", "=", input.tenantId)
-        .where("business_id", "=", input.businessId)
-        .returning("expense_id")
-        .executeTakeFirst();
-      if (!deleted) throw DomainError.notFound();
+      return database.transaction().execute(async (transaction) => {
+        // Lock expense for treatment delete
+        await transaction
+          .selectFrom("app.expenses")
+          .select("id")
+          .where("id", "=", input.expenseId)
+          .where("tenant_id", "=", input.tenantId)
+          .forUpdate()
+          .executeTakeFirst();
+
+        const deleted = await transaction
+          .deleteFrom("app.expense_tax_treatments")
+          .where("expense_id", "=", input.expenseId)
+          .where("tenant_id", "=", input.tenantId)
+          .where("business_id", "=", input.businessId)
+          .returning("expense_id")
+          .executeTakeFirst();
+        if (!deleted) throw DomainError.notFound();
+
+        // Supersede pending tax suggestions for this expense
+        const now = new Date();
+        await transaction
+          .updateTable("app.expense_enrichment_suggestions")
+          .set({
+            status: "superseded",
+            resolved_at: now,
+            resolved_by_user_id: null,
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("expense_id", "=", input.expenseId)
+          .where("kind", "=", "tax_category")
+          .where("status", "=", "pending")
+          .execute();
+      });
     },
   };
 }

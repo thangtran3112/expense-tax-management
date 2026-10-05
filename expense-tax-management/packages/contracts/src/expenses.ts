@@ -13,8 +13,48 @@ export const DecimalMoneySchema = z
 export const ExpenseStatusSchema = z.enum(["draft", "ready", "archived"]);
 export type ExpenseStatus = z.infer<typeof ExpenseStatusSchema>;
 
-export const ExpenseSourceSchema = z.enum(["manual", "ocr", "forwarded_email"]);
+/**
+ * Lightweight tag chip included on expense responses. Carries only
+ * the fields needed to render a chip (id, name, optional color).
+ * Only active associations + active tag definitions are projected.
+ */
+export const ExpenseTagChipSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string().min(1).max(100),
+  color: z.string().nullable(),
+});
+export type ExpenseTagChip = z.infer<typeof ExpenseTagChipSchema>;
+
+// Phase 3D-C Task 3: connected-mailbox-sourced expenses (attachment OCR or
+// structured-HTML extraction) get their own source value -- distinct from
+// "ocr"/"forwarded_email" so the coarse expense.source categorization
+// doesn't misattribute provenance; the authoritative connected-mailbox
+// marker is app.expense_sources.source_type='connected_mailbox' plus
+// mailbox_candidate_id (migration 020), this is the lighter-weight sibling
+// column. Migration 021 widens the DB CHECK constraint to match.
+export const ExpenseSourceSchema = z.enum([
+  "manual",
+  "ocr",
+  "forwarded_email",
+  "connected_mailbox",
+]);
 export type ExpenseSource = z.infer<typeof ExpenseSourceSchema>;
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #6) -- connected-mailbox
+ * provenance for the Office expense-detail "Source" block. Metadata
+ * only: sender address, received date, the mailbox account it arrived
+ * through, and whether it is still pending Phase 3B duplicate review --
+ * never message body/attachment bytes/other provider content. Present
+ * (non-null) only when `source === "connected_mailbox"`.
+ */
+export const ExpenseMailboxProvenanceV1Schema = z.strictObject({
+  senderAddress: z.email().max(320),
+  receivedAt: TimestampSchema,
+  mailboxAccountEmail: z.email().max(320),
+  pendingDuplicateReview: z.boolean(),
+});
+export type ExpenseMailboxProvenanceV1 = z.infer<typeof ExpenseMailboxProvenanceV1Schema>;
 
 const ExpenseScopeFields = {
   personalProfileId: z.uuid().nullable().optional(),
@@ -63,10 +103,13 @@ export const ExpenseSchema = z.strictObject({
   incurredOn: DateOnlySchema,
   taxYear: z.number().int().min(1_900).max(9_999),
   source: ExpenseSourceSchema,
+  mailboxProvenance: ExpenseMailboxProvenanceV1Schema.nullable(),
   status: ExpenseStatusSchema,
   version: VersionSchema,
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
+  /** Active tag chips attached to this expense (sorted by name asc, id asc). */
+  tags: z.array(ExpenseTagChipSchema).default([]),
 });
 export type Expense = z.infer<typeof ExpenseSchema>;
 

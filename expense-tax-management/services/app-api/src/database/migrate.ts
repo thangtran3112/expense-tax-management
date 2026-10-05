@@ -7,7 +7,7 @@ import { Pool } from "pg";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 
-function requiredMigrationDatabaseUrl(value: string | undefined): string {
+export function requiredMigrationDatabaseUrl(value: string | undefined): string {
   const migrationDatabaseUrl = value?.trim();
   if (!migrationDatabaseUrl) {
     throw new Error(
@@ -16,6 +16,25 @@ function requiredMigrationDatabaseUrl(value: string | undefined): string {
   }
 
   return migrationDatabaseUrl;
+}
+
+/**
+ * Create a Kysely database connection using migrator credentials.
+ * Exported for use in integration tests that need to call migration
+ * functions (e.g. down()) directly without going through the migration
+ * tracking system. Callers are responsible for calling destroy() on the
+ * returned instance.
+ */
+export function createMigratorDatabase(migrationDatabaseUrl: string): Kysely<unknown> {
+  return new Kysely<unknown>({
+    dialect: new PostgresDialect({
+      pool: new Pool({
+        connectionString: migrationDatabaseUrl,
+        max: 1,
+        connectionTimeoutMillis: 5_000,
+      }),
+    }),
+  });
 }
 
 export async function runMigrations(

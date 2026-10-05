@@ -102,3 +102,27 @@ def test_worker_config_allows_optional_secrets_to_be_absent():
     assert config.clerk.publishable_key is None
     assert config.clerk.secret_key is None
     assert config.clerk.webhook_signing_secret is None
+
+
+# ---------------------------------------------------------------------------
+# Enrichment M2M scope: all three clients share CLERK_APP_MACHINE_SECRET_KEY
+# ---------------------------------------------------------------------------
+
+
+def test_worker_config_enrichment_clients_use_same_machine_key():
+    """Enrichment input/result clients share CLERK_APP_MACHINE_SECRET_KEY.
+
+    No separate enrichment secret keys exist in config. The factories create
+    separate CachedM2MTokenProvider instances per scope using the single
+    CLERK_APP_MACHINE_SECRET_KEY and CLERK_APP_SERVICE_SUBJECT.
+    This test asserts the config field does NOT exist (no invented key).
+    """
+    config = worker_config_from_env(ENV)
+    assert not hasattr(config.clerk, "enrichment_input_machine_secret_key"), (
+        "Invented config key must not exist; enrichment clients reuse CLERK_APP_MACHINE_SECRET_KEY"
+    )
+    assert not hasattr(config.clerk, "enrichment_result_machine_secret_key"), (
+        "Invented config key must not exist; enrichment clients reuse CLERK_APP_MACHINE_SECRET_KEY"
+    )
+    # The shared key is present under its real name
+    assert config.clerk.app_machine_secret_key == "ak_test_app_machine_secret"

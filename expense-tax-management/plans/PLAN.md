@@ -1,349 +1,143 @@
-# 📋 Expense Tax Management — Master Plan
+# Expense Tax Management - Master Plan
 
-> **Project**: Expense Tax Management System (monorepo)
-> **Inspired by**: [TaxHacker](https://github.com/vas3k/TaxHacker) (v0.8.5, Next.js + Prisma + PostgreSQL)
-> **Status**: Local Phase 0 implementation archived. Private Clerk production auth/deploy live. Pending: invited-user signup, PostgreSQL identity/operator mappings, webhook, authenticated smoke tests.
-> **Last Updated**: 2026-09-11
+> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-6 and Task 7 Stage A merged, Task 7 Stage B source merged (TypeScript worker idle in production Compose); operator cutover (shared Temporal activation, release, advance, drain) and Stage C Python removal remain. Phase 3C implemented on `dev`, not deployed. Phase 3D-A, 3D-B, and 3D-C merged; none deployed, operator activation pending. VPS backup/restore tooling merged, operator activation pending. Env and secrets for all family-app apps live in Firestore `family-config` (`common/config/family_config.py`); the production deploy path that reads it ships with the next release.
+> **Last updated:** 2026-10-04
+> **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 
----
+## Handoff
 
-## 🎯 Vision
+- Runtime migration Tasks 1-6 and Task 7 Stage A merged (through PR #12); Task 7 Stage B source merged (#14) -- `workflow-worker` now ships idle in production Compose alongside `ai-worker`, routed by the data-driven dispatch-routing fence (generation 1 = Python, until an operator runs `advance`). Remaining: the Stage B operator cutover sequence (shared Temporal activation, non-production smoke, `advance`, drain, schedule migration), then Stage C Python removal.
+- Phase 3D-A merged (#15), Phase 3D-B merged (#16), Phase 3D-C merged (#17). All three remain undeployed and inert in production (`MAILBOX_FEATURE_ENABLED` unset); 3D-B/3D-C production activation additionally requires the runtime migration Task 7 operator cutover above.
+- VPS encrypted backup/restore tooling merged (#13); production activation (bucket/IAM provisioning, first real backup, operator restore rehearsal) is operator-only and pending.
+- Execute Phase 3D-A, Phase 3D-B, then Phase 3D-C only after Phase 3C completes.
+- Work on `feature/toby` from current `origin/dev`; create a separate worktree only when explicitly requested.
+- Merge only through a pull request to protected `dev`; required quality CI must pass. Integration CI is advisory and must be reported when red.
+- `main` remains production-only. Merges to `dev` never deploy production.
+- Read `expense-tax-management/AGENTS.md` before implementation.
+- Ordered owner runbook for activating everything below in production: [production-activation-runbook.md](production-activation-runbook.md).
 
-A self-hosted, AI-powered expense management system for households, freelancers, and small businesses, enabling:
-- **Focused receipt capture** through a phone/tablet PWA with camera, offline queue, file upload, and secure email forwarding
-- **Profile-aware expense attribution** where one tenant has one Personal profile and multiple small businesses with explicit memberships
-- **Project cost analysis** for business clients and internal initiatives without treating projects as tax entities
-- **US-federal tax preparation and deterministic export** by business and tax year, with no direct tax filing
-- **Laptop-focused office workflows** for dashboards, dense expense review, tax analysis, search, and exports
-- **Platform-operated AI Foundry** for provider/model routing, curated user modes, secrets, health, and per-tenant quotas
-- **Tiered features**: forwarding for every plan; connected mailbox scans and AI search as premium entitlements/add-ons
-- **Multi-modal search**: basic SQL/full-text for all plans, with premium semantic and natural-language search
-- **Durable Python Temporal workflows** for OCR, AI, email ingestion, deduplication, auto-tagging, and later graph enrichment
+## Product Goal
 
----
+Self-hosted expense management for households, freelancers, and small businesses:
 
-## 🏗️ Architecture Overview
+- Phone/tablet receipt capture and forwarded or connected-mailbox intake.
+- Explicit Personal or Business expense scope with membership authorization.
+- Project cost analysis without treating projects as tax entities.
+- US federal tax preparation and deterministic exports; no direct filing.
+- Office review for expenses, duplicates, tags, tax categories, and mailbox candidates.
+- Foundry-owned AI routing and quotas, with no user-managed provider keys.
 
-```text
-Capture PWA ---------\
-                      +--> App API (TypeScript, Fastify, Zod) --> app PostgreSQL
-Office Web -----------/              |
-                                     +--> Temporal TypeScript client
-                                               |
-                                               v
-                                      Python Temporal AI Worker --> GCS
-                                                |             |
-                                                |             +--> App API callbacks
-                                                +--> Foundry internal API
-                                                +--> Secret Manager (route-scoped reads)
-
-Foundry Web ----------------> Foundry Service (TypeScript, Fastify, Zod)
-                                      |                 |
-                                      v                 v
-                              foundry PostgreSQL   Secret Manager
-```
-
-Capture, Office, and Foundry are separate Next.js applications. App API owns customer-domain persistence. Foundry owns AI catalog, routing, quotas, and telemetry. Python workers own durable workflow execution and AI/data processing, but do not mutate service-owned tables directly.
-
-Approved platform architecture: [Phase 0I Polyglot Platform Rebaseline](sub-plans/phase-0i-polyglot-platform-rebaseline-design.md). Phase 0J domain architecture: [Personal, Business, Project, and Tax Domain Design](sub-plans/phase-0j-personal-business-tax-domain-design.md). All four Phase 0J local waves are complete; infrastructure gate remains.
-
----
-
-## 🗂️ Milestones & Phases
-
-### Milestone 0 — Core Expense Management (MVP) ⬅️ **CURRENT FOCUS**
-> **Goal**: Rebaseline service ownership, then deliver capture, business-aware expenses, tax preparation/export, Foundry controls, and split frontends.
-
-| Phase | Description | Status | Sub-Plan |
-|-------|-------------|--------|----------|
-| **0** | Core implementation baseline | ✅ Archived complete | See phase sub-plans and archived task reports. |
-
----
-
-### Milestone 1 — CI/CD, Deployment & API Gateway
-> **Goal**: Automated polyglot CI, reproducible container deployment, and defense-in-depth gateway authentication. App API and Foundry still enforce service authorization and resource ownership.
-
-| Phase | Description | Status | Sub-Plan |
-|-------|-------------|--------|----------|
-| **1A** | Polyglot GitHub Actions CI | ✅ Archived complete | [implementation](sub-plans/phase-1a-polyglot-ci-implementation.md) |
-| **1B** | Private production auth/deployment | 🟡 Live; user mappings and smoke tests pending | [implementation](sub-plans/phase-1b-production-cicd-implementation.md) · [design](sub-plans/phase-1b-production-cicd-design.md) |
-| **1C** | Defense-in-Depth Gateway Authentication (revised) | ⚪ Replan after 0I; release gate | [phase-1c-gateway-auth.md](sub-plans/phase-1c-gateway-auth.md) |
-
----
-
-### Milestone 3 — Premium Ingestion Expansion & Auto-Tagging
-> **Goal**: Expand Phase 0L/0P workflows with premium connected-mailbox scanning, cross-channel deduplication, auto-tagging, and enrichment.
-
-| Phase | Description | Sub-Plan |
-|-------|-------------|----------|
-| **3A** | Advanced Temporal Workflow Expansion (foundation moved to 0L) | [phase-3a-temporal-setup.md](sub-plans/phase-3a-temporal-setup.md) |
-| **3B** | Deduplication & Conflict Resolution | [phase-3b-deduplication.md](sub-plans/phase-3b-deduplication.md) |
-| **3C** | Auto-Tagging & Categorization Pipeline | [phase-3c-auto-tagging.md](sub-plans/phase-3c-auto-tagging.md) |
-| **3D** | Premium Connected Mailbox Scanning (Gmail, later Outlook) | [phase-3d-email-scanning.md](sub-plans/phase-3d-email-scanning.md) |
-
----
-
-### Milestone 6 — Basic Search & Premium AI Query
-> **Goal**: Keep SQL/full-text search broadly available; gate semantic and natural-language AI search by tenant entitlement and monthly Foundry quota.
-
-| Phase | Description | Sub-Plan |
-|-------|-------------|----------|
-| **6A** | Full-Text & Advanced SQL Search (base feature) | [phase-6a-sql-search.md](sub-plans/phase-6a-sql-search.md) |
-| **6B** | Semantic Search (premium `ai_search`) | [phase-6b-semantic-search.md](sub-plans/phase-6b-semantic-search.md) |
-| **6C** | Natural-Language AI Query (premium; trial 20/month) | [phase-6c-ai-query.md](sub-plans/phase-6c-ai-query.md) |
-
----
-
-### Milestone 9 — Graph RAG & Knowledge Graph
-> **Goal**: Build a temporal knowledge graph of expenses for relational, contextual queries.
-
-| Phase | Description | Sub-Plan |
-|-------|-------------|----------|
-| **9A** | Neo4j + Graphiti Setup | [phase-9a-graph-setup.md](sub-plans/phase-9a-graph-setup.md) |
-| **9B** | Expense Graph Ingestion | [phase-9b-graph-ingestion.md](sub-plans/phase-9b-graph-ingestion.md) |
-| **9C** | Graph Search & Query API | [phase-9c-graph-search.md](sub-plans/phase-9c-graph-search.md) |
-
----
-
-### Milestone 12 — Mobile App (Deferred — PWA First)
-> **Goal**: Dedicated mobile app targeting Android (and iOS). We may use Flutter for the Android app; we are not decided yet and it may not be Expo React Native. PWA in Phase 0F covers mobile scanning initially.
-
-| Phase | Description | Sub-Plan |
-|-------|-------------|----------|
-| **12A** | Mobile App Architecture & Setup (Flutter evaluation for Android) | [phase-12a-android-setup.md](sub-plans/phase-12a-android-setup.md) |
-| **12B** | Mobile Camera & Receipt Capture | [phase-12b-android-camera.md](sub-plans/phase-12b-android-camera.md) |
-| **12C** | Mobile API Sync & Offline Mode | [phase-12c-android-sync.md](sub-plans/phase-12c-android-sync.md) |
-
----
-
-## 🧰 Technology Stack (TypeScript APIs + Python AI Workers)
-
-| Layer | Technology | Version | Rationale |
-|-------|-----------|---------|-----------|
-| **Client Frontends** | Three Next.js applications | **16.3+** | Separate Capture PWA, Office Web, and Foundry Web responsibilities. |
-| **UI Library** | React | **19.2+** | Component state, optimistic UI updates, transitions |
-| **Styling** | Tailwind CSS + Radix UI | **v4.3+** | CSS-first `@theme` engine, sleek dark mode, mobile responsiveness |
-| **PWA Engine** | `@serwist/next` | Latest | Service Worker shell caching, offline receipts, camera permissions |
-| **Customer App API** | Node.js + Fastify + Zod | Current LTS / latest compatible | IO-focused customer API, runtime schemas, typed contracts, portable serverless adapter. |
-| **Foundry Service** | Node.js + Fastify + Zod | Current LTS / latest compatible | Isolated provider/model catalog, quotas, reservations, telemetry, and platform APIs. |
-| **Contract Source** | Zod v4 -> OpenAPI/JSON Schema | Current | Generates frontend clients and Python Pydantic DTOs; no manually duplicated contracts. |
-| **Python Runtime** | Python | **3.14 / 3.13** | Temporal workflows, OCR/AI, image/PDF processing, and future Graphiti. |
-| **TypeScript Data Access** | PostgreSQL driver + service-owned query/migration layer | Current | App API and Foundry own separate schemas; exact library is selected and validated in Phase 0I. |
-| **Python Validation** | Generated Pydantic v2 DTOs | **2.x** | Validates cross-language workflow/internal API payloads generated from canonical schemas. |
-| **Primary Database** | PostgreSQL + pgvector | **Postgres 17+** (`pgvector:pg17`) | ACID storage, native `tsvector` FTS, HNSW vector similarity |
-| **Workflow Engine** | Temporal TypeScript client + Python SDK + Server | Current compatible releases | TypeScript starts named workflows; Python executes durable workflows and activities on dedicated queues. |
-| **Graph Framework** | Graphiti (`graphiti-core`) | **0.30.1+** | Native in-process Python integration, temporal knowledge graph |
-| **Graph Database** | Neo4j Community / FalkorDB | **Neo4j 5.26+** / **FalkorDB** | Temporal relationship storage, direct Cypher queries via Python driver |
-| **OCR & Vision AI** | Python adapters behind Foundry routes | Latest | Curated user modes, per-tenant operation/model quotas, internal provider cost controls. |
-| **Email Scanning** | Gmail API, then Microsoft Graph adapter | Latest compatible | Premium connected-mailbox discovery through Python Temporal activities. |
-| **File Storage** | Google Cloud Storage (Node.js + Python SDKs) | Current compatible | App API issues signed upload sessions; workers read immutable objects through route-scoped access. |
-| **Image Processing** | Pillow / OpenCV | Latest | In-process receipt deskewing, edge detection, and compression |
-| **Gateway / Ingress** | Traefik | **v3.3+** | Automatic HTTPS, routing, coarse access policy, rate limiting, and service discovery. Services retain authorization enforcement. |
-| **Containerization** | Docker + Docker Compose | **Compose v2.33+** | Dev on macOS, Prod on Ubuntu self-hosted |
-| **Future Mobile** | Flutter (Dart) | **3.27+** | Prime candidate for future Android app (single codebase for Android & iOS, native camera, undecided yet and may not be Expo React Native) |
-
----
-
-## 📁 Monorepo Structure (Rebaseline Target)
+## Current Architecture
 
 ```text
-family-app/
-|-- infrastructure/                 # Shared PostgreSQL, Temporal, gateway, observability
-`-- expense-tax-management/
-    |-- frontend/
-    |   |-- capture-web/             # Phone/tablet Next.js PWA
-    |   |-- office-web/              # Laptop Next.js reporting/tax/export app
-    |   `-- foundry-web/             # Platform-operator Next.js app
-    |-- services/
-    |   |-- app-api/                 # TypeScript Fastify customer/domain API
-    |   |-- foundry-service/         # TypeScript Fastify AI control plane
-    |   `-- ai-worker/               # Python Temporal workflows and AI activities
-    |-- packages/contracts/          # Canonical Zod contracts and generated schemas
-    |-- common/python/expense-contracts/ # Generated Pydantic transport artifacts
-    |-- plans/
-    |-- opencode.json
-    `-- .opencode/
+Capture Web -----\
+                  +--> App API (Fastify/Zod/Kysely) --> app PostgreSQL
+Office Web ------/                |
+                                  +--> Temporal TypeScript client
+                                             |
+                                             v
+                                  Python Temporal worker --> signed storage adapter
+                                                              (local now; GCS pending)
+                                             |
+                                             +--> App API callbacks
+                                             +--> Foundry internal API
+
+Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
+                                  |
+                                  +--> foundry PostgreSQL
+                                  +--> Secret Manager
 ```
 
----
+- App API owns all customer-domain persistence.
+- Foundry owns provider catalog, routing, quotas, reservations, and telemetry.
+- Python owns durable workflows and data processing, never App or Foundry database writes.
+- Zod contracts are canonical; generated TypeScript/Python artifacts are read-only.
+- `expense-service/` and `frontend/web/` are transitional legacy surfaces and remain untouched.
 
-## 🔑 Key Design Decisions
+## Completed Phases
 
-### 1. Three Next.js Clients + TypeScript APIs + Python Workers
-- **Decision**: Build separate Capture, Office, and Foundry Next.js applications. Use TypeScript Fastify services for HTTP APIs and database ownership. Keep Python for Temporal and AI/data-processing workers.
-- **Client role**: Presentation-only applications consume generated clients from service OpenAPI documents.
-- **TypeScript role**: App API owns customer-domain behavior and data; Foundry owns AI catalog, routing, quotas, and telemetry.
-- **Python role**: Durable workflows, OCR/LLM execution, image/PDF processing, premium mailbox discovery, and later Graphiti. Workers submit idempotent results through internal APIs rather than writing service tables.
-- **What we adopt from TaxHacker**:
-  - UI components and layout patterns (Radix UI + Tailwind)
-  - Data model concepts (User, Expense, File, Category, Project)
-  - Extraction prompts and receipt field structures
+- **Phase 0 - Core baseline:** TypeScript service rebaseline, Personal/Business/tax domain, plans and entitlements, Foundry catalog and quotas, Temporal worker, OCR, uploads, reports/exports, forwarded intake, Capture/Office/Foundry frontends, and UI gates complete.
+- **Phase 1A - Polyglot CI:** Contracts, services, workers, and frontends run in GitHub Actions; integration coverage remains visible as a separate job.
+- **Phase 1B - Private production auth/deployment:** Six immutable images deploy to VPS through GitHub OIDC/WIF and one Secret Manager bundle. Clerk identities, PostgreSQL mappings, signed webhook, and authenticated smoke verification complete.
+- **Phase 1C - Gateway hardening:** Cloudflare free-tier Tunnel/DNS, explicit host/path ingress, loopback-only origins, bounded application rate limits/body limits, security headers, and fail-closed route checks complete.
+- **Phase 1D - Protected development:** `dev` is default and protected; `feature/* -> dev` PRs require `Contracts, services, workers, frontends`; integration is advisory; production deployment remains `main`-only.
+- **Phase 3B - Deduplication:** Scoped provenance, deterministic duplicate evidence, pending-review matches, transactional resolution, Office review, and production deployment complete.
 
-### 2. Graph RAG: Native Python Graphiti
-- **Decision**: Run [Graphiti](https://github.com/getzep/graphiti) natively in isolated Python worker activities.
-- **Rationale**: No separate Graphiti sidecar is needed. Workers use the native graph driver and return versioned results through App API callbacks; they never read or mutate App API tables directly.
-- **Graph DB choice**: Follow Graphiti's preferred backend (currently Neo4j 5.26+ or FalkorDB).
+## Remaining Work
 
-### 3. Search Architecture (Layered)
-- **Layer 1 — SQL Filters**: PostgreSQL exact filters (date, amount, category, project, tags) through the App API service-owned data layer
-- **Layer 2 — Full-Text Search**: PostgreSQL `tsvector` for keyword search in receipt text
-- **Layer 3 — Semantic Search**: pgvector embeddings for similarity search ("expenses like my office supplies")
-- **Layer 4 — Graph Search**: Graphiti/Neo4j for relational queries ("What did I buy at Costco for my home office?")
-- **Layer 5 — AI Query**: LLM rewrites natural language → structured query plan dispatched to layers 1-4
+| Order | Phase | Status | Canonical documents |
+|---|---|---|---|
+| Parallel | **TypeScript Temporal worker migration** | Tasks 1-6 and Task 7 Stage A merged (#12); Task 7 Stage B source merged (#14, `workflow-worker` idle in production Compose); remaining: operator cutover (shared Temporal activation, release, advance, drain) then Stage C Python removal | [migration plan](sub-plans/runtime-typescript-temporal-migration.md) / [historical handoff](HANDOFF.md) |
+| Parallel | **Local Clerk development bootstrap** | Development credentials, M2M checks, local Compose stack (PostgreSQL/Temporal/both workers), and a reproducible dual-generation worker smoke complete; local frontend sign-in and local Clerk webhook remain owner-action-required | [sub-plan](sub-plans/local-clerk-development-bootstrap.md) |
+| Parallel | **VPS encrypted backup and restore tooling** | Merged (#13); production activation (bucket/IAM provisioning, first backup, operator restore rehearsal) pending | [plan](sub-plans/vps-backup-and-restore.md) |
+| 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
+| 2 | **3D-A - Mailbox broker and connection lifecycle** | Merged (#15); not deployed; operator activation pending | [shared spec](../../docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md) / [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md) |
+| 3 | **3D-B - Mailbox discovery and review** | Merged (#16); not deployed; production use additionally requires the runtime migration Task 7 operator cutover since 3D workflows run only on the TypeScript worker | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md) |
+| 4 | **3D-C - Mailbox ingestion and provenance** | Merged (#17); not deployed; production use additionally requires runtime migration Task 7 cutover and 3D-A activation | [plan](../../docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md) |
+| Later | **6A/6B/6C - SQL, semantic, and AI search** | Deferred; replan before execution | `plans/sub-plans/phase-6*.md` |
+| Later | **9A/9B/9C - Graph foundation, ingestion, and search** | Deferred; replan before execution | `plans/sub-plans/phase-9*.md` |
+| Later | **12A/12B/12C - Mobile application** | Deferred; framework decision pending | `plans/sub-plans/phase-12*.md` |
 
-### 4. Ingestion Pipeline: TypeScript Client + Temporal Python Worker
-- **Decision**: App API starts named workflows through the Temporal TypeScript client; dedicated Python task queues execute workflows and AI activities.
-- **Rationale**: API and persistence remain TypeScript-owned while Python keeps its AI ecosystem. JSON-compatible generated contracts and internal idempotent callbacks form the language boundary.
+## Required Sequence
 
-### 5. Email Receipt Scanning: Provider Adapters + Temporal Schedules
-- **Decision**: Premium connected scanning starts with the official Gmail API Python client; Microsoft Graph follows through the same worker adapter contract. Temporal schedules orchestrate discovery.
-- **Rationale**: Cross-channel dedup: when a user scans a receipt manually and the same receipt arrives via email, the system detects a Personal/business-scoped duplicate and links provenance without crossing profile authorization boundaries.
+1. Phase 3C creates App migration `016` and `ExpenseEnrichmentWorkflow`.
+2. Runtime migration Task 7 Stage A takes App migration `017`.
+3. Phase 3D-A creates mailbox migration `018` and a VPS-container mailbox broker in the Expense production Compose, with a dedicated PostgreSQL token-vault database/roles.
+4. Phase 3D-B creates discovery migration `019` and opaque Temporal discovery orchestration on the TypeScript workflow worker.
+5. Phase 3D-C creates ingestion migration `020` and direct broker-to-App materialization.
+6. 3D-A source may merge to `dev` once Phase 3C is in; production activation of 3D-B/C requires runtime migration Task 7 cutover (`sub-plans/runtime-typescript-temporal-migration.md`), since 3D workflows run only on the TypeScript worker.
+7. Production rollout for Phase 3C/3D requires separate release planning and explicit deployment approval.
 
-### 6. File Storage: Google Cloud Storage
-- **Decision**: GCS over local filesystem
-- **Rationale**: Scalable, CDN-ready, handles large receipts/PDFs, lifecycle policies for cost management
-- **Local dev**: Use a GCS emulator or fake object-storage adapter behind the same signed-upload contract.
+### 3D-A Operator Activation (post-merge, pre-production)
 
-### 7. Tenant, Business, Project, and Tax Boundaries
-- **Decision**: Tenant is subscription/account boundary. Tenant contains one Personal profile and one or more small businesses. Users require explicit membership for Personal or each business; tenant administration grants no implicit expense access.
-- **Implementation**: Business owns tax profile and tax reporting. Project belongs to one business and exists only for client/job cost analysis. Spending category and tax category are separate concepts.
-- **Active profile**: Login selects Personal or a business for UI context; every mutation still carries explicit IDs and passes server authorization.
+3D-A source is feature-complete and phase-verified on `dev` (pending merge) but the mailbox feature stays fully inert in production (`MAILBOX_FEATURE_ENABLED` unset/false) until an operator explicitly completes every item below, in order:
 
-### 8. Deployment: Ubuntu Self-Hosted + Docker
-- **Decision**: All deployable services (Next.js, Fastify, Python worker, PostgreSQL, FalkorDB, Temporal, and Traefik) run via Docker Compose on an Ubuntu VPS. Graphiti remains a Python library, not a separate service.
-- **Dev**: macOS (this MacBook) with Docker Desktop
-- **Prod**: OVH VPS (12 GB RAM), portable to another VPS or serverless-container provider via IaC (see [ROADMAP.md](ROADMAP.md)).
-- **Gateway**: Traefik API gateway in front of all services for routing, automatic TLS, gateway-level AuthN/AuthZ (ForwardAuth), rate limiting, and zero-config Docker service discovery.
+1. **Vault bootstrap** — run `deploy/production/bootstrap-mailbox-vault-db.sh` against the production Postgres cluster to create the token-vault database and its separate runtime (DML-only) / migration (DDL-only) roles. Operator-only; never run by normal deploy.
+2. **Clerk mailbox identities** — provision the three real machine identities (`app-api-mailbox`, `workflow-worker-mailbox`, `mailbox-broker-app`) in production Clerk, then store their audience, subjects, and machine secret keys in the Firestore production profile (`common/config/family_config.py set expense-tax-management/production <NAME>`).
+3. **Google OAuth client** — create the production Google OAuth 2.0 client (Gmail readonly scope only) and store `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REDIRECT_URI` in the same profile.
+4. **Production profile with `MAILBOX_FEATURE_ENABLED=true`** — set every remaining mailbox key in `expense-tax-management/production` (vault keys, broker URLs, vault database URLs, and `MAILBOX_SERVICE_TOKEN_*`/`MAILBOX_SERVICE_JWKS_URL` equal to the Clerk values), then set `MAILBOX_FEATURE_ENABLED` to `true` last. `deploy.sh` (`validate_required_values`) refuses an enabled profile with missing or mismatched values.
+5. **Cloudflare Terraform apply** — run `terraform plan`/`apply` in `infrastructure/cloudflare/expense-tax/` (via `.github/workflows/expense-tax-cloudflare.yml`'s production-environment, manually-dispatched job) to create the `expense-mailbox.tobytran.dev` DNS record and Tunnel ingress rule for `/oauth/google/callback`.
 
-### 9. AI Foundry, Curated Modes, and Quotas
-- **Decision**: Platform operators configure providers, secret references, models, curated modes, routing, quotas, and safety limits in Foundry.
-- **User contract**: Tenant users see curated modes and remaining jobs only. They never manage provider keys, model IDs, routes, or arbitrary prompts.
-- **Metering**: One provider-accepted receipt/document consumes at most one OCR product credit. One provider-accepted premium AI-search request consumes at most one search credit. Internal retries/calls are separately logged without charging another product credit.
-- **Trial**: AI search permits 20 shared consumed tenant requests per calendar month.
+3D-B/3D-C source may also merge to `dev` once implemented, but their workflows' production activation additionally depends on runtime migration Task 7 cutover (3D workflows run only on the TypeScript worker) — independent of, and in addition to, the 3D-A list above.
 
-### 10. Split Frontend Responsibilities
-- **Capture PWA**: Phone/tablet camera, files, offline queue, quick review, Personal/business context, curated OCR mode, and secure forwarding address.
-- **Office Web**: Laptop dashboard, ledger, businesses, projects, tax preparation, exports, inbox controls, plans, and premium AI search.
-- **Foundry Web**: Platform-only provider/model/mode/quota/health/audit operations with separate operator and quota-reconciler permissions.
+### 3D-B Operator Activation (additional, after the 3D-A list above)
 
-### 11. Email Receipt Tiers
-- **Forwarding**: Every plan can forward to one physical inbound route using opaque virtual tokens bound to tenant, Personal/business profile, and verified sender.
-- **Connected scanning**: Gmail/Outlook mailbox access requires Team/Enterprise entitlement or premium add-on.
-- **Security**: Webhook signatures, sender verification, email authentication results, quarantine, rate limits, attachment validation, malware scanning, deduplication, and token rotation run before OCR.
+3D-B's scheduled scans do not start themselves: nothing calls `ensureMailboxSchedule` automatically (by design — reconciliation over import-time creation). After `MAILBOX_FEATURE_ENABLED` is turned on and runtime migration Task 7 cutover has happened, an operator must run `node dist/temporal/mailbox-schedule-reconcile.js reconcile` (`services/app-api/src/temporal/mailbox-schedule-reconcile.ts`) once to create the daily `02:00` Temporal Schedule for every existing active/scan-enabled connection; re-running it later is safe (idempotent) and is how a newly-connected mailbox's schedule gets created going forward until a startup hook replaces this manual step.
 
-### 12. Tax Product Boundary
-- **Decision**: Prepare, review, and export US-federal business expense records. Never submit federal/state returns or store e-file credentials.
-- **Integration path**: Canonical deterministic bundle first; tax-software-compatible adapters or connected apps later.
+### 3D-C Operator Activation (additional, after the 3D-A/3D-B lists above)
 
-### 13. Mobile Strategy: Next.js PWA First, Flutter Candidate for Future Android App
-- **Decision**: Build the web app as a client-side **PWA (Progressive Web App)** with camera access for receipt scanning on mobile. In the future (Milestone 12), for a dedicated mobile app, we **may use Flutter for the Android app (and may not be Expo React Native, as we are not decided yet)**.
-- **PWA capabilities**: HTML5 camera capture (`getUserMedia` and `<input capture="environment">`), offline indicator, home screen install, push notifications.
-- **Flutter consideration**: Generated OpenAPI contracts make mobile transport language-neutral. Flutter remains a candidate for high-performance camera/document scanning and offline storage; framework selection stays deferred until Milestone 12.
+3D-C source is feature-complete and phase-verified against real PostgreSQL (`test/integration/app-domain-3d-c-mailbox.test.ts`, gated `PHASE_3D_C_T7_INTEGRATION=1`, wired into the zero-skip CI chain), but production ingestion stays inert until, in addition to the 3D-A/3D-B activation steps above:
 
-### 14. Gmail OAuth: Full Verification
-- **Decision**: Pursue full Google OAuth verification from the start. Existing GCP project and OAuth client already set up.
-- **Timeline**: Verification takes 2-6 weeks; start the process during Milestone 3 development.
+1. **Runtime migration Task 7 cutover** has happened — `MailboxMaterializeWorkflow`/`MailboxOcrReceiptWorkflow` run only on the TypeScript `services/workflow-worker`, never the legacy Python worker.
+2. **3D-A activation is complete** (real Clerk mailbox identities, token-vault bootstrap, Google OAuth client, `MAILBOX_FEATURE_ENABLED=true` secret bundle) and **3D-B's schedule reconcile** has run — 3D-C's `ingest` approval is the consumer of a `queued` candidate that only an active, scheduled scan ever produces.
+3. **Real Gmail test-account verification** (plan Task 7 Step 6, `test/e2e/connected-mailbox.e2e.test.ts`) — operator-gated, run against a provisioned test Google account and the production-shaped VPS Compose stack before enabling the feature for real tenants; never run in CI.
 
-### 15. Email Scan Depth
-- **Decision**: Default to **last 30 days** on first connect. User can choose a custom range, capped at **90 days maximum**.
-- **Rationale**: 30 days balances coverage vs. LLM cost. 90-day cap prevents runaway costs on first connect.
+## Remaining-Phase Constraints
 
----
+- Phase 3C uses deterministic rules and tenant history only. No live LLM, embeddings, paid provider, or automatic spending/tax-category acceptance.
+- Rule tags may auto-apply; historical tags and spending/tax-category suggestions require review.
+- Tax automation suggests category only, never deductible percentage, filing treatment, or reviewed status.
+- Phase 3D supports Gmail first through a provider adapter; Outlook remains unsupported until separately implemented.
+- Gmail scope is exactly `https://www.googleapis.com/auth/gmail.readonly`.
+- OAuth refresh tokens are stored as AES-256-GCM ciphertext in a dedicated PostgreSQL token-vault database. Plaintext tokens never enter Temporal history, browsers, logs, or VPS files, and exist only in broker memory.
+- Mailbox attachment bytes and provider metadata bypass Temporal; workflows carry opaque IDs and counts only.
+- Phase 3B duplicate candidates remain pending review and never auto-merge.
+- Mailbox broker runs as a VPS container in the Expense production Compose; no new GCP compute, no static GCP key.
 
-## ✅ Resolved Decisions (formerly Open Questions)
+## Production Snapshot
 
-| # | Question | Decision |
-|---|----------|----------|
-| 1 | Backend architecture | **TypeScript Fastify App API + TypeScript Fastify Foundry Service + Python Temporal AI worker**. Three separate Next.js frontends. |
-| 2 | Temporal hosting & SDK | **TypeScript Temporal client starts Python workflows** on dedicated queues; Temporal remains self-hosted initially. |
-| 3 | LLM/OCR strategy | **Foundry-operated providers/models behind curated user modes**. Fixed per-tenant model/operation job allowances plus internal cost controls. |
-| 4 | Multi-tenancy | **Tenant is account/subscription boundary with one Personal profile and multiple businesses; every data scope requires explicit membership.** |
-| 5 | Mobile strategy | **Next.js PWA first**; future mobile app (M12) evaluating **Flutter** for Android (may not be Expo React Native, undecided). |
-| 6 | Gmail OAuth | **Full Google OAuth verification** using Google API Python SDK. Existing GCP project & OAuth client already configured. |
-| 7 | Email scan depth | **Default 30 days**, user-choosable, **max 90 days**. Balances coverage vs. LLM classification cost. |
-| 8 | Tax scope | **US-federal preparation/export aid only. Never direct filing.** Business is tax context; project is analytics only. |
-| 9 | Email forwarding | **One physical inbound route with opaque virtual Personal/business profile tokens and verified senders**, available to every plan. |
-| 10 | Premium features | **Connected mailbox scanning and AI search require plan entitlement/add-on. Trial AI search is 20 shared requests/month.** |
+- Public edge: Cloudflare free-tier Tunnel and DNS.
+- Origins: VPS application ports bound to loopback only.
+- Services: App API, Foundry Service, AI worker, Temporal, Capture Web, Office Web, and Foundry Web deployed through `.github/workflows/expense-tax-deploy.yml`.
+- Authentication: Clerk user, organization, platform, and M2M boundaries verified; production smoke passed 13/13.
+- Webhook: exact supported Clerk events active; signed delivery and replay verified.
+- Secret handling: one non-destroyed production Secret Manager bundle version; no repository secrets.
+- Infrastructure status and deferred operations: [ROADMAP.md](ROADMAP.md).
 
-## ⚠️ Remaining Risks
+## Durable Boundaries
 
-1. **Runtime migration**: Existing FastAPI/SQLAlchemy implementation becomes prototype history. Phase 0I must prevent dual persistence ownership during TypeScript cutover.
-2. **Cross-language contracts**: Zod-to-OpenAPI/JSON-Schema-to-Pydantic generation needs deterministic CI drift checks and compatibility tests.
-3. **Quota consistency**: Foundry reservations must remain atomic under concurrent retries, provider ambiguity, and plan changes.
-4. **Inbound email abuse**: Shared receiver requires opaque routing tokens, verified senders, email authentication checks, quarantine, malware scanning, and strict rate/size limits.
-5. **Provider selection**: Platform operators must validate cost, receipt accuracy, latency, and availability before enabling model routes.
-6. **Graphiti maturity**: Graphiti is evolving actively (`graphiti-core` 0.30+); keep it isolated in Python worker activities.
-7. **OAuth verification timeline**: Google verification can take 2-6 weeks; only premium connected scanning depends on it.
-
----
-
-## 📊 Priority & Dependencies
-
-```mermaid
-graph TD
-    DONE[0A + 0B + 0G + 0H complete prototype baseline] --> I[0I: TS APIs + Contract Rebaseline]
-    I --> J[0J: Personal + Business + Tax Domain]
-    J --> J1[0J1: Plans + Entitlements]
-    J1 --> K[0K: Foundry Service]
-    I --> CI[1A revised: Continuous Polyglot CI]
-    J --> L[0L: Python Temporal Worker]
-    J --> D[0D revised: Signed GCS Upload]
-    K --> C[0C revised: OCR Pipeline]
-    L --> C
-    D --> C
-    J --> E[0E revised: Tax Prep + Export]
-    D --> E
-    J1 --> P[0P: Forwarded Receipt Intake]
-    C --> P
-    C --> FC0[0F0-A: Capture Mockups]
-    P --> FC0
-    E --> FO0[0F0-B: Office Mockups]
-    P --> FO0
-    J1 --> FO0
-    K --> FN0[0F0-C: Foundry Mockups]
-    FC0 --> F[0F: Capture PWA]
-    FO0 --> M[0M: Office Web]
-    FN0 --> N[0N: Foundry Web]
-    F --> GATE[1C revised: Gateway Integration]
-    M --> GATE
-    N --> GATE
-    K --> GATE
-    GATE --> DEPLOY[1B revised: Production Deployment]
-    CI --> DEPLOY
-    C --> DB[3B: Cross-Channel Dedup]
-    P --> DB
-    C --> TAG[3C: Auto-Tagging]
-    K --> TAG
-    L --> TAG
-    DB --> T[3D: Premium Connected Mailbox]
-    L --> T
-    J1 --> T
-    J --> S1[6A: Basic Search]
-    S1 --> S2[6B: Premium Semantic Search]
-    S1 --> S3[6C: Premium AI Query]
-    K --> S2
-    L --> S2
-    J1 --> S3
-    K --> S3
-    L --> S3
-    L --> G1[9A: Graph Worker Foundation]
-    G1 --> G2[9B: Graph Ingestion]
-    DB --> G2
-    G2 --> G3[9C: Graph Search]
-    S1 --> G3
-    K --> G3
-```
-
----
-
-## 📎 References
-
-- [TaxHacker Repository](https://github.com/vas3k/TaxHacker) — Base reference for web app features
-- [Graphiti Repository](https://github.com/getzep/graphiti) — Temporal knowledge graph framework
-- [Graphiti Paper](https://arxiv.org/abs/2501.13956) — Zep temporal knowledge graph architecture
-- [Temporal.io](https://temporal.io/) — Workflow orchestration engine
-- [pgvector](https://github.com/pgvector/pgvector) — PostgreSQL vector similarity search
-- [Google Cloud Storage Python Client](https://cloud.google.com/python/docs/reference/storage/latest)
-- [Gmail API Python Client](https://developers.google.com/gmail/api/quickstart/python)
-- [google-api-python-client](https://github.com/googleapis/google-api-python-client)
-- [Flutter Documentation](https://flutter.dev/docs)
+- Every customer resource carries explicit Personal or Business scope; tenant administration alone grants no expense access.
+- Foundry rejects tenant tokens; platform authorization remains PostgreSQL-owned.
+- Manual user decisions outrank accepted historical decisions, which outrank deterministic automation.
+- Every remote write or production mutation requires explicit execution-time confirmation.
+- Cloudflare paid WAF/rate limiting/Workers/Access and always-on GCP compute require separate cost approval.

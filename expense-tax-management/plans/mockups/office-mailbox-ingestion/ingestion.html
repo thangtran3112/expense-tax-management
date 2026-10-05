@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExpenseTax Office — Mailbox ingestion status (Phase 3D-C feature gate, approved)</title>
+<link rel="icon" href="../favicon.svg">
+<link rel="stylesheet" href="../rebaseline/shared/tokens.css">
+<link rel="stylesheet" href="../office-mailbox/mailbox.css">
+<link rel="stylesheet" href="../office-mailbox-review/review.css">
+<link rel="stylesheet" href="ingestion.css">
+</head>
+<body class="office">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><span class="mark">O</span> ExpenseTax Office</div>
+    <nav aria-label="Office">
+      <a href="#">Dashboard</a>
+      <a href="#">Expenses</a>
+      <a href="#">Businesses</a>
+      <a href="#">Projects</a>
+      <a href="#">Tax</a>
+      <a href="#">Exports</a>
+      <a href="#">Forwarding</a>
+      <a aria-current="page" href="#main">Mailbox</a>
+      <a href="#">Settings</a>
+    </nav>
+    <small>Laptop ≥1024px primary<br>Responsive down to 375px</small>
+  </aside>
+  <main id="main">
+    <div class="topline">
+      <div>
+        <p class="eyebrow">Office Web · feature gate · Phase 3D-C Task 6 · APPROVED 2026-10-03</p>
+        <h1>Track what happened after approval.</h1>
+        <p class="lede">This region extends the connected-mailbox page approved in Phase 3D-A/3D-B. Once a candidate is approved for ingestion, it moves here — status text and counts only. No provider message IDs, attachment bytes, or message content ever render in Office; opaque IDs are available only inside a "Support details" disclosure on each row.</p>
+      </div>
+      <button class="profile"><span class="dot"></span> Tran Studio · 2025</button>
+    </div>
+
+    <section aria-labelledby="s1-heading">
+      <p class="eyebrow scenario-label">Scenario 1 of 6 · In progress</p>
+      <h2 id="s1-heading" style="margin-bottom:14px">Ingestion status — in progress</h2>
+      <div class="ingestion-group" aria-label="Candidates currently being ingested">
+
+        <article class="ingestion-row" aria-labelledby="i1-sender">
+          <div class="row-top"><span id="i1-sender" class="sender">receipts@northline-hardware.example</span><span class="chip">Queued</span></div>
+          <p class="subject">Receipt — Northline Hardware order #88213</p>
+          <div class="status-line"><span>Waiting for a materialization slot. No file created yet.</span></div>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_8f21…b309</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row" aria-labelledby="i2-sender" role="status" aria-live="polite">
+          <div class="row-top"><span id="i2-sender" class="sender">no-reply@cloudbooks-saas.example</span><span class="chip">Materializing</span></div>
+          <p class="subject">Your CloudBooks invoice is ready</p>
+          <div class="status-line"><span class="spinner-dot" aria-hidden="true"></span><span>Streaming attachment to secure storage (upload grant issued).</span></div>
+          <div class="ref-line"><span>Scope: Tran Studio (Business)</span></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_3a09…f7c2</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row" aria-labelledby="i3-sender" role="status" aria-live="polite">
+          <div class="row-top"><span id="i3-sender" class="sender">billing@slatehouse-supply.example</span><span class="chip warn">Malware scan pending</span></div>
+          <p class="subject">Invoice #5521 attached</p>
+          <div class="status-line"><span class="spinner-dot" aria-hidden="true"></span><span>File held in quarantine storage until the scan clears.</span></div>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_c411…9d02</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row" aria-labelledby="i4-sender" role="status" aria-live="polite">
+          <div class="row-top"><span id="i4-sender" class="sender">receipts@shopwaveco.example</span><span class="chip">OCR in progress</span></div>
+          <p class="subject">Your order #48213 from ShopWave Co.</p>
+          <div class="status-line"><span class="spinner-dot" aria-hidden="true"></span><span>Extracting receipt fields from the staged file. No message content is read.</span></div>
+          <div class="ref-line"><span>Scope: unassigned</span></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_8f21…b309</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+            <div class="id-row"><span class="value">Job ID: job_51ae…2b7f</span><button class="button secondary" type="button" aria-label="Copy job ID">Copy</button></div>
+          </details>
+        </article>
+
+        <div class="group-footer"><span class="lede" style="margin:0;font-size:12px">Showing 4 of 11 in progress</span><button class="button secondary" type="button">Load more</button></div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s2-heading">
+      <p class="eyebrow scenario-label">Scenario 2 of 6 · Needs attention</p>
+      <h2 id="s2-heading" style="margin-bottom:14px">Ingestion status — needs attention</h2>
+      <div class="ingestion-group" aria-label="Candidates that stopped before an expense was created">
+
+        <article class="ingestion-row terminal-bad" aria-labelledby="i5-sender">
+          <div class="row-top"><span id="i5-sender" class="sender">updates@weekly-digest.example</span><span class="chip bad">Malware scan blocked</span></div>
+          <p class="subject">Order confirmed — thanks for shopping with us</p>
+          <p class="note">Attachment failed the malware scan and was never stored. This is a dead end: no retry and no download — the source message must be re-sent or handled outside Office. Dismiss to clear it from this list.</p>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <div class="action-row"><button class="button secondary" type="button">Dismiss</button></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_7e1a…44d0</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row terminal-bad" aria-labelledby="i6-sender">
+          <div class="row-top"><span id="i6-sender" class="sender">no-reply@cloudbooks-saas.example</span><span class="chip bad">Failed — transient error</span></div>
+          <p class="subject">Monthly statement ready</p>
+          <p class="note">Storage callback timed out mid-upload. Safe to retry — the same idempotency key is reused, so retrying cannot create a duplicate expense.</p>
+          <div class="ref-line"><span>Scope: Tran Studio (Business)</span></div>
+          <div class="action-row"><button class="button secondary" type="button">Retry</button></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_90b1…ee73</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row terminal-bad" aria-labelledby="i6b-sender">
+          <div class="row-top"><span id="i6b-sender" class="sender">no-reply@cloudbooks-saas.example</span><span class="chip bad">Failed — transient error</span></div>
+          <p class="subject">Weekly summary ready</p>
+          <div class="banner warn" role="alert" style="margin:10px 0 0">
+            <span class="icon" aria-hidden="true">!</span>
+            <div><p style="margin:0">Candidate changed while retrying — status refreshed below. Confirm before retrying again. (Reuses the same stale-version/409 handling as candidate review and the Duplicates queue.)</p></div>
+          </div>
+          <div class="ref-line" style="margin-top:8px"><span>Scope: Personal</span></div>
+          <div class="action-row"><button class="button secondary" type="button">Retry</button></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_6f02…a815</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row terminal-bad" aria-labelledby="i7-sender">
+          <div class="row-top"><span id="i7-sender" class="sender">receipts@northline-hardware.example</span><span class="chip bad">Unsupported attachment</span></div>
+          <p class="subject">Shipment receipt attached (large scan)</p>
+          <p class="note">Attachment exceeded 25 MiB or its type isn't accepted. Not ingested automatically, and not eligible for retry.</p>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_1d4f…ab22</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <article class="ingestion-row terminal-warn" aria-labelledby="i8-sender">
+          <div class="row-top"><span id="i8-sender" class="sender">billing@slatehouse-supply.example</span><span class="chip warn">Duplicate detected</span></div>
+          <p class="subject">Invoice #5519 attached</p>
+          <p class="note">Matches an existing expense on amount, date, and merchant evidence. Pending in the Duplicates queue per Phase 3B — no automatic merge.</p>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <div class="action-row"><a class="link-action" href="/duplicates">Review duplicate match →</a></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_2c88…f104</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+
+        <div class="group-footer"><span class="lede" style="margin:0;font-size:12px">Showing 5 of 9 needing attention</span><button class="button secondary" type="button">Load more</button></div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s3-heading">
+      <p class="eyebrow scenario-label">Scenario 3 of 6 · Completed</p>
+      <h2 id="s3-heading" style="margin-bottom:14px">Ingestion status — completed</h2>
+      <div class="ingestion-group" aria-label="Candidates that finished as an expense">
+
+        <article class="ingestion-row terminal-ok" aria-labelledby="i9-sender">
+          <div class="row-top"><span id="i9-sender" class="sender">receipts@shopwaveco.example</span><span class="chip ok">Ingested</span></div>
+          <p class="subject">Your order #48213 from ShopWave Co.</p>
+          <p class="note">Processing job complete. Open the expense for full details.</p>
+          <div class="ref-line"><span>Scope: Personal</span></div>
+          <div class="action-row"><a class="link-action" href="#">View expense →</a></div>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_8f21…b309</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+            <div class="id-row"><span class="value">Job ID: job_51ae…2b7f</span><button class="button secondary" type="button" aria-label="Copy job ID">Copy</button></div>
+          </details>
+        </article>
+
+        <div class="group-footer"><span class="lede" style="margin:0;font-size:12px">Showing 1 of 6 completed</span><button class="button secondary" type="button">Load more</button></div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s4-heading">
+      <p class="eyebrow scenario-label">Scenario 4 of 6 · Expense detail — connected mailbox provenance</p>
+      <h2 id="s4-heading" style="margin-bottom:14px">Where ingested expenses show their source</h2>
+      <p class="lede" style="margin:0 0 18px;max-width:780px">Excerpt of the existing Office expense detail page (<code>frontend/office-web/src/app/(office)/expenses/[expenseId]</code>) — a new "Source" block, not a redesign of the rest of the page. Placement follows the page's existing convention: directly inside the "Expense details" panel, after the Date/Merchant/Amount/Status fields and before the pending-suggestions panel — settled facts first, review actions second. Shown here for two outcomes: a clean ingest and one flagged as a pending duplicate.</p>
+      <div class="grid">
+        <article class="card wide provenance-card">
+          <p class="eyebrow scenario-label">Expense details panel · cleanly ingested</p>
+          <h3 style="margin:0 0 4px">Northline Hardware — $142.30</h3>
+          <p style="margin:0;color:var(--muted);font-size:13px">02 Oct 2026 · Office supplies</p>
+          <h4 style="margin:18px 0 4px;font-size:13px;color:var(--muted)">Source</h4>
+          <div class="field-row"><label>Origin</label><span class="chip ok">Connected Gmail mailbox</span></div>
+          <div class="field-row"><label>From</label><span class="value">receipts@northline-hardware.example</span></div>
+          <div class="field-row"><label>Received</label><span class="value">02 Oct 2026, 6:41 AM</span></div>
+          <div class="field-row"><label>Scope</label><span class="chip ok">Personal</span></div>
+          <p class="provenance-note">Metadata only — sender address, received date, and scope. Message body, attachment bytes, and other provider content are never rendered in Office.</p>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_8f21…b309</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+        <article class="card wide provenance-card">
+          <p class="eyebrow scenario-label">Expense details panel · pending duplicate review</p>
+          <h3 style="margin:0 0 4px">Slatehouse Supply — $88.00</h3>
+          <p style="margin:0;color:var(--muted);font-size:13px">02 Oct 2026 · Materials</p>
+          <h4 style="margin:18px 0 4px;font-size:13px;color:var(--muted)">Source</h4>
+          <div class="field-row"><label>Origin</label><span class="chip ok">Connected Gmail mailbox</span></div>
+          <div class="field-row"><label>From</label><span class="value">billing@slatehouse-supply.example</span></div>
+          <div class="field-row"><label>Received</label><span class="value">02 Oct 2026, 7:04 AM</span></div>
+          <div class="field-row"><label>Scope</label><span class="chip ok">Personal</span></div>
+          <div class="field-row"><label>Status</label><span class="chip warn">Pending duplicate review</span></div>
+          <p class="provenance-note"><a class="link-action" href="/duplicates">Review duplicate match →</a> — this expense stays in Personal until a reviewer resolves the match in the existing Duplicates queue; no automatic merge.</p>
+          <details class="support-details"><summary>Support details</summary>
+            <div class="id-row"><span class="value">Candidate ID: cand_2c88…f104</span><button class="button secondary" type="button" aria-label="Copy candidate ID">Copy</button></div>
+          </details>
+        </article>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid" aria-labelledby="s5-heading">
+      <article class="card placeholder-card full" role="status">
+        <p class="eyebrow scenario-label">Scenario 5 of 6 · Empty state</p>
+        <h2 id="s5-heading">No ingestion activity yet</h2>
+        <p>Approve a candidate from the review queue above to see its ingestion status here. Nothing is ingested automatically without that approval.</p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid">
+      <article class="card full">
+        <p class="eyebrow scenario-label">Scenario 6 of 6 · State + boundary review</p>
+        <h2>State + boundary review</h2>
+        <div class="state-grid">
+          <div class="state"><strong>No visible IDs</strong>Rows show status text and scope only; candidate/job IDs live inside a "Support details" disclosure with per-ID Copy buttons, for support use only</div>
+          <div class="state"><strong>No raw content</strong>Sender, subject, received date, scope, and status render — never message body or attachment bytes</div>
+          <div class="state" style="--state:var(--warning)"><strong>Retry is scoped</strong>"Retry" appears only for typed transient failures; malware-blocked and oversize/unsupported outcomes are terminal with no retry</div>
+          <div class="state" style="--state:var(--danger)"><strong>Malware block is a dead end</strong>Shows the reason and a Dismiss action only — no retry, no download, ever</div>
+          <div class="state" style="--state:var(--danger)"><strong>Duplicate stays pending</strong>A duplicate-flagged ingest links to the existing <code>/duplicates</code> queue; it is never auto-merged from this page</div>
+          <div class="state"><strong>Status is batch-refreshed</strong>Rows update on the same poll/refresh cadence as scan status (Phase 3D-B); no per-byte progress streaming</div>
+          <div class="state"><strong>Stale conflict reuses candidate review</strong>A Retry against a changed candidate version shows the same inline 409/stale-refresh alert pattern as candidate review and the Duplicates queue, then re-enables the action</div>
+          <div class="state"><strong>Pagination reuses the review queue</strong>Each status group has its own cursor + "Load more" footer, the same per-group pattern approved for 3D-B candidate groups</div>
+          <div class="state"><strong>Scope is immutable</strong>Scope shown here is fixed at ingestion time; corrections use the existing expense move/correction flow, not this page</div>
+          <div class="state"><strong>Disconnected access</strong>If the connection is revoked, already-ingested expenses and their Source block remain intact; only new ingestion stops</div>
+          <div class="state"><strong>Keyboard</strong>Every action (Retry, Dismiss, Copy, "Review duplicate match", "View expense", "Support details") is a real button, link, or native <code>&lt;details&gt;</code>, reachable without a mouse</div>
+          <div class="state"><strong>Screen reader</strong>In-progress rows use role="status" aria-live="polite"; the stale-conflict alert uses role="alert"; status chips carry visible text, not color alone</div>
+        </div>
+      </article>
+    </section>
+  </main>
+</div>
+<nav class="mobile-nav" aria-label="Office, mobile">
+  <a href="#">Dashboard</a>
+  <a href="#">Expenses</a>
+  <a aria-current="page" href="#main">Mailbox</a>
+  <a href="#">Settings</a>
+</nav>
+</body>
+</html>

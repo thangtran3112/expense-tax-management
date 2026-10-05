@@ -1,0 +1,16 @@
+[Unit]
+Description=Run family-app-backup.service twice daily
+
+[Timer]
+# Every 12 hours, comfortably inside the 24h RPO: one missed/failed run
+# still leaves a full 12h of margin before the RPO is actually breached.
+OnCalendar=*-*-* 00/12:00:00 UTC
+# A missed run (host was off) fires as soon as the host is back, instead
+# of silently waiting for the next 12h boundary.
+Persistent=true
+# Spreads load if this host ever runs multiple timers, and keeps the
+# window small enough that it can never itself eat into the 12h margin.
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

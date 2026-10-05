@@ -1,50 +1,53 @@
-# Family App — Monorepo
+# Family App Monorepo
 
-This repository hosts shared infrastructure and multiple family applications that share one VPS + one GCP project.
+Shared infrastructure and family applications deployed to one VPS with selected GCP services.
 
 ## Layout
-```
+
+```text
 family-app/
-  infrastructure/                 # Shared stack (see infrastructure/README.md)
-    docker-compose.common.yml     # postgres (pgvector), neo4j, temporal, gateway
-    nginx/nginx.conf
-    postgres/init-multiple-dbs.sh # creates one DB per app
-  expense-tax-management/         # Expense/Tax PWA + FastAPI service
-    opencode.json                 # opencode session stays here (retained)
-    .opencode/                    # per-app agent rules/sessions — retained
-    frontend/                     # Next.js 16 PWA
-    expense-service/              # FastAPI (app/, alembic/, tests/)
-    common/python/expense-contracts/
-    docker-compose.yml            # app overlay (includes ../infrastructure/docker-compose.common.yml)
-    plans/ docs/
-  <future-family-app>/            # sibling app, same pattern
+|-- infrastructure/                       # Local shared stack, VPS bootstrap, Cloudflare Terraform
+`-- expense-tax-management/
+    |-- packages/contracts/                # Canonical Zod contracts and generated artifacts
+    |-- services/app-api/                  # Fastify/Kysely customer API
+    |-- services/foundry-service/          # Fastify/Kysely AI control plane
+    |-- services/ai-worker/                # Python Temporal worker
+    |-- frontend/capture-web/              # Next.js capture application
+    |-- frontend/office-web/               # Next.js review/reporting application
+    |-- frontend/foundry-web/              # Next.js operator application
+    |-- deploy/production/                 # Production Compose and deployment scripts
+    |-- expense-service/                   # Transitional legacy FastAPI; do not extend
+    |-- frontend/web/                      # Transitional legacy frontend; do not extend
+    `-- plans/PLAN.md                       # Canonical phase tracker and handoff
 ```
 
-## Why this structure
-- **Shared GCP project + shared VPS Postgres cluster** but **DB per app** (`expense_tax_db`, `<app>_db`) via `POSTGRES_MULTIPLE_DATABASES`.
-- **One GCS project, bucket/prefix per app** (`family-shared-expense-tax`, ...).
-- `expense-tax-management/opencode.json` and `.opencode/` remain in the subproject so existing sessions continue.
+## Development
 
-## Quick start (expense-tax-management)
 ```bash
-# from family-app/
-docker compose -f infrastructure/docker-compose.common.yml -f expense-tax-management/docker-compose.yml up -d
-# or from the app dir:
 cd expense-tax-management
-docker compose -f ../infrastructure/docker-compose.common.yml -f docker-compose.yml up -d
-
-# app dev
-cd expense-tax-management
-uv run python -m pytest
-pnpm --filter web build
+pnpm install --frozen-lockfile
+uv --directory common/python/expense-contracts sync --frozen
+uv --directory services/ai-worker sync --frozen
+pnpm compose:up
 ```
 
-## Adding a new family app
-1. `mkdir <new-app> && cp -r expense-tax-management/docker-compose.yml <new-app>/` as template
-2. Add DB name to `infrastructure/docker-compose.common.yml` env `POSTGRES_MULTIPLE_DATABASES=expense_tax_db,<new-app>_db`
-3. Set `DATABASE_URL=postgresql+asyncpg://postgres:postgrespassword@postgres:5432/<new-app>_db` in new app's compose
-4. Create GCS bucket `family-shared-<new-app>`
-5. Reuse `common/python` patterns if Python.
+Core verification:
 
-## Git
-Repo was renamed from `expense-tax-management` to `family-app`; history preserved via `git mv`. Remote is `thangtran3112/family-app`.
+```bash
+pnpm ci:lint
+pnpm ci:typecheck
+pnpm ci:test
+pnpm ci:python:lint
+pnpm ci:python:test
+pnpm ci:build
+pnpm contracts:check
+```
+
+## Branch Flow
+
+- `dev` is default and protected.
+- Start coding work from current `origin/dev` in a `feature/*` worktree.
+- Merge through a pull request to `dev`; required quality CI must pass.
+- `main` is production-only and deploys through `.github/workflows/expense-tax-deploy.yml`.
+
+Read `expense-tax-management/AGENTS.md` and `expense-tax-management/plans/PLAN.md` before implementation.

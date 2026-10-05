@@ -24,11 +24,41 @@ export {
 } from "./internal/job-result-submit-v1.js";
 export {
   AI_WORKER_TASK_QUEUE,
+  LEGACY_AI_WORKER_TASK_QUEUE,
+  LEGACY_TEMPORAL_NAMESPACE,
+  TARGET_TEMPORAL_NAMESPACE,
   FOUNDATION_ECHO_WORKFLOW_TYPE,
   OCR_RECEIPT_WORKFLOW_TYPE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
+  EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
+  EXPENSE_ENRICHMENT_RESULT_SCHEMA_VERSION,
+  MAILBOX_SCAN_WORKFLOW_TYPE,
+  MAILBOX_SCHEDULED_SCAN_TRIGGER_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
+  MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
+  WorkflowResultSchema,
+  WorkflowTypeSchema,
+  type WorkflowResult,
+  type WorkflowType,
 } from "./internal/task-queues.js";
+export {
+  EligibleTaxSnapshotSchema,
+  EnrichmentHistorySchema,
+  ExpenseEnrichmentInputV1Schema,
+  ExpenseEnrichmentInputResponseV1Schema,
+  type EligibleTaxSnapshot,
+  type EnrichmentHistory,
+  type ExpenseEnrichmentInputV1,
+  type ExpenseEnrichmentInputResponseV1,
+} from "./internal/expense-enrichment-input-v1.js";
+export {
+  ExpenseEnrichmentResultV1Schema,
+  EnrichmentSuggestionResultSchema,
+  type ExpenseEnrichmentResultV1,
+  type EnrichmentSuggestionResult,
+} from "./internal/expense-enrichment-result-v1.js";
 export {
   AuthenticatedUserSchema,
   CurrentUserResponseSchema,
@@ -113,6 +143,10 @@ export * from "./inbound-email.js";
 export * from "./files.js";
 export * from "./ocr.js";
 export * from "./duplicate-matches.js";
+export * from "./enrichment.js";
+export * from "./mailbox.js";
+export * from "./mailbox-discovery.js";
+export * from "./mailbox-ingestion.js";
 export {
   IdempotencyKeyHeaderSchema,
   PersonalProfileSchema,

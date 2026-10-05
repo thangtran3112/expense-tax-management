@@ -1,0 +1,34 @@
+/* Office Mailbox candidate review (Phase 3D-B) — extends ../rebaseline/shared/tokens.css and ../office-mailbox/mailbox.css */
+.review-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+.candidate-list { display: block; }
+.candidate-group { margin-bottom: 20px; }
+.candidate-group:last-child { margin-bottom: 0; }
+.group-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+.group-heading h3 { margin: 0; font-size: 14px; }
+.group-heading .count { margin-left: 6px; color: var(--muted); font-weight: 400; font-size: 12px; }
+
+.candidate-row { padding: 13px 14px; border: 1px solid var(--line); border-radius: 14px; background: rgba(0, 0, 0, .14); margin-bottom: 9px; }
+.candidate-row:last-child { margin-bottom: 0; }
+.candidate-row.selected { border-color: var(--accent); background: rgba(216, 243, 106, .08); }
+.candidate-row.dim { opacity: .72; }
+.candidate-row .row-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.candidate-row .sender { font-weight: 700; font-size: 13px; }
+.candidate-row .subject { margin: 6px 0 0; color: var(--ink); font-size: 13px; }
+.candidate-row .meta-line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 7px; font-size: 12px; color: var(--muted); }
+.attachment-badge { display: inline-flex; gap: 5px; align-items: center; }
+.attachment-badge[data-none] { opacity: .7; }
+.reason-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* scope chips reuse .chip color rules from tokens.css; add matching border */
+.chip.ok { border-color: var(--success); }
+.chip.warn { border-color: var(--warning); }
+
+.detail-panel { position: sticky; top: 18px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.detail-panel h3 { margin: 0; font-size: 16px; }
+.detail-panel h4 { color: var(--muted); font-weight: 700; }
+.action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+
+@media (max-width: 900px) {
+  .review-layout { grid-template-columns: 1fr; }
+  .detail-panel { position: static; }
+}

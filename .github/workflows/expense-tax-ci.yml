@@ -5,14 +5,11 @@ on:
     branches: [main, master]
     paths:
       - "expense-tax-management/**"
+      - "common/config/**"
       - "infrastructure/docker-compose.common.yml"
       - ".github/workflows/expense-tax-ci.yml"
   pull_request:
-    branches: [main, master]
-    paths:
-      - "expense-tax-management/**"
-      - "infrastructure/docker-compose.common.yml"
-      - ".github/workflows/expense-tax-ci.yml"
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
@@ -37,6 +34,20 @@ jobs:
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ci
     steps:
       - uses: actions/checkout@v4
+      - name: Enforce feature source branch
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_REF" in
+            feature/* | dependabot/*) ;;
+            *)
+              echo "Pull requests to dev must originate from feature/* or dependabot/*; got: $HEAD_REF"
+              exit 1
+              ;;
+          esac
       - uses: pnpm/action-setup@v4
         with:
           version: 11.9.0

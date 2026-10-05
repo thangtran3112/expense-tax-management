@@ -78,7 +78,7 @@ def _validate_token(
         raise M2MTokenError("Clerk M2M token is missing token ID")
 
     not_before = payload.get("nbf")
-    if (
+    if "nbf" in payload and (
         not isinstance(not_before, (int, float))
         or isinstance(not_before, bool)
         or not_before > now + 30

@@ -40,6 +40,10 @@ jobs:
             dockerfile: expense-tax-management/services/foundry-service/Dockerfile
           - image: expense-tax-ai-worker
             dockerfile: expense-tax-management/services/ai-worker/Dockerfile
+          - image: expense-tax-workflow-worker
+            dockerfile: expense-tax-management/services/workflow-worker/Dockerfile
+          - image: expense-tax-mailbox-broker
+            dockerfile: expense-tax-management/services/mailbox-broker/Dockerfile
           - image: expense-tax-capture-web
             dockerfile: expense-tax-management/frontend/capture-web/Dockerfile
           - image: expense-tax-office-web
@@ -88,7 +92,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-      id-token: write
     steps:
       - name: Checkout completed CI commit
         uses: actions/checkout@v7
@@ -96,33 +99,8 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-          create_credentials_file: true
-          cleanup_credentials: true
-
-      - name: Install gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Fetch production environment bundle
-        env:
-          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GCP_SECRET_ID: ${{ vars.GCP_SECRET_ID }}
-          PRODUCTION_ENV_FILE: ${{ runner.temp }}/expense-tax-production.env
-        run: |
-          set -euo pipefail
-          umask 077
-          gcloud secrets versions access latest \
-            --secret="$GCP_SECRET_ID" \
-            --project="$GCP_PROJECT_ID" \
-            --format='get(payload.data)' \
-            | tr '_-' '/+' \
-            | base64 --decode > "$PRODUCTION_ENV_FILE"
-          chmod 600 "$PRODUCTION_ENV_FILE"
-
+      # Production env is not read here: the VPS loads it from Firestore
+      # family-config at deploy time (common/config/family_config.py).
       - name: Install pinned SSH identity
         env:
           VPS_DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
@@ -143,7 +121,6 @@ jobs:
           VPS_USER: ${{ vars.VPS_USER }}
           SSH_KEY_FILE: ${{ runner.temp }}/expense-tax-deploy-key
           KNOWN_HOSTS_FILE: ${{ runner.temp }}/expense-tax-known-hosts
-          PRODUCTION_ENV_FILE: ${{ runner.temp }}/expense-tax-production.env
         run: |
           set -euo pipefail
           SSH_OPTIONS=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
@@ -151,11 +128,11 @@ jobs:
           ssh "${SSH_OPTIONS[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 0700 /tmp/expense-tax-deploy"
           scp "${SCP_OPTIONS[@]}" \
             expense-tax-management/deploy/production/docker-compose.yml \
+            expense-tax-management/deploy/production/docker-compose.mailbox.yml \
             expense-tax-management/deploy/production/deploy.sh \
             expense-tax-management/deploy/production/health-check.sh \
-            "$PRODUCTION_ENV_FILE" \
+            common/config/family_config.py \
             "$VPS_USER@$VPS_HOST:/tmp/expense-tax-deploy/"
-          ssh "${SSH_OPTIONS[@]}" "$VPS_USER@$VPS_HOST" "chmod 600 /tmp/expense-tax-deploy/expense-tax-production.env"
 
       - name: Deploy over dedicated SSH identity
         env:
@@ -171,7 +148,7 @@ jobs:
           echo "::add-mask::$GITHUB_TOKEN"
           SSH_OPTIONS=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
           printf '%s\n' "$GITHUB_TOKEN" | ssh "${SSH_OPTIONS[@]}" "$VPS_USER@$VPS_HOST" \
-            "read -r GH_TOKEN; set -Eeuo pipefail; DOCKER_CONFIG=/dev/shm/expense-tax-docker-config-\$\$; cleanup() { sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker logout ghcr.io >/dev/null 2>&1 || true; sudo rm -rf \"\$DOCKER_CONFIG\" /tmp/expense-tax-deploy /tmp/expense-tax-production.env; }; trap cleanup EXIT; sudo install -d -o root -g root -m 0700 \"\$DOCKER_CONFIG\"; printf '%s' \"\$GH_TOKEN\" | sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker login ghcr.io --username '${{ github.actor }}' --password-stdin; sudo install -d -m 0755 /opt/expense-tax-management/app; sudo install -o root -g root -m 0644 /tmp/expense-tax-deploy/docker-compose.yml /opt/expense-tax-management/app/docker-compose.yml; sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/deploy.sh /opt/expense-tax-management/app/deploy.sh; sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/health-check.sh /opt/expense-tax-management/app/health-check.sh; sudo install -o root -g root -m 0600 /tmp/expense-tax-deploy/expense-tax-production.env /tmp/expense-tax-production.env; sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" IMAGE_TAG='$IMAGE_TAG' DEPLOY_ENV_FILE=/tmp/expense-tax-production.env /opt/expense-tax-management/app/deploy.sh"
+            "read -r GH_TOKEN; set -Eeuo pipefail; DOCKER_CONFIG=/dev/shm/expense-tax-docker-config-\$\$; cleanup() { sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker logout ghcr.io >/dev/null 2>&1 || true; sudo rm -rf \"\$DOCKER_CONFIG\" /tmp/expense-tax-deploy; }; trap cleanup EXIT; sudo install -d -o root -g root -m 0700 \"\$DOCKER_CONFIG\"; printf '%s' \"\$GH_TOKEN\" | sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker login ghcr.io --username '${{ github.actor }}' --password-stdin; sudo install -d -m 0755 /opt/expense-tax-management/app; sudo install -o root -g root -m 0644 /tmp/expense-tax-deploy/docker-compose.yml /opt/expense-tax-management/app/docker-compose.yml; sudo install -o root -g root -m 0644 /tmp/expense-tax-deploy/docker-compose.mailbox.yml /opt/expense-tax-management/app/docker-compose.mailbox.yml; sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/deploy.sh /opt/expense-tax-management/app/deploy.sh; sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/health-check.sh /opt/expense-tax-management/app/health-check.sh; sudo install -o root -g root -m 0755 /tmp/expense-tax-deploy/family_config.py /opt/expense-tax-management/app/family_config.py; sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" IMAGE_TAG='$IMAGE_TAG' FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json /opt/expense-tax-management/app/family_config.py run expense-tax-management/production --env-file-var DEPLOY_ENV_FILE -- /opt/expense-tax-management/app/deploy.sh"
 
       - name: Clean remote staging
         if: always()
@@ -185,13 +162,12 @@ jobs:
           set +e
           SSH_OPTIONS=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
           ssh "${SSH_OPTIONS[@]}" "$VPS_USER@$VPS_HOST" \
-            'for config in /dev/shm/expense-tax-docker-config-*; do [ -d "$config" ] || continue; sudo env DOCKER_CONFIG="$config" docker logout ghcr.io >/dev/null 2>&1 || true; done; sudo rm -rf /dev/shm/expense-tax-docker-config-* /tmp/expense-tax-deploy /tmp/expense-tax-production.env' || true
+            'for config in /dev/shm/expense-tax-docker-config-*; do [ -d "$config" ] || continue; sudo env DOCKER_CONFIG="$config" docker logout ghcr.io >/dev/null 2>&1 || true; done; sudo rm -rf /dev/shm/expense-tax-docker-config-* /tmp/expense-tax-deploy' || true
           exit 0
 
       - name: Clean runner temporary files
         if: always()
         run: |
           rm -f \
-            "${RUNNER_TEMP}/expense-tax-production.env" \
             "${RUNNER_TEMP}/expense-tax-deploy-key" \
             "${RUNNER_TEMP}/expense-tax-known-hosts"

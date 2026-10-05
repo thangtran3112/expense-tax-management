@@ -115,12 +115,14 @@ describe("Phase 0I Compose boundaries", () => {
       path.join(repoRoot, "deploy/production/docker-compose.yml"),
       "utf8",
     );
+    // Two matches per service (key and interpolation) across app-api,
+    // foundry-service, ai-worker, and workflow-worker.
     expect(
       productionCompose.match(/CLERK_APP_SERVICE_SUBJECT:/g),
-    ).toHaveLength(6);
+    ).toHaveLength(8);
     expect(
       productionCompose.match(/CLERK_FOUNDRY_SERVICE_SUBJECT:/g),
-    ).toHaveLength(6);
+    ).toHaveLength(8);
 
     expect(databaseEnvironmentKeys(legacy?.environment)).toEqual(["DATABASE_URL"]);
     expect(Object.keys(legacy?.environment ?? {})).not.toContain(

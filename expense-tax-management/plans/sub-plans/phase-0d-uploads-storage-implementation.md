@@ -1,5 +1,7 @@
 # Phase 0D Implementation Plan: App-Owned Signed Uploads + Storage Adapter Boundary
 
+> **Status:** Local signed-upload/storage boundary complete. Retained because App API explicitly references it and production GCS adapter/credentials remain pending. Do not re-execute completed tasks.
+
 Source of truth: [phase-0i-polyglot-platform-rebaseline-design.md](phase-0i-polyglot-platform-rebaseline-design.md)
 sections 4.1 (App API owns "Signed upload sessions and receipt metadata";
 "App API is the only service allowed to mutate customer-domain tables"),
@@ -9,10 +11,9 @@ depends on 0I + 0J — satisfied), and section 22 gate ("Fake-provider
 end-to-end flow covers App API, Foundry, Temporal, Python worker, and
 GCS").
 
-Replaces [phase-0d-cloud-storage.md](phase-0d-cloud-storage.md), which
-carries its own replan notice (2026-09-07): do NOT implement
-upload-through-FastAPI or Python ownership. That doc's GCS bucket/IAM/
-lifecycle specifics are deployment concerns for Phase 1B, not this phase.
+Supersedes the removed legacy cloud-storage plan: do not implement
+upload-through-FastAPI or Python ownership. GCS bucket/IAM/lifecycle work remains
+a separate deployment concern tracked in `../ROADMAP.md`.
 
 ## Scope
 

@@ -1,5 +1,4 @@
 import {
-  AI_WORKER_TASK_QUEUE,
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   OCR_RECEIPT_WORKFLOW_TYPE,
@@ -21,7 +20,10 @@ import {
   hashNormalizedRequest,
   type MutationResult,
 } from "./idempotency.js";
+import { recordConnectedMailboxEvidenceInTransaction } from "./mailbox-ingestion.js";
+import type { ProcessingJobRow } from "./processing-job-view.js";
 import type { PlansDomain } from "./plans.js";
+import { createEnrichmentJobInTransaction } from "./enrichment-jobs.js";
 import { createJobInTransaction } from "./processing-jobs.js";
 import { toProcessingJob } from "./processing-job-view.js";
 
@@ -49,7 +51,9 @@ export interface CreateOcrJobCommand {
   readonly modeKey: OcrModeKey;
   readonly idempotencyKey: string;
   readonly requestId: string;
-  readonly workflowType?: string;
+  readonly workflowType?:
+    | typeof OCR_RECEIPT_WORKFLOW_TYPE
+    | typeof FORWARDED_RECEIPT_WORKFLOW_TYPE;
   readonly extraInputParams?: Readonly<Record<string, unknown>>;
 }
 
@@ -144,7 +148,9 @@ export async function applyOcrExtraction(
       job.workflow_type === FORWARDED_RECEIPT_WORKFLOW_TYPE
         ? "forwarded_email"
         : "ocr",
-    initialStatus: "ready",
+    // ocr-deferred: applyOcrExtraction explicitly calls createEnrichmentJobInTransaction
+    // after file binding. insertExpenseInTransaction skips inline creation for this mode.
+    mode: "ocr-deferred",
   });
 
   await transaction
@@ -154,7 +160,91 @@ export async function applyOcrExtraction(
     .where("expense_id", "is", null)
     .execute();
 
+  // Enqueue enrichment job for OCR/forwarded materialization in the same
+  // transaction. Enrichment failure never rolls back or changes the ready
+  // expense, OCR job, or dedup state.
+  await createEnrichmentJobInTransaction(transaction, {
+    tenantId: job.tenant_id,
+    scope:
+      job.personal_profile_id !== null
+        ? { personalProfileId: job.personal_profile_id }
+        : { businessId: job.business_id! },
+    expenseId: expense.id,
+    expectedExpenseVersion: expense.version,
+    requestedByUserId: job.requested_by_user_id ?? undefined,
+    requestId: input.requestId,
+  });
+
   return expense.id;
+}
+
+/**
+ * Phase 3D-C Task 3 -- the MailboxOcrReceiptWorkflow counterpart of
+ * applyOcrExtraction above. Deliberately a separate function, not a
+ * branch inside applyOcrExtraction: that function hard-requires
+ * job.requested_by_user_id (MailboxOcrJobActorV1's service-owned variant
+ * has none) and creates no connected provenance/dedup -- reusing it would
+ * mean bolting mailbox-specific branching onto the generic OCR path
+ * instead of keeping the two materialization strategies separate (same
+ * "do not use ForwardedReceiptWorkflow/OcrReceiptWorkflow" boundary the
+ * brief names, mirrored here on the App side). Delegates the actual
+ * expense/provenance/dedup/candidate-update work to
+ * domain/mailbox-ingestion.ts's recordConnectedMailboxEvidenceInTransaction,
+ * which submitStructuredReceipt (the structured-HTML path) also calls, so
+ * both mailbox materialization paths share one implementation.
+ */
+export async function applyMailboxOcrExtraction(
+  transaction: Transaction<AppDatabase>,
+  input: {
+    readonly job: ProcessingJobRow;
+    readonly extraction: OcrExtractionResultV1;
+    readonly requestId: string;
+  },
+): Promise<string> {
+  const { job, extraction } = input;
+  const candidateId = (job.input_params as Record<string, unknown> | null)?.mailboxCandidateId;
+  if (typeof candidateId !== "string") throw DomainError.validation();
+
+  const candidate = await transaction
+    .selectFrom("app.mailbox_candidates")
+    .selectAll()
+    .where("id", "=", candidateId)
+    .where("tenant_id", "=", job.tenant_id)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!candidate) throw DomainError.validation();
+  // Fix round 2 (review Important #4): a candidate may now have one
+  // mailbox OCR job PER ATTACHMENT (not a single candidate-wide job), so
+  // `candidate.processing_job_id` no longer identifies "the" job -- the
+  // only invariant left to check is first-writer-wins materialization:
+  // once a DIFFERENT job has already materialized this candidate
+  // (status flipped away from 'queued'), every other job's own
+  // extraction is rejected here, never double-materializing.
+  if (candidate.status !== "queued") throw DomainError.conflict();
+
+  const connection = await transaction
+    .selectFrom("app.mailbox_connections")
+    .selectAll()
+    .where("id", "=", candidate.connection_id)
+    .executeTakeFirstOrThrow();
+  const requestedByUserId = job.requested_by_user_id;
+
+  const materialized = await recordConnectedMailboxEvidenceInTransaction(transaction, {
+    candidate,
+    connection,
+    merchant: extraction.merchant,
+    amount: extraction.amount,
+    currency: extraction.currency,
+    incurredOn: extraction.incurredOn,
+    orderNumber: extraction.orderNumber ?? null,
+    notes: extraction.notes ?? null,
+    processingJobId: job.id,
+    requestedByUserId,
+    requestId: input.requestId,
+    evidence: [],
+  });
+
+  return materialized.expenseId;
 }
 
 export function createOcrJobsDomain(
@@ -204,7 +294,6 @@ export function createOcrJobsDomain(
                 ? { personalProfileId: input.scope.profileId }
                 : { businessId: input.scope.businessId },
             workflowType: input.workflowType ?? OCR_RECEIPT_WORKFLOW_TYPE,
-            taskQueue: AI_WORKER_TASK_QUEUE,
             allowedResultSchemaVersion: OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
             targetAggregateType: "expense",
             requestedByUserId: input.actorUserId,

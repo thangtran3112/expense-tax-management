@@ -14,6 +14,9 @@ usage() {
 Usage: bootstrap.sh --host HOST --ssh-user USER --ssh-key PATH --app APP_CONF
                      [--ssh-port PORT] [--target-ssh-port PORT]
                      [--shared-pg-dir PATH] [--only STEPS] [--fetch-secrets-to PATH]
+                     [--backup-dir PATH] [--backup-gcs-uri URI] [--backup-host-id ID]
+                     [--age-recipient AGE1KEY] [--receipt-volume VOLUME_NAME]
+                     [--backup-writer-key-file PATH] [--backup-image IMAGE]
 
 Required:
   --host              VPS hostname or IP
@@ -30,13 +33,34 @@ Optional:
   --target-ssh-port   Port SSH should end up on after hardening. Default: 2222.
   --shared-pg-dir     Remote dir for the shared Postgres stack.
                        Default: /opt/family-app/postgres
-  --only              Comma-separated subset of: firewall,ssh,docker,postgres
+  --only              Comma-separated subset of: firewall,ssh,docker,postgres,backup
                        Default: firewall,ssh,docker,postgres (in that order --
                        firewall opens the target SSH port BEFORE sshd starts
-                       requiring it exclusively).
+                       requiring it exclusively). "backup" is NEVER in the
+                       default set -- it needs secrets (see below) and is
+                       opt-in only, run explicitly with --only backup once
+                       Task 1's bucket/identities actually exist.
   --fetch-secrets-to  After the postgres step, copy the remote shared
                        postgres .env to this local path (chmod 600).
                        Optional -- omit to leave secrets on the VPS only.
+
+Backup step only (all required together when --only includes backup):
+  --backup-dir              Remote dir for backup state/ciphertext.
+                              Default: /opt/family-app/backup
+  --backup-gcs-uri           gs://bucket from Task 1's Terraform output
+  --backup-host-id            Stable identifier embedded in backup object names
+  --age-recipient              Public age1... recipient (Task 1 operator keeps the private half)
+  --receipt-volume       Name of the app's receipt Docker volume (e.g.
+                               expense-tax-production_expense_tax_production_storage)
+                               -- a named volume, mounted by name regardless
+                               of which Compose project created it, not a
+                               host path
+  --backup-writer-key-file    LOCAL path to the Task 1 writer service account
+                               key JSON (see infrastructure/gcp/backup/README.md
+                               for how it's created -- never committed, never
+                               written to this script's own disk beyond what
+                               the operator already has)
+  --backup-image              Pinned backup image ref (a digest, not a mutable tag)
 
 Examples:
   # Brand-new VPS from any provider, first-ever connection on port 22:
@@ -63,6 +87,13 @@ TARGET_SSH_PORT="2222"
 SHARED_PG_DIR="/opt/family-app/postgres"
 ONLY="firewall,ssh,docker,postgres"
 FETCH_SECRETS_TO=""
+BACKUP_DIR="/opt/family-app/backup"
+BACKUP_GCS_URI=""
+BACKUP_HOST_ID=""
+AGE_RECIPIENT=""
+RECEIPT_VOLUME=""
+BACKUP_WRITER_KEY_FILE=""
+BACKUP_IMAGE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,6 +106,13 @@ while [[ $# -gt 0 ]]; do
     --shared-pg-dir) SHARED_PG_DIR="$2"; shift 2 ;;
     --only) ONLY="$2"; shift 2 ;;
     --fetch-secrets-to) FETCH_SECRETS_TO="$2"; shift 2 ;;
+    --backup-dir) BACKUP_DIR="$2"; shift 2 ;;
+    --backup-gcs-uri) BACKUP_GCS_URI="$2"; shift 2 ;;
+    --backup-host-id) BACKUP_HOST_ID="$2"; shift 2 ;;
+    --age-recipient) AGE_RECIPIENT="$2"; shift 2 ;;
+    --receipt-volume) RECEIPT_VOLUME="$2"; shift 2 ;;
+    --backup-writer-key-file) BACKUP_WRITER_KEY_FILE="$2"; shift 2 ;;
+    --backup-image) BACKUP_IMAGE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -167,6 +205,37 @@ if should_run postgres; then
     ssh_run "sudo cat ${SHARED_PG_DIR}/.env" > "$FETCH_SECRETS_TO"
     chmod 600 "$FETCH_SECRETS_TO"
   fi
+fi
+
+if should_run backup; then
+  echo "-- [backup] --"
+  for required in BACKUP_GCS_URI BACKUP_HOST_ID AGE_RECIPIENT RECEIPT_VOLUME BACKUP_WRITER_KEY_FILE BACKUP_IMAGE; do
+    if [[ -z "${!required}" ]]; then
+      echo "Missing required --${required,,} for --only backup" | tr '_' '-' >&2
+      exit 1
+    fi
+  done
+  if [[ ! -f "$BACKUP_WRITER_KEY_FILE" ]]; then
+    echo "Backup writer key file not found: $BACKUP_WRITER_KEY_FILE" >&2
+    exit 1
+  fi
+  BACKUP_DIR_REPO="$REPO_ROOT/infrastructure/backup"
+  scp_to "$BACKUP_DIR_REPO/family-app-backup.service" /tmp/family-app-backup.service
+  scp_to "$BACKUP_DIR_REPO/family-app-backup.timer" /tmp/family-app-backup.timer
+  scp_to "$BACKUP_DIR_REPO/family-app-backup-retry.service" /tmp/family-app-backup-retry.service
+  scp_to "$BACKUP_DIR_REPO/check-backup-freshness.sh" /tmp/check-backup-freshness.sh
+  scp_to "$SCRIPT_DIR/steps/40-backup.sh" /tmp/40-backup.sh
+  # The writer key NEVER appears in a command line (local or remote,
+  # scp's argv or ssh's argv) -- it is streamed over the SSH stdin
+  # channel straight into its final root-only mode-0400 file in one
+  # `install` call. A shell command's arguments are visible to any other
+  # local user via `ps`; a pipe's bytes are not.
+  ssh_run "sudo mkdir -p /etc/family-app && sudo install -m 0400 /dev/stdin /etc/family-app/backup-writer-key.json" \
+    < "$BACKUP_WRITER_KEY_FILE"
+  ssh_run "sudo SHARED_PG_DIR=${SHARED_PG_DIR} BACKUP_DIR=${BACKUP_DIR} BACKUP_GCS_URI=${BACKUP_GCS_URI} \
+    BACKUP_HOST_ID=${BACKUP_HOST_ID} AGE_RECIPIENT=${AGE_RECIPIENT} RECEIPT_VOLUME=${RECEIPT_VOLUME} \
+    BACKUP_IMAGE=${BACKUP_IMAGE} UNIT_FILES_DIR=/tmp \
+    bash /tmp/40-backup.sh"
 fi
 
 echo "== done =="

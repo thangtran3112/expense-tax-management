@@ -12,7 +12,7 @@
 
 ## Completed Baseline
 
-Local phases 0I, 0J Waves 1-4, 0J1, 0K Waves A+B, 0L, 0C, 0D, 0E, 0P, 0F0, 0F, 0M, and 0N complete. Details: `plans/PLAN.md` and `plans/sub-plans/`. Do not duplicate completed-phase history here.
+Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phase 1C gateway hardening, Phase 1D protected development, and Phase 3B deduplication are complete. Canonical status: `plans/PLAN.md`. Completed implementation detail remains in git history, not live planning files.
 
 ## Current Production
 
@@ -23,7 +23,10 @@ Local phases 0I, 0J Waves 1-4, 0J1, 0K Waves A+B, 0L, 0C, 0D, 0E, 0P, 0F0, 0F, 0
 - Production Clerk invitations redirect to `/accept-invitation`; ticket binds signup to invited email.
 - Password policy: minimum 8 characters; compromised-password rejection on; complexity rules off.
 - Clerk SPF/DKIM CNAMEs verified. DMARC: `_dmarc.tobytran.dev` = `v=DMARC1; p=none; adkim=s; aspf=s`.
-- Remaining: users finish invitations, then provision PostgreSQL identity/operator mappings and run authenticated smoke tests. Webhook remains deferred until endpoint verification.
+- Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
+- Authenticated production smoke passed 13/13.
+- Phase 3B deduplication is deployed. Phase 3C is implemented on `dev` but not deployed. Phase 3D-A, 3D-B, and 3D-C are implemented on `dev` but not deployed. All of 3D stays inert in production (`MAILBOX_FEATURE_ENABLED` unset) pending operator activation; 3D-B/3D-C production use additionally requires the runtime migration Task 7 operator cutover below.
+- Temporal dispatch routing is data-driven (Task 7 Stage A, `app.temporal_dispatch_routing`): generation 1 = legacy Python routing (namespace `default`, queue `expense-tax-ai-worker`) until an operator runs `advance` (Stage B). `dev` no longer hardcodes `expense-tax-processing` for new jobs, so the prior release hazard is resolved. Task 7 Stage B source is merged: `workflow-worker` ships idle in production Compose alongside `ai-worker`; the remaining operator cutover sequence (shared Temporal activation, non-production smoke, `advance`, drain) and Stage C Python removal are not yet executed.
 
 ## Boundaries
 
@@ -34,6 +37,11 @@ Local phases 0I, 0J Waves 1-4, 0J1, 0K Waves A+B, 0L, 0C, 0D, 0E, 0P, 0F0, 0F, 0
 - Use tests first for behavior changes; config-only changes need direct verification.
 - Smallest correct diff.
 
+## Env and Secrets
+
+- Single source for all family-app env and secrets: Firestore `family-config` (`tobytran-portfolio`): `shared/*` reused values, `apps/<app>/profiles/<profile>` app env; access only via `common/config/family_config.py`.
+- Laptop and VPS mirror: both load env at runtime through that CLI; no env/key files in the repo; GitHub keeps CI copies only, refreshed from Firestore.
+
 ## Authorization
 
 - Explicit Personal/business scope on every customer resource.
@@ -42,9 +50,23 @@ Local phases 0I, 0J Waves 1-4, 0J1, 0K Waves A+B, 0L, 0C, 0D, 0E, 0P, 0F0, 0F, 0
 
 ## Git Safety
 
-- Work on current branch; no feature branches.
-- Do not commit/push/reset/stash/clean/switch unless user explicitly requests.
-- Inspect status + diff before editing; never revert unrelated changes.
+- Default working branch is `feature/toby`; work directly on it permanently, across sessions.
+- Use a separate git worktree with its own throwaway `feature/*` branch only when a worktree is explicitly requested for that session.
+- Before starting new work on `feature/toby`: `git fetch origin`, then fast-forward `feature/toby` onto `origin/dev` (it carries no unmerged unique history once its prior PR is merged).
+- Never commit directly on `dev` or `main`.
+- Push `feature/toby` (or the explicitly requested worktree's branch), then open a pull request to `dev`.
+- Unit/quality check must succeed before merge.
+- Integration result is advisory and must be reported when red.
+- GitHub CLI merge is authorized after the required check is green and the PR is mergeable, squash merge is enabled, and the branch includes current `origin/dev`; use squash merge.
+- After a squash merge, `feature/toby` diverges from its now-merged commits; fast-forward it onto the new `origin/dev` tip (or reset+force-push `feature/toby` specifically if fast-forward is not possible) before the next round of work. Never force-push `dev` or `main`.
+- Never bypass branch protection.
+- `main` remains outside the development flow until a later release phase.
+- Personal repository standing approval: agents may push `feature/*` branches, open pull requests to `dev`, and squash-merge them into `origin/dev` without execution-time confirmation once the merge conditions above hold.
+- Conserve GitHub Actions minutes: stack commits locally, push only after local verification, and open exactly one pull request per phase; avoid extra pushes to an open pull request unless CI fails.
+- Every other remote write still needs explicit execution-time confirmation immediately before the command: anything targeting `main`, workflow dispatch, ruleset or default-branch changes, and force-pushes other than `feature/toby` resets.
+- Preserve unrelated worktree changes, especially `plans/mockups/**`; stage exact paths only.
+- Never inspect, print, commit, or expose secrets.
+- Inspect status and diff before editing; never revert unrelated changes.
 
 ## Verification
 
@@ -56,6 +78,6 @@ Local phases 0I, 0J Waves 1-4, 0J1, 0K Waves A+B, 0L, 0C, 0D, 0E, 0P, 0F0, 0F, 0
 
 - Production mutation requires explicit deployment approval.
 - VPS hosts APIs, Temporal, workers, and stateful orchestration; no always-on GCP compute.
-- GCP owns Secret Manager/IAM/GitHub OIDC/WIF only.
-- Secret Manager production bundle retains exactly one non-destroyed version.
+- Production GCP owns the Cloudflare Terraform WIF and state; family config lives in Firestore `family-config` (`tobytran-portfolio`); Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
+- Temporal database bootstrap remains an explicit operator-only Task 8; normal deploy never runs `bootstrap-temporal-db.sh`.
 - Current infrastructure sources: `infrastructure/vps/`, `infrastructure/cloudflare/expense-tax/`, `.github/workflows/expense-tax-deploy.yml`.

@@ -15,10 +15,8 @@ const PROFILE_ID = "33333333-3333-4333-8333-333333333333";
 const TIMESTAMP = "2026-09-08T00:00:00.000Z";
 
 describe("Phase 0L internal message contracts", () => {
-  it("keeps the task-queue/workflow-type constants stable (mirrored literally in Python)", () => {
-    // Any change here is a breaking change for services/ai-worker/src/ai_worker/constants.py
-    // and must be updated on both sides together.
-    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-ai-worker");
+  it("keeps the task-queue/workflow-type constants stable", () => {
+    expect(AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
     expect(FOUNDATION_ECHO_WORKFLOW_TYPE).toBe("FoundationEchoWorkflow");
   });
 

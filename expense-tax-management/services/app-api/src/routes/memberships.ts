@@ -24,6 +24,7 @@ import {
 } from "@expense-tax/contracts";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
 
 import type { IdentityResolver } from "../domain/authenticated-user.js";
 import type { MembershipDomain } from "../domain/memberships.js";
@@ -53,6 +54,16 @@ const standardErrors = {
   409: ErrorResponseSchema,
   500: ErrorResponseSchema,
 };
+
+/**
+ * Phase 3D-A Task 4, fix round 3 (Important) -- the minimal read the
+ * Office mailbox scope-picker needs: the caller's own Personal profile,
+ * if they have one. `profile: null` is a normal, non-error response (the
+ * caller has no Personal-profile access in this tenant), not a 404.
+ */
+const OwnPersonalProfileResponseSchema = z.strictObject({
+  profile: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+});
 
 export async function registerMembershipRoutes(
   app: FastifyInstance,
@@ -142,6 +153,24 @@ export async function registerMembershipRoutes(
         request: request.body,
         requestId: request.id,
       }),
+  );
+
+  typedApp.get(
+    "/api/v1/tenants/:tenantId/personal-profiles/mine",
+    {
+      preHandler: authentication(options.identityResolver),
+      schema: {
+        params: TenantIdParamsSchema,
+        security: [{ tenantBearer: [] }],
+        response: { 200: OwnPersonalProfileResponseSchema, ...standardErrors },
+      },
+    },
+    async (request) => ({
+      profile: await options.membershipDomain.getOwnPersonalProfile({
+        actorUserId: actorUserId(request),
+        tenantId: request.params.tenantId,
+      }),
+    }),
   );
 
   typedApp.get(

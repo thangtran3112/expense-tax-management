@@ -88,7 +88,7 @@ describe("rendered Office duplicate review", () => {
     vi.clearAllMocks();
     harness.officeData.mode = "pending";
     harness.officeData.data = { items: [match()], nextCursor: "cursor-2" };
-    harness.readOfficeSession.mockReturnValue({ apiBaseUrl: "http://app.test", tenantId: "tenant-1", businessId: "business-1", label: "Family" });
+    harness.readOfficeSession.mockReturnValue({ apiBaseUrl: "http://app.test", tenantId: "tenant-1", scope: { kind: "business", businessId: "business-1" }, label: "Family" });
     harness.api.resolveDuplicateMatch.mockResolvedValue({ status: "merged" });
     harness.api.fetchDuplicateMatches.mockResolvedValue({ items: [match({ id: "match-2", existingExpenseId: "existing-2", candidateExpenseId: "candidate-2" })], nextCursor: null });
   });

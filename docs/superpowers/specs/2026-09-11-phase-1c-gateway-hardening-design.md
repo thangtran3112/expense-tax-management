@@ -1,7 +1,7 @@
 # Phase 1C Gateway Hardening Design
 
 **Date:** 2026-09-11  
-**Status:** Proposed  
+**Status:** Complete; retained as executable input for `check-phase-1c-gateway.mjs`
 **Depends on:** Production auth release `34125c6` and live gate evidence
 
 ## Cost Boundary

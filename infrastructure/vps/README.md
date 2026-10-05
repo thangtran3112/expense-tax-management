@@ -4,7 +4,7 @@ Reusable, idempotent provisioning for a family-app VPS: SSH hardening,
 firewall, Docker, and a **shared** PostgreSQL cluster (one Postgres
 container, one database per app — see `../README.md` "why not per-app
 postgres"). Written so switching VPS providers (OVH → Database Mart,
-Hetzner, etc. — see `expense-tax-management/plans/ROADMAP.md` Phase B,
+Hetzner, etc. — see `../../expense-tax-management/plans/ROADMAP.md`,
 Feb 2027) takes a script run instead of a rediscovery exercise like the
 one that produced this directory.
 
@@ -39,8 +39,9 @@ real investigation (ping OK, ports 80/443 "connection refused" =
 reachable but nothing listening, port 22 silently timed out = actually
 just moved) before `nc -vz <ip> 2222` confirmed the real port. **Record
 the hardened port and connection details somewhere durable the moment
-you run this** (a password manager entry, `.keys/<provider>/README.md`,
-wherever — anywhere except "memory"). This directory's job is to make
+you run this**: Firestore `family-config`, `shared/vps` (`VPS_HOST`,
+`VPS_PORT`, `VPS_USER`; see `common/config/README.md`), never only in
+memory. This directory's job is to make
 the *setup* reproducible; it can't make the *fact of which port you
 chose* rediscoverable on its own.
 
@@ -65,7 +66,8 @@ vps/
 │   ├── 00-firewall.sh      # UFW: default deny incoming, allow SSH port + 80/443
 │   ├── 10-harden-ssh.sh    # SSH: target port, key-only auth, no root password login
 │   ├── 20-docker.sh        # Docker Engine + Compose plugin
-│   └── 30-postgres.sh      # shared Postgres cluster + per-app DB/roles
+│   ├── 30-postgres.sh      # shared Postgres cluster + per-app DB/roles
+│   └── 40-backup.sh        # backup state dirs, root-only secrets, systemd units (opt-in, see below)
 └── apps/
     └── expense-tax-management.conf   # per-app config consumed by bootstrap.sh
 ```
@@ -100,6 +102,10 @@ cd infrastructure/vps
 per-app role passwords, generated on the VPS — never invented locally)
 to a local path, `chmod 600`. Omit it to leave secrets VPS-only and
 fetch manually later: `ssh -p <port> ... cat /opt/family-app/postgres/.env`.
+Store the fetched values in Firestore `family-config` (superuser password
+in `shared/vps-postgres`, app role values in the app's `ops` profile; see
+`common/config/README.md`), then delete the local copy. Never keep it in
+the repository.
 
 Postgres itself is bound to the VPS's own `127.0.0.1:5432` — never
 public. Reach it from a dev machine via SSH tunnel:
@@ -112,6 +118,34 @@ Use a **local port other than 5432** for the tunnel if the app's own
 integration tests hardcode `127.0.0.1:5432` for an ephemeral local
 Postgres (expense-tax-management's do) — otherwise the tunnel and the
 disposable test instance fight over the same local port.
+
+## Backup (opt-in, Task 6 of `vps-backup-and-restore.md`)
+
+`--only backup` is never in the default step set -- it needs secrets that
+only exist once [Task 1](../gcp/backup/README.md)'s Terraform is actually
+applied and a writer key is created by hand. Once both exist:
+
+```bash
+./bootstrap.sh --host 1.2.3.4 --ssh-user ubuntu --ssh-key ~/.ssh/id_ed25519 \
+  --app apps/expense-tax-management.conf --ssh-port 2222 --target-ssh-port 2222 \
+  --only backup \
+  --backup-gcs-uri gs://expense-tax-tobytran-2026-backups \
+  --backup-host-id expense-tax-vps-1 \
+  --age-recipient age1... \
+  --receipt-volume expense-tax-production_expense_tax_production_storage \
+  --backup-writer-key-file ~/secure/backup-writer-key.json \
+  --backup-image ghcr.io/thangtran3112/family-app/family-app-backup@sha256:...
+```
+
+This installs `/opt/family-app/backup/{state,ciphertext}` (root-only),
+root-only `/etc/family-app/{backup.env,backup-pgpassword,backup-writer-key.json}`,
+and enables `family-app-backup.timer`. See
+[`../backup/README.md`](../backup/README.md) for the container/script
+details and [`check-backup-freshness.sh`](../backup/check-backup-freshness.sh)
+for the local health check. `--receipt-volume` is the Docker volume's
+NAME (`docker volume ls`), mounted into the backup container by name --
+Docker resolves it regardless of which Compose project created it, so no
+host-path lookup is needed.
 
 ## Adding a new app
 
@@ -128,13 +162,21 @@ disposable test instance fight over the same local port.
 
 ## What this does NOT do (out of scope, by design, 2026-09-08)
 
-- **Backup/restore/`migrate-vps.sh`** (pg_dump → GCS, restore on a new
-  box): deferred until GCP Storage credentials are actually configured
-  (`expense-tax-management/.env.example`'s GCS vars are still blank).
-  `plans/ROADMAP.md` describes the intended flow; not built yet.
-- **Traefik / app deployment / gateway hardening**: App API and Foundry
-  still run locally against the VPS Postgres over the SSH tunnel above.
-  No app or gateway traffic is exposed from the VPS yet.
+- **Backup/restore**: the container, scripts, systemd units, and
+  operator restore tooling are built (`../backup/`, `../gcp/backup/`) and
+  proven against disposable PostgreSQL 17 + real `age` encryption
+  end-to-end -- see `../backup/README.md`. What remains deferred:
+  actually applying Task 1's Terraform (bucket/identities), creating the
+  real writer key, and running `--only backup` against the live VPS
+  (Task 6's own "install on the live box" and Task 8's recovery drill are
+  explicitly operator-approved, out of scope for this implementation
+  pass). `migrate-vps.sh`/a full provider-migration script is still not
+  built; `../../expense-tax-management/plans/ROADMAP.md` tracks status.
+- **Application deployment**: this base bootstrap does not install application
+  containers. Production deployment is live through
+  `.github/workflows/expense-tax-deploy.yml` and
+  `expense-tax-management/deploy/production/`; Cloudflare Tunnel reaches only
+  loopback application origins. Traefik is not the current production edge.
 - **Provider VM creation itself** (no Terraform): OVH/Database
   Mart-tier VPS purchases are typically manual control-panel actions,
   not API/Terraform-driven, so this starts from "you already have a

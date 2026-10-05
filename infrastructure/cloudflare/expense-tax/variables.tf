@@ -4,10 +4,12 @@ variable "cloudflare_account_id" {
   sensitive   = true
 }
 
+# Ephemeral: never persisted in saved plans or state (Terraform >= 1.10).
 variable "cloudflare_api_token" {
   type        = string
   description = "Cloudflare API token with Account Cloudflare Tunnel Edit and Zone DNS Edit."
   sensitive   = true
+  ephemeral   = true
 }
 
 variable "zone_name" {
@@ -44,4 +46,10 @@ variable "foundry_hostname" {
   type        = string
   description = "Foundry application hostname."
   default     = "expense-foundry.tobytran.dev"
+}
+
+variable "mailbox_hostname" {
+  type        = string
+  description = "Mailbox broker OAuth hostname (Phase 3D-A Task 5)."
+  default     = "expense-mailbox.tobytran.dev"
 }

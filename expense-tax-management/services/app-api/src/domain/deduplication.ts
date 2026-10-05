@@ -518,7 +518,13 @@ async function findCandidate(
   return { file, candidate };
 }
 
-async function addMatch(
+/**
+ * Exported (Phase 3D-C Task 3) so domain/mailbox-ingestion.ts's atomic
+ * materialization path can insert a duplicate-match row using the exact
+ * same idempotent-insert-then-select shape as the legacy
+ * recordEvidence flow, instead of re-implementing it.
+ */
+export async function addMatch(
   transaction: Transaction<AppDatabase>,
   input: {
     readonly tenantId: string;

@@ -7,6 +7,8 @@ import type {
   ExpenseArchiveRequest,
   ExpenseCreateRequest,
   ExpenseList,
+  ExpenseMailboxProvenanceV1,
+  ExpenseTagChip,
   ExpenseUpdateRequest,
   LedgerQuery,
   PersonalExpenseCollectionParams,
@@ -17,6 +19,7 @@ import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { AppDatabase, ExpenseTable } from "../database/types.js";
 import { DomainError } from "../errors.js";
 import { recordAuditEvent } from "./audit.js";
+import { createEnrichmentJobInTransaction } from "./enrichment-jobs.js";
 import {
   decodeLedgerCursor,
   encodeLedgerCursor,
@@ -85,7 +88,7 @@ function dateOnly(value: Date | string): string {
   ).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 }
 
-function toExpense(row: Selectable<ExpenseTable>): Expense {
+function toExpense(row: Selectable<ExpenseTable>, tags: ExpenseTagChip[] = []): Expense {
   return {
     id: row.id,
     tenantId: row.tenant_id,
@@ -101,10 +104,55 @@ function toExpense(row: Selectable<ExpenseTable>): Expense {
     incurredOn: dateOnly(row.incurred_on as Date | string),
     taxYear: row.tax_year,
     source: row.source,
+    // Fix round 1 (review finding #6) -- set by getPersonal/getBusiness
+    // only (detail reads); list/create/update never pay for the join.
+    mailboxProvenance: null,
     status: row.status,
     version: row.version,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    tags,
+  };
+}
+
+/**
+ * Phase 3D-C Task 6 fix round 1 (review finding #6) -- the Office
+ * expense-detail "Source" block's connected-mailbox provenance, metadata
+ * only (sender address, received date, the mailbox account it arrived
+ * through, and whether it is still pending Phase 3B duplicate review --
+ * read directly off the already-persisted mailbox_candidates.status,
+ * never a second dedup lookup). Returns null for any non-connected-
+ * mailbox expense, or the rare case the join can't resolve (candidate
+ * row since deleted -- never expected, never thrown).
+ */
+async function loadMailboxProvenance(
+  database: Kysely<AppDatabase>,
+  tenantId: string,
+  expenseId: string,
+): Promise<ExpenseMailboxProvenanceV1 | null> {
+  const row = await database
+    .selectFrom("app.expense_sources as source")
+    .innerJoin("app.mailbox_candidates as candidate", (join) =>
+      join
+        .onRef("candidate.id", "=", "source.mailbox_candidate_id")
+        .onRef("candidate.tenant_id", "=", "source.tenant_id"),
+    )
+    .innerJoin("app.mailbox_connections as connection", "connection.id", "candidate.connection_id")
+    .select([
+      "candidate.sender_address",
+      "candidate.received_at",
+      "candidate.status",
+      "connection.account_email",
+    ])
+    .where("source.tenant_id", "=", tenantId)
+    .where("source.expense_id", "=", expenseId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    senderAddress: row.sender_address,
+    receivedAt: row.received_at.toISOString(),
+    mailboxAccountEmail: row.account_email,
+    pendingDuplicateReview: row.status === "duplicate",
   };
 }
 
@@ -190,6 +238,21 @@ function assertRequestScope(request: ExpenseCreateRequest, scope: Scope): void {
   }
 }
 
+/**
+ * Explicit enrichment mode for insertExpenseInTransaction.
+ *
+ * - "manual-ready"  : expense is immediately ready; create enrichment job inline
+ *                     in the same transaction before returning. Used by public
+ *                     manual creates (createPersonal, createBusiness).
+ * - "ocr-deferred"  : expense is ready but caller (applyOcrExtraction) will
+ *                     create the enrichment job itself after file binding.
+ *                     Prevents a duplicate job when OCR explicitly calls
+ *                     createEnrichmentJobInTransaction.
+ * - "draft"         : expense starts as draft; no enrichment job created.
+ *                     Used by OCR draft holding and internal callers.
+ */
+export type ExpenseInsertMode = "manual-ready" | "ocr-deferred" | "draft";
+
 export async function insertExpenseInTransaction(
   transaction: Transaction<AppDatabase>,
   input: {
@@ -198,10 +261,19 @@ export async function insertExpenseInTransaction(
     request: ExpenseCreateRequest;
     requestId: string;
     scope: Scope;
-    source?: "manual" | "ocr" | "forwarded_email";
-    initialStatus?: "draft" | "ready";
+    source?: "manual" | "ocr" | "forwarded_email" | "connected_mailbox";
+    /**
+     * Required: explicit mode governs initial status and enrichment job creation.
+     * Callers must choose one of the three explicit modes — no default.
+     * Omitting mode is a TypeScript compile-time error.
+     */
+    mode: ExpenseInsertMode;
   },
 ): Promise<Expense> {
+  const effectiveMode = input.mode;
+  const initialStatus =
+    effectiveMode === "draft" ? "draft" : "ready";
+
   const now = new Date();
   const created = await transaction
     .insertInto("app.expenses")
@@ -219,7 +291,7 @@ export async function insertExpenseInTransaction(
       currency: input.request.currency,
       incurred_on: input.request.incurredOn,
       source: input.source ?? "manual",
-      status: input.initialStatus ?? "draft",
+      status: initialStatus,
       version: 1,
       created_at: now,
       updated_at: now,
@@ -236,6 +308,47 @@ export async function insertExpenseInTransaction(
     resourceId: created.id,
     requestId: input.requestId,
   });
+
+  // Append-only spending-category decision when category present on manual create.
+  if (
+    (input.source === undefined || input.source === "manual") &&
+    input.request.spendingCategoryId != null
+  ) {
+    await transaction
+      .insertInto("app.expense_spending_category_decisions")
+      .values({
+        id: randomUUID(),
+        tenant_id: input.tenantId,
+        personal_profile_id: input.scope.kind === "personal" ? input.scope.profileId : null,
+        business_id: input.scope.kind === "business" ? input.scope.businessId : null,
+        expense_id: created.id,
+        prior_spending_category_id: null,
+        new_spending_category_id: input.request.spendingCategoryId,
+        source: "manual",
+        actor_user_id: input.actorUserId,
+        expense_version: created.version,
+        suggestion_id: null,
+      })
+      .execute();
+  }
+
+  // Enqueue enrichment workflow for manual-ready path only.
+  // "ocr-deferred" skips here; applyOcrExtraction explicitly calls
+  // createEnrichmentJobInTransaction after file binding (avoids duplicate).
+  if (effectiveMode === "manual-ready") {
+    await createEnrichmentJobInTransaction(transaction, {
+      tenantId: input.tenantId,
+      scope:
+        input.scope.kind === "personal"
+          ? { personalProfileId: input.scope.profileId }
+          : { businessId: input.scope.businessId },
+      expenseId: created.id,
+      expectedExpenseVersion: created.version,
+      requestedByUserId: input.actorUserId,
+      requestId: input.requestId,
+    });
+  }
+
   return toExpense(created);
 }
 
@@ -274,6 +387,10 @@ async function queryExpenses(
         }
       })()
     : null;
+
+  // Task 9: tagIds is canonical (sorted, deduped) after LedgerQuerySchema transform.
+  const tagIds = input.query.tagIds ?? [];
+
   let query = database
     .selectFrom("app.expenses as expense")
     .leftJoin("app.expense_tax_treatments as treatment", "treatment.expense_id", "expense.id")
@@ -285,6 +402,49 @@ async function queryExpenses(
   } else {
     query = query.where("expense.business_id", "=", input.scope.businessId);
   }
+
+  // Task 9: AND semantics — one EXISTS subquery per requested tagId.
+  // Each subquery checks: active association AND active tag definition AND same scope.
+  // Scope column is branched explicitly so no sql.raw() or unsafe string injection is needed.
+  for (const tagId of tagIds) {
+    const tenantId = input.tenantId;
+    if (input.scope.kind === "personal") {
+      const profileId = input.scope.profileId;
+      query = query.where(
+        sql<boolean>`EXISTS (
+          SELECT 1
+          FROM app.expense_tags AS et2
+          INNER JOIN app.tags AS t2
+            ON t2.id = et2.tag_id
+           AND t2.status = 'active'
+           AND t2.tenant_id = ${tenantId}
+          WHERE et2.expense_id = expense.id
+            AND et2.tag_id = ${tagId}
+            AND et2.tenant_id = ${tenantId}
+            AND et2.status = 'active'
+            AND et2.personal_profile_id = ${profileId}
+        )`,
+      );
+    } else {
+      const businessId = input.scope.businessId;
+      query = query.where(
+        sql<boolean>`EXISTS (
+          SELECT 1
+          FROM app.expense_tags AS et2
+          INNER JOIN app.tags AS t2
+            ON t2.id = et2.tag_id
+           AND t2.status = 'active'
+           AND t2.tenant_id = ${tenantId}
+          WHERE et2.expense_id = expense.id
+            AND et2.tag_id = ${tagId}
+            AND et2.tenant_id = ${tenantId}
+            AND et2.status = 'active'
+            AND et2.business_id = ${businessId}
+        )`,
+      );
+    }
+  }
+
   if (input.query.incurredFrom !== undefined) {
     query = query.where(
       "expense.incurred_on",
@@ -370,7 +530,45 @@ async function queryExpenses(
         lastId: lastRow.id,
       })
     : null;
-  return { items: pageRows.map(toExpense), nextCursor };
+
+  // Task 9: project active tag chips for expenses on this page.
+  // Single bulk query — join expense_tags + tags, filter active on both sides.
+  // Order: name ASC, id ASC — deterministic chip ordering per expense.
+  // Scope column branched explicitly — no sql.raw() or unsafe string injection.
+  const pageExpenseIds = pageRows.map((r) => r.id);
+  const tagChipsByExpenseId = new Map<string, ExpenseTagChip[]>();
+  if (pageExpenseIds.length > 0) {
+    let chipQuery = database
+      .selectFrom("app.expense_tags as et")
+      .innerJoin("app.tags as t", (join) =>
+        join
+          .onRef("t.id", "=", "et.tag_id")
+          .on("t.status", "=", "active")
+          .on("t.tenant_id", "=", input.tenantId),
+      )
+      .select(["et.expense_id", "t.id", "t.name", "t.color"])
+      .where("et.expense_id", "in", pageExpenseIds)
+      .where("et.status", "=", "active")
+      .where("et.tenant_id", "=", input.tenantId)
+      .orderBy("t.name", "asc")
+      .orderBy("t.id", "asc");
+    if (input.scope.kind === "personal") {
+      chipQuery = chipQuery.where("et.personal_profile_id", "=", input.scope.profileId);
+    } else {
+      chipQuery = chipQuery.where("et.business_id", "=", input.scope.businessId);
+    }
+    const chipRows = await chipQuery.execute();
+    for (const chip of chipRows) {
+      const chips = tagChipsByExpenseId.get(chip.expense_id) ?? [];
+      chips.push({ id: chip.id, name: chip.name, color: chip.color });
+      tagChipsByExpenseId.set(chip.expense_id, chips);
+    }
+  }
+
+  return {
+    items: pageRows.map((row) => toExpense(row, tagChipsByExpenseId.get(row.id) ?? [])),
+    nextCursor,
+  };
 }
 
 async function findExpense(
@@ -397,14 +595,31 @@ async function updateExpense(
   input: ExpenseUpdateCommand & { readonly scope: Scope },
 ): Promise<Expense> {
   return database.transaction().execute(async (transaction) => {
-    const current = await findExpense(transaction, {
-      tenantId: input.tenantId,
-      expenseId: input.expenseId,
-      scope: input.scope,
-    });
+    // Lock expense for update
+    const current = await transaction
+      .selectFrom("app.expenses")
+      .selectAll()
+      .where("id", "=", input.expenseId)
+      .where("tenant_id", "=", input.tenantId)
+      .where("status", "!=", "archived")
+      .$if(input.scope.kind === "personal", (q) =>
+        q.where("personal_profile_id", "=", (input.scope as { profileId: string }).profileId),
+      )
+      .$if(input.scope.kind === "business", (q) =>
+        q.where("business_id", "=", (input.scope as { businessId: string }).businessId),
+      )
+      .forUpdate()
+      .executeTakeFirst();
+    if (!current) throw DomainError.notFound();
+
     if (input.scope.kind === "personal" && input.request.projectId !== undefined) {
       if (input.request.projectId !== null) throw DomainError.validation();
     }
+
+    const categoryChanging =
+      input.request.spendingCategoryId !== undefined &&
+      input.request.spendingCategoryId !== current.spending_category_id;
+
     const updated = await transaction
       .updateTable("app.expenses")
       .set({
@@ -431,6 +646,49 @@ async function updateExpense(
       .returningAll()
       .executeTakeFirst();
     if (!updated) throw DomainError.conflict();
+
+    // Manual spendingCategoryId change: append decision row + supersede pending suggestions
+    if (categoryChanging) {
+      await transaction
+        .insertInto("app.expense_spending_category_decisions")
+        .values({
+          id: randomUUID(),
+          tenant_id: input.tenantId,
+          personal_profile_id:
+            input.scope.kind === "personal"
+              ? (input.scope as { profileId: string }).profileId
+              : null,
+          business_id:
+            input.scope.kind === "business"
+              ? (input.scope as { businessId: string }).businessId
+              : null,
+          expense_id: input.expenseId,
+          prior_spending_category_id: current.spending_category_id,
+          new_spending_category_id: input.request.spendingCategoryId ?? null,
+          source: "manual",
+          actor_user_id: input.actorUserId,
+          // expense_version is the NEW version after the update
+          expense_version: updated.version,
+          suggestion_id: null,
+        })
+        .execute();
+
+      // Supersede all pending spending_category suggestions for this expense
+      const now = new Date();
+      await transaction
+        .updateTable("app.expense_enrichment_suggestions")
+        .set({
+          status: "superseded",
+          resolved_at: now,
+          resolved_by_user_id: null, // system supersession — resolver may be null
+        })
+        .where("expense_id", "=", input.expenseId)
+        .where("tenant_id", "=", input.tenantId)
+        .where("kind", "=", "spending_category")
+        .where("status", "=", "pending")
+        .execute();
+    }
+
     await recordAuditEvent(transaction, {
       tenantId: input.tenantId,
       actorUserId: input.actorUserId,
@@ -480,6 +738,38 @@ async function archiveExpense(
   });
 }
 
+/**
+ * Fetch active tag chips for a single expense. Active association AND active tag
+ * definition in same tenant/exact scope. Results ordered name ASC, id ASC.
+ */
+async function projectExpenseTagChips(
+  database: Kysely<AppDatabase>,
+  input: { tenantId: string; expenseId: string; scope: Scope },
+): Promise<ExpenseTagChip[]> {
+  // Scope column branched explicitly — no sql.raw() or unsafe string injection.
+  let chipQuery = database
+    .selectFrom("app.expense_tags as et")
+    .innerJoin("app.tags as t", (join) =>
+      join
+        .onRef("t.id", "=", "et.tag_id")
+        .on("t.status", "=", "active")
+        .on("t.tenant_id", "=", input.tenantId),
+    )
+    .select(["t.id", "t.name", "t.color"])
+    .where("et.expense_id", "=", input.expenseId)
+    .where("et.status", "=", "active")
+    .where("et.tenant_id", "=", input.tenantId)
+    .orderBy("t.name", "asc")
+    .orderBy("t.id", "asc");
+  if (input.scope.kind === "personal") {
+    chipQuery = chipQuery.where("et.personal_profile_id", "=", input.scope.profileId);
+  } else {
+    chipQuery = chipQuery.where("et.business_id", "=", input.scope.businessId);
+  }
+  const chipRows = await chipQuery.execute();
+  return chipRows.map((r) => ({ id: r.id, name: r.name, color: r.color }));
+}
+
 export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomain {
   return {
     async createPersonal(input) {
@@ -490,6 +780,9 @@ export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomai
         insertExpenseInTransaction(transaction, {
           ...input,
           scope: { kind: "personal", profileId: input.profileId },
+          // Explicit mode: public manual creates are immediately ready and
+          // the enrichment job is created inline in the same transaction.
+          mode: "manual-ready",
         }),
       );
     },
@@ -501,6 +794,9 @@ export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomai
         insertExpenseInTransaction(transaction, {
           ...input,
           scope: { kind: "business", businessId: input.businessId },
+          // Explicit mode: public manual creates are immediately ready and
+          // the enrichment job is created inline in the same transaction.
+          mode: "manual-ready",
         }),
       );
     },
@@ -520,23 +816,35 @@ export function createExpenseDomain(database: Kysely<AppDatabase>): ExpenseDomai
     },
     async getPersonal(input) {
       await personalRole(database, input);
-      return toExpense(
-        await findExpense(database, {
-          tenantId: input.tenantId,
-          expenseId: input.expenseId,
-          scope: { kind: "personal", profileId: input.profileId },
-        }),
-      );
+      const row = await findExpense(database, {
+        tenantId: input.tenantId,
+        expenseId: input.expenseId,
+        scope: { kind: "personal", profileId: input.profileId },
+      });
+      const chips = await projectExpenseTagChips(database, {
+        tenantId: input.tenantId,
+        expenseId: row.id,
+        scope: { kind: "personal", profileId: input.profileId },
+      });
+      const expense = toExpense(row, chips);
+      if (expense.source !== "connected_mailbox") return expense;
+      return { ...expense, mailboxProvenance: await loadMailboxProvenance(database, input.tenantId, row.id) };
     },
     async getBusiness(input) {
       await businessRole(database, input);
-      return toExpense(
-        await findExpense(database, {
-          tenantId: input.tenantId,
-          expenseId: input.expenseId,
-          scope: { kind: "business", businessId: input.businessId },
-        }),
-      );
+      const row = await findExpense(database, {
+        tenantId: input.tenantId,
+        expenseId: input.expenseId,
+        scope: { kind: "business", businessId: input.businessId },
+      });
+      const chips = await projectExpenseTagChips(database, {
+        tenantId: input.tenantId,
+        expenseId: row.id,
+        scope: { kind: "business", businessId: input.businessId },
+      });
+      const expense = toExpense(row, chips);
+      if (expense.source !== "connected_mailbox") return expense;
+      return { ...expense, mailboxProvenance: await loadMailboxProvenance(database, input.tenantId, row.id) };
     },
     async updatePersonal(input) {
       const role = await personalRole(database, input);

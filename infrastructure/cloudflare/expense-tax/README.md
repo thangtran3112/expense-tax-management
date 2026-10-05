@@ -9,6 +9,13 @@ rate limiting, Workers, Cloud Armor, and paid Access/Zero Trust seats
 require separate approval and must not be added here without an explicit cost
 decision.
 
+## Live status
+
+- Terraform-managed Tunnel and five product CNAMEs are active.
+- VPS `cloudflared` is healthy; all application origins remain loopback-only.
+- Clerk DNS and DMARC records are imported into Terraform state.
+- Production host routing, API health, signed webhook delivery, and authenticated smoke checks pass.
+
 ## Host routing
 
 | Host | VPS origin |
@@ -73,11 +80,12 @@ Bootstrap requires authenticated gcloud, verifies the exact bucket name appears
 in a project-scoped listing for `expense-tax-tobytran-2026` before any IAM
 mutation, and grants existing
 dedicated `expense-tax-cf-terraform` service account object admin. The
-application deploy service account has no access to this bucket. Run
+application deploy service account has no access to this bucket. For a fresh
+environment, run
 `expense-tax-management/infrastructure/gcp/expense-tax/bootstrap-cloudflare.sh`
-first to create the dedicated service account and exact Cloudflare workflow WIF
-provider. These commands mutate GCP only when
-deliberately run by an operator; it was not run as part of this change.
+to create the dedicated service account and exact Cloudflare workflow WIF
+provider. Existing production bootstrap is complete. Re-running these commands
+mutates GCP and requires explicit operator approval.
 
 Configure these GitHub production environment variables from bootstrap output:
 

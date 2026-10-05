@@ -51,12 +51,14 @@ const imageNames = [
   "expense-tax-app-api",
   "expense-tax-foundry-service",
   "expense-tax-ai-worker",
+  "expense-tax-workflow-worker",
+  "expense-tax-mailbox-broker",
   "expense-tax-capture-web",
   "expense-tax-office-web",
   "expense-tax-foundry-web",
 ];
 const matrixImages = workflow.jobs?.build?.strategy?.matrix?.include ?? [];
-assertEqual(matrixImages.length, 6, "build image matrix size");
+assertEqual(matrixImages.length, 8, "build image matrix size");
 assertEqual(
   matrixImages.map(({ image }) => image).sort().join(","),
   imageNames.slice().sort().join(","),
@@ -69,14 +71,15 @@ assertExcludes(raw, ":latest", "mutable latest image tag");
 assertIncludes(raw, "environment: production");
 assertIncludes(raw, "concurrency:");
 assertIncludes(raw, "needs: build");
-assertIncludes(raw, "id-token: write");
-assertIncludes(raw, "google-github-actions/auth@v3");
-assertIncludes(raw, "workload_identity_provider");
-assertIncludes(raw, "service_account");
-assertIncludes(raw, "gcloud secrets versions access latest");
-assertIncludes(raw, "get(payload.data)");
-assertIncludes(raw, "base64 --decode");
-assertIncludes(raw, "chmod 600");
+// Production env comes from Firestore family-config on the VPS, never from CI.
+assertExcludes(raw, "id-token: write", "CI-side GCP identity");
+assertExcludes(raw, "google-github-actions/auth", "CI-side GCP authentication");
+assertExcludes(raw, "gcloud secrets", "CI-side secret fetch");
+assertIncludes(raw, "common/config/family_config.py");
+assertIncludes(
+  raw,
+  "FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json /opt/expense-tax-management/app/family_config.py run expense-tax-management/production --env-file-var DEPLOY_ENV_FILE -- /opt/expense-tax-management/app/deploy.sh",
+);
 assertIncludes(raw, "VPS_DEPLOY_SSH_KEY");
 assertIncludes(raw, "VPS_DEPLOY_KNOWN_HOSTS");
 assertExcludes(raw, "ssh-keyscan", "runtime host-key discovery");
@@ -120,7 +123,7 @@ assertEqual(workflow.jobs?.build?.permissions?.contents, "read", "build contents
 assertEqual(workflow.jobs?.build?.permissions?.packages, "write", "build packages permission");
 assertEqual(workflow.jobs?.deploy?.permissions?.contents, "read", "deploy contents permission");
 assertEqual(workflow.jobs?.deploy?.permissions?.packages, "read", "deploy packages permission");
-assertEqual(workflow.jobs?.deploy?.permissions?.["id-token"], "write", "deploy OIDC permission");
+assertEqual(workflow.jobs?.deploy?.permissions?.["id-token"], undefined, "deploy has no OIDC permission");
 assertExcludes(raw, "permissions: write", "broad workflow permissions");
 
 if (failures.length > 0) {

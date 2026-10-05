@@ -231,6 +231,7 @@ export function createSpendingCategoryDomain(
           input.actorUserId,
           input.tenantId,
         );
+        // Lock the category row before mutation
         await requireMutableCategory(
           transaction,
           input.tenantId,
@@ -251,6 +252,23 @@ export function createSpendingCategoryDomain(
           .returningAll()
           .executeTakeFirst();
         if (!updated) throw DomainError.conflict();
+
+        // Supersede pending spending_category suggestions referencing this category.
+        // Only pending — accepted/rejected terminal suggestions are immutable.
+        const now = new Date();
+        await transaction
+          .updateTable("app.expense_enrichment_suggestions")
+          .set({
+            status: "superseded",
+            resolved_at: now,
+            resolved_by_user_id: null,
+          })
+          .where("tenant_id", "=", input.tenantId)
+          .where("kind", "=", "spending_category")
+          .where("spending_category_id", "=", input.categoryId)
+          .where("status", "=", "pending")
+          .execute();
+
         await recordAuditEvent(transaction, {
           tenantId: input.tenantId,
           actorUserId: input.actorUserId,

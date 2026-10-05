@@ -25,63 +25,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── 2. Temporal Knowledge Graph DB (Neo4j Community 5.26+) ───
-  neo4j:
-    image: neo4j:5.26-community
-    container_name: expense-tax-neo4j
-    restart: unless-stopped
-    ports:
-      - "7474:7474"  # Browser UI
-      - "7687:7687"  # Bolt protocol
-    environment:
-      NEO4J_AUTH: neo4j/password123
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
-    volumes:
-      - neo4j_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7474"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ─── 3. Temporal Workflow Engine Server ───
-  temporal:
-    image: temporalio/auto-setup:latest
-    container_name: expense-tax-temporal
-    restart: unless-stopped
-    ports:
-      - "7233:7233"
-    environment:
-      - DB=postgres12
-      - DB_PORT=5432
-      - POSTGRES_USER=postgres
-      - POSTGRES_PWD=postgrespassword
-      - POSTGRES_SEEDS=postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-
-  # ─── 4. Temporal Web Admin UI ───
-  temporal-ui:
-    image: temporalio/ui:latest
-    container_name: expense-tax-temporal-ui
-    restart: unless-stopped
-    ports:
-      - "8233:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:8233
-    depends_on:
-      - temporal
-
-  # ─── 5. Gateway Ingress (Nginx 1.27+) ───
+  # ─── 2. Gateway Ingress (Nginx 1.27+) ───
   nginx:
     image: nginx:1.27-alpine
     container_name: expense-tax-gateway
@@ -95,4 +39,3 @@ services:
 
 volumes:
   postgres_data:
-  neo4j_data:

@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+import { WorkflowTypeSchema } from "./task-queues.js";
+
 export const JobReferenceV1Schema = z.strictObject({
   schemaVersion: z.literal(1),
   jobId: z.uuid(),
-  workflowType: z.string().min(1),
+  workflowType: WorkflowTypeSchema,
   workflowId: z.string().min(1),
 });
 

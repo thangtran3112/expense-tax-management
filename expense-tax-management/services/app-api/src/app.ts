@@ -39,10 +39,14 @@ import {
 import { createTenantDomain, type TenantDomain } from "./domain/tenants.js";
 import { createPlansDomain, type PlansDomain } from "./domain/plans.js";
 import {
+  createEnrichmentJobsDomain,
+  type EnrichmentJobsDomain,
+} from "./domain/enrichment-jobs.js";
+import {
   createProcessingJobsDomain,
   type ProcessingJobsDomain,
 } from "./domain/processing-jobs.js";
-import { registerErrorHandlers } from "./errors.js";
+import { DomainError, registerErrorHandlers } from "./errors.js";
 import { registerAuthPlugin } from "./plugins/auth.js";
 import {
   registerDatabasePlugin,
@@ -61,10 +65,22 @@ import { registerTenantRoutes } from "./routes/tenants.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { createDeduplicationDomain, type DeduplicationDomain } from "./domain/deduplication.js";
+import { createTagDomain, type TagDomain } from "./domain/tags.js";
+import { registerTagRoutes } from "./routes/tags.js";
+import { registerEnrichmentRoutes } from "./routes/enrichment.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { createExportsDomain, type ExportsDomain } from "./domain/exports.js";
 import { registerFileRoutes } from "./routes/files.js";
-import { createFilesDomain, type FilesDomain } from "./domain/files.js";
+import {
+  createFilesDomain,
+  createMailboxStagingScanner,
+  type FilesDomain,
+} from "./domain/files.js";
+import { registerMailboxIngestionRoutes } from "./routes/mailbox-ingestion.js";
+import {
+  createMailboxIngestionDomain,
+  type MailboxIngestionDomain,
+} from "./domain/mailbox-ingestion.js";
 import { registerOcrRoutes } from "./routes/ocr.js";
 import { createOcrJobsDomain, type OcrJobsDomain } from "./domain/ocr.js";
 import {
@@ -75,6 +91,22 @@ import { registerInboundEmailRoutes } from "./routes/inbound-email.js";
 import { registerClerkWebhookRoutes, type ClerkWebhookRouteOptions } from "./routes/clerk-webhooks.js";
 import { registerAuthCheckRoutes } from "./routes/auth-check.js";
 import { registerDuplicateMatchRoutes } from "./routes/duplicate-matches.js";
+import { registerMailboxConnectionRoutes } from "./routes/mailbox-connections.js";
+import { registerMailboxInternalRoutes } from "./routes/mailbox-internal.js";
+import { registerMailboxCandidateRoutes } from "./routes/mailbox-candidates.js";
+import {
+  createMailboxConnectionsDomain,
+  type MailboxConnectionsDomain,
+} from "./domain/mailbox-connections.js";
+import {
+  createMailboxScansDomain,
+  type MailboxScansDomain,
+} from "./domain/mailbox-scans.js";
+import {
+  createMailboxCandidatesDomain,
+  type MailboxCandidatesDomain,
+} from "./domain/mailbox-candidates.js";
+import { createMailboxBrokerClient } from "./integrations/mailbox-broker-client.js";
 import type { ClerkIdentityMappingDomain } from "./domain/clerk-identity.js";
 import {
   createClerkWebhookHandler,
@@ -97,6 +129,7 @@ import {
   createTemporalWorkflowStarter,
   type TemporalWorkflowStarter,
 } from "./temporal/client.js";
+import { createMailboxScanDispatch } from "./temporal/mailbox-schedules.js";
 import type { Kysely } from "kysely";
 
 const SENSITIVE_FIELD_NAMES = [
@@ -177,6 +210,7 @@ export interface BuildAppOptions {
   readonly plansDomain?: PlansDomain;
   readonly temporalStarter?: TemporalWorkflowStarter;
   readonly processingJobsDomain?: ProcessingJobsDomain;
+  readonly enrichmentJobsDomain?: EnrichmentJobsDomain;
   readonly deduplicationDomain?: DeduplicationDomain;
   readonly storageAdapter?: StorageAdapter;
   readonly filesDomain?: FilesDomain;
@@ -188,6 +222,85 @@ export interface BuildAppOptions {
   readonly clerkWebhookHandler?: ClerkWebhookHandler;
   readonly clerkWebhookVerifySignature?: ClerkWebhookRouteOptions["verifySignature"];
   readonly clerkIdentityDomain?: ClerkIdentityMappingDomain;
+  readonly tagDomain?: TagDomain;
+  readonly mailboxConnectionsDomain?: MailboxConnectionsDomain;
+  readonly mailboxScansDomain?: MailboxScansDomain;
+  readonly mailboxCandidatesDomain?: MailboxCandidatesDomain;
+  readonly mailboxIngestionDomain?: MailboxIngestionDomain;
+}
+
+/**
+ * Fix round 1 (Important) -- used only when `config.mailboxEnabled` is
+ * explicitly false (the deliberate, documented default), never as a
+ * fallback for incomplete-but-enabled config: `createAppConfig` already
+ * fails startup in that case (`validateMailboxConfiguration`), so this
+ * function is reached only by genuine, intentional "feature is off"
+ * deployments. Every method returns a typed, documented
+ * `DomainError.featureDisabled()` (404, code `FEATURE_DISABLED`) instead
+ * of a generic/ambiguous error, so a caller can tell "this isn't broken,
+ * it's turned off" from "something crashed". Routes stay registered
+ * either way, so the customer-facing route is always present in the
+ * generated OpenAPI spec/TS client.
+ */
+function createDisabledMailboxConnectionsDomain(): MailboxConnectionsDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    startConnection: disabled,
+    getConnection: disabled,
+    consumeOAuthState: disabled,
+    completeConnection: disabled,
+    acquireTokenOperationLease: disabled,
+    advanceTokenGeneration: disabled,
+    releaseTokenOperationLease: disabled,
+    recordRevocation: disabled,
+  };
+}
+
+/** Same "explicitly disabled, not misconfigured" convention as
+ * createDisabledMailboxConnectionsDomain, applied to the Task 2 scan
+ * domain. */
+function createDisabledMailboxScansDomain(): MailboxScansDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    startManualScan: disabled,
+    startScheduledScan: disabled,
+    listScanRuns: disabled,
+    loadScanBinding: disabled,
+    loadCandidateBinding: disabled,
+    recordCandidateMetadata: disabled,
+    finalizeScanRun: disabled,
+  };
+}
+
+/** Same "explicitly disabled, not misconfigured" convention as
+ * createDisabledMailboxConnectionsDomain, applied to Task 5's candidate
+ * review domain. */
+function createDisabledMailboxCandidatesDomain(): MailboxCandidatesDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    listCandidates: disabled,
+    resolveCandidate: disabled,
+  };
+}
+
+/** Same "explicitly disabled, not misconfigured" convention, applied to
+ * Task 3's ingestion domain. */
+function createDisabledMailboxIngestionDomain(): MailboxIngestionDomain {
+  const disabled = async (): Promise<never> => {
+    throw DomainError.featureDisabled();
+  };
+  return {
+    issueUploadGrant: disabled,
+    receiveAttachment: disabled,
+    submitStructuredReceipt: disabled,
+    recordConnectedMailboxEvidence: disabled,
+  };
 }
 
 function loggerWithRedaction(logger: BuildAppOptions["logger"]): LoggerOption {
@@ -231,8 +344,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const processingJobsDomain =
     options.processingJobsDomain ??
     createProcessingJobsDomain(database, temporalStarter);
+  const enrichmentJobsDomain =
+    options.enrichmentJobsDomain ?? createEnrichmentJobsDomain(database);
   const deduplicationDomain =
     options.deduplicationDomain ?? createDeduplicationDomain(database);
+  const tagDomain = options.tagDomain ?? createTagDomain(database);
   const storageAdapter =
     options.storageAdapter ??
     createStorageAdapter({
@@ -242,7 +358,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       urlSigningKey: options.config.storage.urlSigningKey,
     });
   const filesDomain =
-    options.filesDomain ?? createFilesDomain(database, storageAdapter);
+    options.filesDomain ??
+    createFilesDomain(database, storageAdapter, {
+      mailboxScanner: createMailboxStagingScanner(
+        storageAdapter,
+        options.malwareScanner ?? PatternMalwareScanner,
+      ),
+    });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -338,16 +460,121 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
   app.register(registerJobRoutes, {
     processingJobsDomain,
+    enrichmentJobsDomain,
     deduplicationDomain,
     ...(options.config.clerk?.appServiceSubject
       ? { workerServiceSubject: options.config.clerk.appServiceSubject }
       : {}),
+    ...(options.config.clerk?.enrichmentInputScope
+      ? { enrichmentInputScope: options.config.clerk.enrichmentInputScope }
+      : {}),
+    ...(options.config.clerk?.enrichmentResultScope
+      ? { enrichmentResultScope: options.config.clerk.enrichmentResultScope }
+      : {}),
+  });
+  app.register(registerTagRoutes, {
+    identityResolver: identityDomain,
+    tagDomain,
+  });
+  app.register(registerEnrichmentRoutes, {
+    identityResolver: identityDomain,
+    tagDomain,
   });
   app.register(registerDuplicateMatchRoutes, {
     identityResolver: identityDomain,
     deduplicationDomain: (deduplicationDomain.resolveMatch
       ? deduplicationDomain
       : createDeduplicationDomain(database)) as Parameters<typeof registerDuplicateMatchRoutes>[1]["deduplicationDomain"],
+  });
+  // Fix round 1: real construction only when the feature is explicitly
+  // enabled (`createAppConfig` already fails startup if enabled but
+  // incompletely configured, so every field below is guaranteed present
+  // whenever `mailboxEnabled` is true); `options.mailboxConnectionsDomain`
+  // always wins, for tests.
+  const mailboxBrokerClient =
+    options.config.mailboxEnabled &&
+    options.config.clerk?.mailboxBrokerBaseUrl !== undefined &&
+    options.config.clerk.mailboxServiceAudience !== undefined &&
+    options.config.clerk.mailboxAppApiMachineSecretKey !== undefined &&
+    options.config.clerk.mailboxAppApiSubject !== undefined
+      ? createMailboxBrokerClient({
+          baseUrl: options.config.clerk.mailboxBrokerBaseUrl,
+          issuerUrl: options.config.clerk.issuerUrl,
+          jwksUrl: options.config.clerk.jwksUrl,
+          credentials: {
+            audience: options.config.clerk.mailboxServiceAudience,
+            machineSecretKey: options.config.clerk.mailboxAppApiMachineSecretKey,
+            subject: options.config.clerk.mailboxAppApiSubject,
+          },
+        })
+      : undefined;
+  const mailboxConnectionsDomain =
+    options.mailboxConnectionsDomain ??
+    (mailboxBrokerClient && options.config.mailboxAllowedRedirectOrigins
+      ? createMailboxConnectionsDomain(database, mailboxBrokerClient, {
+          allowedRedirectOrigins: options.config.mailboxAllowedRedirectOrigins,
+        })
+      : createDisabledMailboxConnectionsDomain());
+  const mailboxScansDomain =
+    options.mailboxScansDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxScanDispatch(
+          createMailboxScansDomain(database, { plansDomain }),
+          temporalStarter,
+        )
+      : createDisabledMailboxScansDomain());
+  // Phase 3D-B Task 5 -- no broker client needed (candidate review is a
+  // pure App-owned transition), so this only depends on `mailboxEnabled`.
+  const mailboxCandidatesDomain =
+    options.mailboxCandidatesDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxCandidatesDomain(database, { mailboxEnabled: options.config.mailboxEnabled })
+      : createDisabledMailboxCandidatesDomain());
+  // Always registered (same pattern as every other route group in this
+  // file) so the customer-facing route is always present in the generated
+  // OpenAPI spec/TS client; when the feature is disabled, every call fails
+  // closed with a typed FEATURE_DISABLED (404) via
+  // createDisabledMailboxConnectionsDomain/createDisabledMailboxScansDomain
+  // above, not a generic error.
+  app.register(registerMailboxConnectionRoutes, {
+    mailboxConnectionsDomain,
+    mailboxScansDomain,
+    identityResolver: identityDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
+    ...(options.config.clerk?.mailboxBrokerPublicBaseUrl
+      ? { mailboxBrokerPublicBaseUrl: options.config.clerk.mailboxBrokerPublicBaseUrl }
+      : {}),
+  });
+  app.register(registerMailboxInternalRoutes, {
+    mailboxScansDomain,
+    processingJobsDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
+    ...(options.config.clerk?.mailboxWorkerServiceSubject
+      ? { workerServiceSubject: options.config.clerk.mailboxWorkerServiceSubject }
+      : {}),
+  });
+  app.register(registerMailboxCandidateRoutes, {
+    mailboxCandidatesDomain,
+    identityResolver: identityDomain,
+  });
+  // Phase 3D-C Task 3 -- depends on filesDomain (constructed above), so
+  // this domain/route pair is wired after the mailbox Task 1/2/5 block
+  // even though it belongs to the same "always registered, fails closed
+  // when disabled" family.
+  const mailboxIngestionDomain =
+    options.mailboxIngestionDomain ??
+    (options.config.mailboxEnabled
+      ? createMailboxIngestionDomain(database, { filesDomain, plansDomain })
+      : createDisabledMailboxIngestionDomain());
+  app.register(registerMailboxIngestionRoutes, {
+    mailboxIngestionDomain,
+    ...(options.config.clerk?.mailboxBrokerServiceSubject
+      ? { brokerServiceSubject: options.config.clerk.mailboxBrokerServiceSubject }
+      : {}),
   });
   const exportsDomain =
     options.exportsDomain ??

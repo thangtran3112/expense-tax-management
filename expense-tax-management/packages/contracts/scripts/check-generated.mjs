@@ -69,6 +69,14 @@ try {
       path.join(temporaryContractsRoot, "json-schema", "ocr-job-input-v1.schema.json"),
     ],
     [
+      "packages/contracts/generated/json-schema/expense-enrichment-input-v1.schema.json",
+      path.join(temporaryContractsRoot, "json-schema", "expense-enrichment-input-v1.schema.json"),
+    ],
+    [
+      "packages/contracts/generated/json-schema/expense-enrichment-result-v1.schema.json",
+      path.join(temporaryContractsRoot, "json-schema", "expense-enrichment-result-v1.schema.json"),
+    ],
+    [
       "packages/contracts/generated/openapi/app-api.openapi.json",
       path.join(temporaryContractsRoot, "openapi", "app-api.openapi.json"),
     ],
@@ -103,6 +111,14 @@ try {
     [
       "common/python/expense-contracts/src/expense_contracts/generated/ocr_job_input_v1.py",
       path.join(temporaryPythonRoot, "ocr_job_input_v1.py"),
+    ],
+    [
+      "common/python/expense-contracts/src/expense_contracts/generated/expense_enrichment_input_v1.py",
+      path.join(temporaryPythonRoot, "expense_enrichment_input_v1.py"),
+    ],
+    [
+      "common/python/expense-contracts/src/expense_contracts/generated/expense_enrichment_result_v1.py",
+      path.join(temporaryPythonRoot, "expense_enrichment_result_v1.py"),
     ],
   ];
 

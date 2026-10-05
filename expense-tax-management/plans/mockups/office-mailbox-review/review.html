@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExpenseTax Office — Mailbox candidate review (Phase 3D-B feature gate)</title>
+<link rel="icon" href="../favicon.svg">
+<link rel="stylesheet" href="../rebaseline/shared/tokens.css">
+<link rel="stylesheet" href="../office-mailbox/mailbox.css">
+<link rel="stylesheet" href="review.css">
+</head>
+<body class="office">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><span class="mark">O</span> ExpenseTax Office</div>
+    <nav aria-label="Office">
+      <a href="#">Dashboard</a>
+      <a href="#">Expenses</a>
+      <a href="#">Businesses</a>
+      <a href="#">Projects</a>
+      <a href="#">Tax</a>
+      <a href="#">Exports</a>
+      <a href="#">Forwarding</a>
+      <a aria-current="page" href="#main">Mailbox</a>
+      <a href="#">Settings</a>
+    </nav>
+    <small>Laptop ≥1024px primary<br>Responsive down to 375px</small>
+  </aside>
+  <main id="main">
+    <div class="topline">
+      <div>
+        <p class="eyebrow">Office Web · feature gate · Phase 3D-B Task 5</p>
+        <h1>Review mailbox candidates.</h1>
+        <p class="lede">This region extends the connected-mailbox page approved in Phase 3D-A. Sender, subject, date, attachment metadata, and a deterministic reason are shown per candidate — never message content. Approve for ingestion, skip, or mark not a receipt.</p>
+      </div>
+      <button class="profile"><span class="dot"></span> Tran Studio · 2025</button>
+    </div>
+
+    <section class="grid" aria-labelledby="s1-heading">
+      <article class="card wide">
+        <p class="eyebrow scenario-label">Scenario 1 of 6 · Scan status, idle</p>
+        <h2 id="s1-heading">Scan status</h2>
+        <div class="field-row"><label>Status</label><span class="chip ok">Idle</span></div>
+        <div class="field-row"><label>Last scan</label><span class="value">02 Oct 2026, 7:02 AM — completed</span></div>
+        <div class="field-row"><label>Next scan</label><span class="value">03 Oct 2026, 7:00 AM (America/Los_Angeles)</span></div>
+        <div class="field-row"><label>Last run result</label><span class="value">14 discovered · 6 staged · 3 review · 1 duplicate · 4 skipped · 0 failed</span></div>
+        <button class="button secondary" type="button">Scan now</button>
+        <p class="lede" style="margin:12px 0 0;font-size:12px">A manual run is skipped if one is already active — the scheduled and manual scan share one lease.</p>
+      </article>
+      <article class="card">
+        <h2>This scan run</h2>
+        <p>Candidates below are from run <span class="value">run_20261002_0700</span>, started by schedule.</p>
+        <p class="meta"><span class="chip">connection v4</span><span class="chip">entitlement active</span></p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid" aria-labelledby="s2-heading">
+      <article class="card full" role="status" aria-live="polite">
+        <p class="eyebrow scenario-label">Scenario 2 of 6 · Scan running (single-flight)</p>
+        <h2 id="s2-heading">Scan in progress</h2>
+        <div class="oauth-row">
+          <span class="spinner-dot" aria-hidden="true"></span>
+          <p style="margin:0">Running since 7:00 AM — 9 of ~30 messages discovered so far. Status updates live; the candidate list below refreshes once this run completes.</p>
+        </div>
+        <button class="button secondary" type="button" disabled aria-disabled="true" title="A scan is already running">Scan now</button>
+        <p class="lede" style="margin:12px 0 0;font-size:12px">The scheduled run for 03 Oct 2026, 7:00 AM will be recorded as <span class="value">skipped_overlap</span> if this run is still active at that time.</p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s3-heading">
+      <p class="eyebrow scenario-label">Scenario 3 of 6 · Candidate review queue (populated)</p>
+      <h2 id="s3-heading" style="margin-bottom:14px">Candidates from the last scan</h2>
+      <div class="review-layout">
+        <div class="candidate-list" aria-label="Mailbox candidates grouped by classification">
+
+          <div class="candidate-group">
+            <div class="group-heading"><h3>Likely receipt <span class="count">2</span></h3><span class="chip ok">Ready to ingest</span></div>
+            <article class="candidate-row" aria-labelledby="c1-sender">
+              <div class="row-top"><span id="c1-sender" class="sender">receipts@northline-hardware.example</span><span class="chip ok">Scope: Personal</span></div>
+              <p class="subject">Receipt — Northline Hardware order #88213</p>
+              <div class="meta-line">
+                <span class="value">02 Oct 2026, 6:41 AM</span>
+                <span class="attachment-badge"><span aria-hidden="true">📎</span> 1 attachment (PDF)</span>
+              </div>
+              <div class="reason-chips">
+                <span class="chip">pdf_attachment_detected</span>
+                <span class="chip">sender_domain_known_retailer</span>
+              </div>
+            </article>
+            <article class="candidate-row" aria-labelledby="c2-sender">
+              <div class="row-top"><span id="c2-sender" class="sender">no-reply@cloudbooks-saas.example</span><span class="chip ok">Scope: Tran Studio (Business)</span></div>
+              <p class="subject">Your CloudBooks invoice is ready</p>
+              <div class="meta-line">
+                <span class="value">02 Oct 2026, 6:55 AM</span>
+                <span class="attachment-badge"><span aria-hidden="true">📎</span> 1 attachment (PDF)</span>
+              </div>
+              <div class="reason-chips">
+                <span class="chip">order_confirmation_schema</span>
+                <span class="chip">structured_html_invoice</span>
+              </div>
+            </article>
+          </div>
+
+          <div class="candidate-group">
+            <div class="group-heading"><h3>Uncertain <span class="count">2</span></h3><span class="chip warn">Needs review</span></div>
+            <article class="candidate-row selected" aria-current="true" aria-labelledby="c3-sender">
+              <div class="row-top"><span id="c3-sender" class="sender">receipts@shopwaveco.example</span><span class="chip warn">Scope: unassigned</span></div>
+              <p class="subject">Your order #48213 from ShopWave Co.</p>
+              <div class="meta-line">
+                <span class="value">02 Oct 2026, 6:48 AM</span>
+                <span class="attachment-badge"><span aria-hidden="true">📎</span> 1 attachment (PDF)</span>
+              </div>
+              <div class="reason-chips">
+                <span class="chip">order_confirmation_schema</span>
+                <span class="chip">sender_domain_unverified</span>
+              </div>
+              <p class="lede" style="margin:8px 0 0;font-size:11px">Selected below ↓</p>
+            </article>
+            <article class="candidate-row" aria-labelledby="c4-sender">
+              <div class="row-top"><span id="c4-sender" class="sender">updates@weekly-digest.example</span><span class="chip warn">Scope: unassigned</span></div>
+              <p class="subject">Order confirmed — thanks for shopping with us</p>
+              <div class="meta-line">
+                <span class="value">02 Oct 2026, 6:12 AM</span>
+                <span class="attachment-badge" data-none><span aria-hidden="true">—</span> No attachment</span>
+              </div>
+              <div class="reason-chips">
+                <span class="chip">subject_keyword_order</span>
+                <span class="chip">free_text_only_low_confidence</span>
+              </div>
+            </article>
+          </div>
+
+          <div class="candidate-group">
+            <div class="group-heading"><h3>Not a receipt <span class="count">1</span></h3><span class="chip">Dismissed · audit only</span></div>
+            <article class="candidate-row dim" aria-labelledby="c5-sender">
+              <div class="row-top"><span id="c5-sender" class="sender">newsletter@retail-deals.example</span><span class="chip">No scope</span></div>
+              <p class="subject">🔥 Flash sale: 30% off everything this weekend</p>
+              <div class="meta-line">
+                <span class="value">02 Oct 2026, 6:03 AM</span>
+                <span class="attachment-badge" data-none><span aria-hidden="true">—</span> No attachment</span>
+              </div>
+              <div class="reason-chips">
+                <span class="chip">marketing_keyword_match</span>
+                <span class="chip">no_structured_or_attachment_evidence</span>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <aside class="detail-panel" aria-labelledby="detail-heading">
+          <p class="eyebrow scenario-label">Candidate detail</p>
+          <h3 id="detail-heading">receipts@shopwaveco.example</h3>
+          <p class="meta" style="margin-top:6px"><span class="chip warn">Ambiguous · 61% confidence</span><span class="chip">shopwaveco.example</span></p>
+
+          <div style="margin-top:16px">
+            <div class="field-row"><label>Subject</label><span class="value">Your order #48213 from ShopWave Co.</span></div>
+            <div class="field-row"><label>Received</label><span class="value">02 Oct 2026, 6:48 AM</span></div>
+            <div class="field-row"><label>Candidate ID</label><span class="value">cand_8f21…b309</span></div>
+            <div class="field-row"><label>Scan run</label><span class="value">run_20261002_0700</span></div>
+            <div class="field-row"><label>Content fingerprint</label><span class="value">sha256:9c4e…21af</span></div>
+          </div>
+
+          <h4 style="margin:16px 0 8px;font-size:13px">Attachments (metadata only)</h4>
+          <div class="field-row"><label>invoice.pdf</label><span class="value">application/pdf · 182 KB · sha256:7b21…e40c</span></div>
+
+          <h4 style="margin:16px 0 8px;font-size:13px">Deterministic reason</h4>
+          <div class="reason-chips">
+            <span class="chip">order_confirmation_schema</span>
+            <span class="chip">sender_domain_unverified</span>
+          </div>
+
+          <fieldset style="border:0;padding:0;margin:16px 0 0">
+            <legend class="field-row" style="display:block;color:var(--ink);font-weight:700;margin-bottom:8px">Assign scope before approving<span style="color:var(--danger)"> *</span></legend>
+            <div class="scope-options" role="radiogroup" aria-required="true" aria-describedby="detail-scope-help">
+              <label class="scope-option" for="detail-scope-personal">
+                <input type="radio" id="detail-scope-personal" name="detail-scope" value="personal">
+                <span><strong>Personal</strong></span>
+              </label>
+              <label class="scope-option" for="detail-scope-business">
+                <input type="radio" id="detail-scope-business" name="detail-scope" value="business">
+                <span><strong>Tran Studio (Business)</strong></span>
+              </label>
+            </div>
+            <p id="detail-scope-help" class="lede" style="margin:0 0 4px;font-size:12px">You must currently belong to the chosen scope. Scope is permanent once ingestion starts.</p>
+          </fieldset>
+
+          <div class="action-row">
+            <button class="button" type="button" disabled aria-disabled="true" title="Choose a scope above to enable approval">Approve for ingestion</button>
+            <button class="button secondary" type="button">Skip</button>
+            <button class="button secondary" type="button">Not a receipt</button>
+          </div>
+          <p class="lede" style="margin:8px 0 0;font-size:11px">Skip retains this candidate for audit with no expense created; Not a receipt is the terminal training/audit outcome. Per-sender suppression ("always ignore this sender") is a future enhancement, not part of this gate.</p>
+        </aside>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid" aria-labelledby="s4-heading">
+      <p class="eyebrow scenario-label" style="grid-column:1/-1">Scenario 4 of 6 · Empty states</p>
+      <article class="card placeholder-card" role="status">
+        <h2 id="s4-heading">No likely-receipt candidates</h2>
+        <p>Nothing classified as a likely receipt yet. New scans add candidates here automatically.</p>
+      </article>
+      <article class="card placeholder-card" role="status">
+        <h2>Nothing needs review</h2>
+        <p>Every candidate from recent scans was classified confidently. Uncertain items will appear here when found.</p>
+      </article>
+      <article class="card placeholder-card" role="status">
+        <h2>No dismissed candidates</h2>
+        <p>Items you dismiss or that classify as not-a-receipt are kept here for audit only — none yet.</p>
+      </article>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section aria-labelledby="s5-heading">
+      <p class="eyebrow scenario-label">Scenario 5 of 6 · Reauthorization and scan failure</p>
+      <h2 id="s5-heading" style="margin-bottom:14px">Blocking and partial-failure states</h2>
+      <div class="banner warn" role="alert">
+        <span class="icon" aria-hidden="true">!</span>
+        <div>
+          <h3>Reconnect needed</h3>
+          <p>Google requires renewed consent for owner@example.com. Only scanning is blocked — candidates already staged below stay fully reviewable.</p>
+          <button class="button secondary" type="button">Reconnect Gmail</button>
+        </div>
+      </div>
+      <div class="banner bad" role="alert">
+        <span class="icon" aria-hidden="true">×</span>
+        <div>
+          <h3>Last scan failed partway</h3>
+          <p>6 candidates were staged successfully before a typed transient error stopped the run. They remain below; nothing was rolled back.</p>
+          <button class="button secondary" type="button">Retry scan</button>
+        </div>
+      </div>
+    </section>
+
+    <hr class="scenario-divider">
+
+    <section class="grid">
+      <article class="card full">
+        <p class="eyebrow scenario-label">Scenario 6 of 6 · State + boundary review</p>
+        <h2>State + boundary review</h2>
+        <div class="state-grid">
+          <div class="state"><strong>No raw body</strong>Only sender, subject, date, attachment metadata, and reason codes render — never message content</div>
+          <div class="state"><strong>Attachment evidence only</strong>Name/MIME/size/hash shown; file bytes never rendered on this page</div>
+          <div class="state" style="--state:var(--warning)"><strong>Scope immutable post-ingest</strong>Once approved, scope cannot change here; corrections use existing expense move</div>
+          <div class="state" style="--state:var(--danger)"><strong>Assignment needs membership</strong>Assigning an unassigned candidate requires current target-scope membership at action time</div>
+          <div class="state"><strong>Single-flight scan</strong>Manual "Scan now" is disabled while a run is active; overlapping scheduled runs are skipped, never duplicated</div>
+          <div class="state" style="--state:var(--warning)"><strong>Reauth pauses discovery only</strong>Paused connection stops new scans; already-staged candidate review and resolve actions stay open</div>
+          <div class="state"><strong>Keyboard</strong>List, detail panel, scope radiogroup, and every action button operable without a mouse</div>
+          <div class="state"><strong>Screen reader</strong>Group headings announce counts; alert/status regions use role="alert"/"status"</div>
+          <div class="state"><strong>Mobile stacking</strong>Below ~900px, list and detail stack vertically; detail follows the selected candidate inline</div>
+          <div class="state"><strong>Below 1024px</strong>Groups remain legible as single-column stacks; no table overflow</div>
+        </div>
+      </article>
+    </section>
+  </main>
+</div>
+<nav class="mobile-nav" aria-label="Office, mobile">
+  <a href="#">Dashboard</a>
+  <a href="#">Expenses</a>
+  <a aria-current="page" href="#main">Mailbox</a>
+  <a href="#">Settings</a>
+</nav>
+</body>
+</html>

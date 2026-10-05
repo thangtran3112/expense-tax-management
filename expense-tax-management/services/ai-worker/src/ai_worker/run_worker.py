@@ -8,12 +8,18 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from ai_worker.activities import FoundationEchoActivities
-from ai_worker.app_api_client import app_api_client_from_env
+from ai_worker.app_api_client import (
+    app_api_client_from_env,
+    enrichment_input_client_from_env,
+    enrichment_result_client_from_env,
+)
 from ai_worker.config import worker_config_from_env
 from ai_worker.constants import TASK_QUEUE
+from ai_worker.enrichment_activities import EnrichmentActivities
 from ai_worker.foundry_client import foundry_client_from_env
 from ai_worker.ocr_activities import OcrReceiptActivities
 from ai_worker.workflows import (
+    ExpenseEnrichmentWorkflow,
     ForwardedReceiptWorkflow,
     FoundationEchoWorkflow,
     OcrReceiptWorkflow,
@@ -34,6 +40,11 @@ async def main() -> None:
     app_api = app_api_client_from_env()
     activities = FoundationEchoActivities(app_api)
     ocr = OcrReceiptActivities(app_api, foundry_client_from_env())
+    enrichment = EnrichmentActivities(
+        ocr_status_client=app_api,
+        input_client=enrichment_input_client_from_env(),
+        result_client=enrichment_result_client_from_env(),
+    )
     worker = Worker(
         client,
         task_queue=task_queue,
@@ -41,6 +52,7 @@ async def main() -> None:
             FoundationEchoWorkflow,
             OcrReceiptWorkflow,
             ForwardedReceiptWorkflow,
+            ExpenseEnrichmentWorkflow,
         ],
         activities=[
             activities.mark_running,
@@ -57,6 +69,9 @@ async def main() -> None:
             ocr.ocr_record_deduplication,
             ocr.ocr_submit_failed,
             ocr.ocr_mark_failed,
+            enrichment.enrichment_mark_running,
+            enrichment.enrichment_process,
+            enrichment.enrichment_mark_failed,
         ],
     )
     print(

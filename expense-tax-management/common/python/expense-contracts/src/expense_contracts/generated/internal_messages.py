@@ -3,10 +3,21 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, constr
+
+
+class WorkflowType(StrEnum):
+    FoundationEchoWorkflow = "FoundationEchoWorkflow"
+    OcrReceiptWorkflow = "OcrReceiptWorkflow"
+    ForwardedReceiptWorkflow = "ForwardedReceiptWorkflow"
+    ExpenseEnrichmentWorkflow = "ExpenseEnrichmentWorkflow"
+    MailboxScanWorkflow = "MailboxScanWorkflow"
+    MailboxOcrReceiptWorkflow = "MailboxOcrReceiptWorkflow"
+    MailboxMaterializeWorkflow = "MailboxMaterializeWorkflow"
 
 
 class JobReferenceV1(BaseModel):
@@ -16,4 +27,4 @@ class JobReferenceV1(BaseModel):
     jobId: UUID
     schemaVersion: Literal[1]
     workflowId: constr(min_length=1)
-    workflowType: constr(min_length=1)
+    workflowType: WorkflowType

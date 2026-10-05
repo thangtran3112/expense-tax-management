@@ -15,9 +15,10 @@ This directory contains project-specific rules and agents for opencode.
 
 ## Files
 
-- `agents/phase-0i-builder.md` - project-defined Phase 0I builder
 - `rules/expense-service.rules` - transitional Python worker and legacy service boundaries
 - `rules/frontend.rules` - transitional frontend boundaries and application-specific mockup gates
+
+Completed Phase 0I builder instructions were removed; implementation history remains in git.
 
 ## Usage
 

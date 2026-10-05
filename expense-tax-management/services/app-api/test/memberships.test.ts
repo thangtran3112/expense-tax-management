@@ -216,6 +216,11 @@ describe("App API membership routes", () => {
       }
       return BUSINESS_MEMBERSHIP;
     });
+    const getOwnPersonalProfile = vi.fn(async (input: { actorUserId: string }) =>
+      input.actorUserId === IDS.owner
+        ? { id: "99999999-9999-4999-8999-999999999999", name: "Mine" }
+        : null,
+    );
     const resolve = vi.fn(async (_issuer: string, subject: string) => user(subject));
     const tenantVerifier: TokenVerifier = {
       verify: vi.fn(async (token) => principal(token)),
@@ -239,6 +244,7 @@ describe("App API membership routes", () => {
         listBusinessMemberships,
         createBusinessMembership,
         updateBusinessMembership,
+        getOwnPersonalProfile,
       },
     });
     apps.add(app);
@@ -249,6 +255,7 @@ describe("App API membership routes", () => {
       listBusinessMemberships,
       listPersonalMemberships,
       updateBusinessMembership,
+      getOwnPersonalProfile,
     };
   }
 
@@ -467,5 +474,46 @@ describe("App API membership routes", () => {
 
     expect(tenantAdmin.statusCode).toBe(403);
     expect(finalOwner.statusCode).toBe(409);
+  });
+
+  // Phase 3D-A Task 4, fix round 3 -- the mailbox scope-picker's lookup.
+  describe("GET /api/v1/tenants/:tenantId/personal-profiles/mine", () => {
+    it("returns the caller's own Personal profile", async () => {
+      const { app, getOwnPersonalProfile } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${IDS.tenant}/personal-profiles/mine`,
+        headers: auth("owner"),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        profile: { id: "99999999-9999-4999-8999-999999999999", name: "Mine" },
+      });
+      expect(getOwnPersonalProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ actorUserId: IDS.owner, tenantId: IDS.tenant }),
+      );
+    });
+
+    it("returns profile: null (not a 404) for a caller with no Personal-profile access", async () => {
+      const { app } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${IDS.tenant}/personal-profiles/mine`,
+        headers: auth("member"),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ profile: null });
+    });
+
+    it("rejects a request with no token", async () => {
+      const { app } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${IDS.tenant}/personal-profiles/mine`,
+      });
+      expect(response.statusCode).toBe(401);
+    });
   });
 });

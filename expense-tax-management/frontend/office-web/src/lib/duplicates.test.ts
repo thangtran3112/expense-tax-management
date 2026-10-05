@@ -17,7 +17,7 @@ import {
 const session: OfficeSession = {
   apiBaseUrl: "http://app.test",
   tenantId: "tenant-1",
-  businessId: "business-1",
+  scope: { kind: "business", businessId: "business-1" },
   label: "Family",
 };
 

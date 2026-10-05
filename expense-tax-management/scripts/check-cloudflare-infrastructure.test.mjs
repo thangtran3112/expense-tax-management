@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import YAML from "yaml";
 import {
   APPLY_CONDITION,
   TRUSTED_PLAN_CONDITION,
@@ -45,14 +47,53 @@ describe("Cloudflare workflow condition checks", () => {
     )).toBe(false);
   });
 
-  it("applies the reviewed plan artifact and uses the dedicated identity", () => {
-    expect(workflow).toContain("actions/upload-artifact@v4");
-    expect(workflow).toContain("retention-days: 1");
-    expect(workflow).toContain("actions/download-artifact@v4");
-    expect(workflow).toContain("terraform apply -auto-approve tfplan");
+  it("never moves saved Terraform plans between jobs and uses the dedicated identity", () => {
+    const jobs = YAML.parse(workflow).jobs;
+    const runs = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
+    expect(workflow).not.toContain("upload-artifact");
+    expect(workflow).not.toContain("download-artifact");
+    expect(runs(jobs.apply)).toContain("terraform plan -out=tfplan");
+    expect(runs(jobs.apply)).toContain("terraform apply -auto-approve tfplan");
     expect(workflow).toContain("GCP_CLOUDFLARE_WORKLOAD_IDENTITY_PROVIDER");
     expect(workflow).toContain("GCP_CLOUDFLARE_SERVICE_ACCOUNT");
     expect(workflow).not.toContain("terraform apply -auto-approve\n");
+  });
+
+  it("binds the applied change set to the reviewed plan without moving the plan file", () => {
+    const jobs = YAML.parse(workflow).jobs;
+    const runs = (job) => (job?.steps ?? []).map((step) => String(step.run ?? "")).join("\n");
+    expect(jobs.plan.outputs?.change_digest).toBe("${{ steps.plan.outputs.change_digest }}");
+    expect(runs(jobs.plan)).toContain("plan-change-digest.sh");
+    expect(runs(jobs.plan)).toContain("rm -f tfplan");
+    expect(runs(jobs.apply)).toContain("plan-change-digest.sh");
+    expect(workflow).toContain("needs.plan.outputs.change_digest");
+    for (const name of ["plan", "apply"]) {
+      const setup = jobs[name].steps.find((step) => String(step.uses ?? "").startsWith("hashicorp/setup-terraform"));
+      expect(setup?.with?.terraform_wrapper).toBe(false);
+    }
+  });
+
+  it("digests planned addresses and actions only", () => {
+    const script = join(repoRoot, "infrastructure/cloudflare/expense-tax/plan-change-digest.sh");
+    const digest = (plan) => execFileSync("bash", [script], { input: JSON.stringify(plan), encoding: "utf8" }).trim();
+    const change = (address, actions, after) => ({ address, change: { actions, after } });
+    const reviewed = { resource_changes: [change("b.record", ["update"], { content: "secret-one" }), change("a.tunnel", ["no-op"], {})] };
+    const sameActionsNewValues = { resource_changes: [change("b.record", ["update"], { content: "secret-two" })] };
+    const extraAction = { resource_changes: [...reviewed.resource_changes, change("c.record", ["delete"], {})] };
+
+    expect(digest(reviewed)).toMatch(/^[0-9a-f]{64}$/u);
+    expect(digest(sameActionsNewValues)).toBe(digest(reviewed));
+    expect(digest(extraAction)).not.toBe(digest(reviewed));
+    expect(digest({ resource_changes: [] })).not.toBe(digest(reviewed));
+    expect(digest(reviewed)).not.toContain("secret");
+    expect(() => execFileSync("bash", [script], { input: "", stdio: ["pipe", "pipe", "pipe"] })).toThrow();
+  });
+
+  it("keeps the Cloudflare API token out of plans and state", () => {
+    const variables = readFileSync(join(repoRoot, "infrastructure/cloudflare/expense-tax/variables.tf"), "utf8");
+    const tokenVariable = variables.match(/variable "cloudflare_api_token" \{[\s\S]*?\n\}/u)?.[0] ?? "";
+    expect(tokenVariable).toMatch(/ephemeral\s+=\s+true/u);
+    expect(main).toContain('required_version = ">= 1.10.0"');
   });
 
   it("requires pinned SSH host keys and dedicated state identity", () => {
@@ -83,6 +124,29 @@ describe("Cloudflare workflow condition checks", () => {
 
     expect(main).toContain(guardedFoundryRoute);
     expect(main.indexOf(guardedFoundryRoute)).toBeLessThan(main.indexOf(genericFoundryRoute));
+  });
+
+  it("Phase 3D-A Task 5: routes both mailbox OAuth paths before the catch-all, with no generic mailbox route", () => {
+    const callbackRoute = [
+      "        hostname = var.mailbox_hostname",
+      "        path     = \"/oauth/google/callback\"",
+      "        service  = \"http://127.0.0.1:8300\"",
+    ].join("\n");
+    const beginRoute = [
+      "        hostname = var.mailbox_hostname",
+      "        path     = \"/oauth/google/begin\"",
+      "        service  = \"http://127.0.0.1:8300\"",
+    ].join("\n");
+    const catchAll = "        service = \"http_status:404\"";
+
+    expect(main).toContain(callbackRoute);
+    expect(main).toContain(beginRoute);
+    expect(main.indexOf(callbackRoute)).toBeLessThan(main.indexOf(catchAll));
+    expect(main.indexOf(beginRoute)).toBeLessThan(main.indexOf(catchAll));
+    // No generic (path-less) mailbox_hostname rule -- every other broker
+    // route must fall through to the catch-all, unreachable from the Tunnel.
+    expect(main).not.toContain("hostname = var.mailbox_hostname\n        service  = \"http://127.0.0.1:8300\"\n      },");
+    expect(main).toContain('mailbox = var.mailbox_hostname');
   });
 
   it("verifies exact state bucket membership in requested project before mutations", () => {

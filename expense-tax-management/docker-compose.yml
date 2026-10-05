@@ -190,6 +190,50 @@ services:
     networks:
       - default
 
+  # Task 7 Stage B: TypeScript worker port is complete. Not started by
+  # `up -d` by default (Local Clerk Development Bootstrap Item 1 ruling):
+  # gated behind the "workflow-worker" Compose profile, same convention as
+  # the one-shot `phase-0i-migrations` services above. Start explicitly
+  # with `./scripts/compose.sh --profile workflow-worker up -d --wait
+  # workflow-worker` once generation-1 jobs have been advanced
+  # (dispatch-routing.js advance) to the TypeScript worker's namespace/queue.
+  workflow-worker:
+    profiles:
+      - workflow-worker
+    build:
+      context: ../expense-tax-management
+      dockerfile: services/workflow-worker/Dockerfile
+    container_name: expense-tax-workflow-worker
+    restart: unless-stopped
+    environment:
+      TEMPORAL_HOST: temporal:7233
+      TEMPORAL_NAMESPACE: expense-tax
+      AI_WORKER_TASK_QUEUE: expense-tax-processing
+      APP_API_BASE_URL: http://app-api:8100
+      FOUNDRY_BASE_URL: http://foundry-service:8200
+      CLERK_ISSUER_URL: ${CLERK_ISSUER_URL:-https://clerk.not-configured.invalid}
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:-https://clerk.not-configured.invalid/.well-known/jwks.json}
+      CLERK_APP_SERVICE_AUDIENCE: ${CLERK_APP_SERVICE_AUDIENCE:-mch_3J9fsniGga4hUqUf65ZQqzeGX2b}
+      CLERK_FOUNDRY_SERVICE_AUDIENCE: ${CLERK_FOUNDRY_SERVICE_AUDIENCE:-mch_3J9g3CNoKL9q6KfbRy5zq1Rh2zT}
+      CLERK_APP_MACHINE_SECRET_KEY: ${CLERK_APP_MACHINE_SECRET_KEY:-not-yet-issued}
+      CLERK_FOUNDRY_MACHINE_SECRET_KEY: ${CLERK_FOUNDRY_MACHINE_SECRET_KEY:-not-yet-issued}
+      CLERK_APP_SERVICE_SUBJECT: ${CLERK_APP_SERVICE_SUBJECT:-mch_3J9Xg9Hu84Rn2oeqj7EMrv0ax19}
+      CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:-mch_3J9gHBtDcxOE3fWE39Ay9uF7hFv}
+    depends_on:
+      temporal:
+        condition: service_healthy
+      app-api:
+        condition: service_healthy
+      foundry-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - default
+
   capture-web:
     build:
       context: ../expense-tax-management

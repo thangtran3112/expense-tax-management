@@ -1,8 +1,8 @@
-# Mockups — Web UI Preflight (Phase 0F0)
+# Mockups - Web UI Preflight (Phase 0F0)
 
-> **Review reopened 2026-09-07**: These renders document the rejected combined-app direction and are not implementation-ready.
-> New source of truth: `../sub-plans/phase-0i-polyglot-platform-rebaseline-design.md` and revised Phase 0F0 planning.
-> Each frontend is blocked only by its matching Phase 0F0 Capture, Office, or Foundry mockup gate.
+> **Status:** Rebaseline approved 2026-09-09; Capture, Office, Foundry, and shared gates complete.
+> Current approved source: `rebaseline/`. Root screen folders remain historical combined-app references only.
+> Durable architecture: `../sub-plans/phase-0i-polyglot-platform-rebaseline-design.md` and `../sub-plans/phase-0f0-web-ui-mockups.md`.
 
 ## Viewport Intent
 
@@ -37,11 +37,17 @@ Every folder now carries `mobile-375.png`, `tablet-768.png`, `desktop-1440.png`,
 
 ## Rebaseline Gate Index
 
-- [ ] **Capture gate -> Phase 0F**: Capture screen/state set approved at 375px and 768px.
-- [ ] **Office gate -> Phase 0M**: Office core set approved at 1024px and 1440px; no compressed mobile dashboard/tax UI.
-- [ ] **Foundry gate -> Phase 0N**: Platform-operator set approved at 1024px and 1440px.
-- [ ] Each approved set passes applicable shared role, boundary, accessibility, and failure-state checks from revised Phase 0F0.
+- [x] **Capture gate -> Phase 0F**: Capture screen/state set approved at 375px and 768px.
+- [x] **Office gate -> Phase 0M**: Office core set approved at 1024px and 1440px; no compressed mobile dashboard/tax UI.
+- [x] **Foundry gate -> Phase 0N**: Platform-operator set approved at 1024px and 1440px.
+- [x] Approved sets pass applicable shared role, boundary, accessibility, and failure-state checks from revised Phase 0F0.
 
-**Review:** reopened by architecture rebaseline decision, 2026-09-07; written specification still awaits approval
+**Review:** approved by Toby Tran on 2026-09-09. See `rebaseline/REVIEW.md`.
+
+## Feature-Specific Gates
+
+- [x] **Office mailbox gate -> Phase 3D-A Task 4**: connect/account/status/schedule/reviewer base for the connected-Gmail mailbox page; 1440/768/375 renders. **Approved by Toby Tran on 2026-10-03** — explicit scope choice required (no preselected radio, Connect disabled until chosen), Mailbox nav stays between Forwarding/Settings, `/mailbox` usable on mobile (no Capture hand-off). Candidate-review placeholder sizing deferred to Phase 3D-B. See `office-mailbox/REVIEW.md` and `office-mailbox/NOTES.md`.
+- [x] **Office mailbox review gate -> Phase 3D-B Task 5**: candidate review queue extending the same `/mailbox` page — scan status/schedule, single-flight manual scan, candidate list grouped by classification, candidate detail with approve/skip/not-a-receipt decisions, empty/error/reauth states, explicit Personal/business scope indication; 1440/768/375 renders. **Approved by Toby Tran on 2026-10-03** — always-ignore-sender deferred as a future enhancement, dismiss split into Skip/Not a receipt, scan-running refresh is batch not streaming, reauth blocks scanning only (staged candidates stay reviewable). See `office-mailbox-review/REVIEW.md` and `office-mailbox-review/NOTES.md`.
+- [x] **Office mailbox ingestion gate -> Phase 3D-C Task 6**: ingestion status extending the same `/mailbox` page — per-candidate status after "Approve for ingestion" (queued, materializing, malware-scan pending/blocked, OCR in progress, ingested with expense link, duplicate detected with Duplicates-queue link, failed with scoped retry, unsupported/oversize attachment), plus a new "Source" section on the Office expense detail page (sender, received date, connected-mailbox scope — metadata only, never bodies); 1440/768/375 renders. **Approved by Toby Tran on 2026-10-03** — malware-scan blocked is a dead end (reason + Dismiss only, no retry/download); duplicate-detected links to the existing `/duplicates` queue; no shortened opaque IDs on rows (status text only, IDs in a per-row "Support details" disclosure); Retry's stale-candidate conflict reuses the candidate-review 409 pattern inline; pagination reuses the review-queue cursor + "Load more" pattern per status group; expense-detail "Source" block placed per the existing page's panel order. See `office-mailbox-ingestion/REVIEW.md` and `office-mailbox-ingestion/NOTES.md`.
 
 > Historical note: 30 legacy PNGs passed structural checks on 2026-09-06. That evidence does not approve the new three-application architecture.

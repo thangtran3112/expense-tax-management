@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "enum": [
+        "applied",
+        "stale",
+        "skipped"
+      ],
+      "type": "string"
+    },
+    "rulesVersion": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "ruleTagKeys": {
+      "items": {
+        "maxLength": 100,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "type": "number"
+    },
+    "suggestions": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aggregateCounts": {
+                "additionalProperties": false,
+                "properties": {
+                  "exampleCount": {
+                    "maximum": 50,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "matchCount": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "exampleCount",
+                  "matchCount"
+                ],
+                "type": "object"
+              },
+              "confidence": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "evidenceHash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "tag",
+                "type": "string"
+              },
+              "source": {
+                "const": "historical",
+                "type": "string"
+              },
+              "tagKey": {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "tagKey",
+              "confidence",
+              "evidenceHash",
+              "aggregateCounts"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aggregateCounts": {
+                "additionalProperties": false,
+                "properties": {
+                  "exampleCount": {
+                    "maximum": 50,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "matchCount": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "exampleCount",
+                  "matchCount"
+                ],
+                "type": "object"
+              },
+              "confidence": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "evidenceHash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "spending_category",
+                "type": "string"
+              },
+              "source": {
+                "const": "historical",
+                "type": "string"
+              },
+              "spendingCategoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "spendingCategoryId",
+              "confidence",
+              "evidenceHash",
+              "aggregateCounts"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aggregateCounts": {
+                "additionalProperties": false,
+                "properties": {
+                  "exampleCount": {
+                    "maximum": 50,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "matchCount": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "exampleCount",
+                  "matchCount"
+                ],
+                "type": "object"
+              },
+              "businessTaxProfileId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "businessTaxProfileVersion": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "confidence": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "evidenceHash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              "expenseVersion": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "tax_category",
+                "type": "string"
+              },
+              "source": {
+                "const": "historical",
+                "type": "string"
+              },
+              "taxCategoryDefinitionId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "taxonomyVersionId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "taxYear": {
+                "maximum": 9999,
+                "minimum": 1900,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "taxCategoryDefinitionId",
+              "businessTaxProfileId",
+              "businessTaxProfileVersion",
+              "taxonomyVersionId",
+              "taxYear",
+              "expenseVersion",
+              "confidence",
+              "evidenceHash",
+              "aggregateCounts"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 50,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "rulesVersion",
+    "outcome",
+    "ruleTagKeys",
+    "suggestions"
+  ],
+  "title": "ExpenseEnrichmentResultV1",
+  "type": "object"
+}

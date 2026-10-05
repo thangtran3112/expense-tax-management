@@ -1,345 +1,139 @@
-# 🗺️ Infrastructure & Deployment Roadmap
+# Infrastructure and Deployment Roadmap
 
-> **Project**: Expense Tax Management System
-> **Last Updated**: 2026-09-05
-> **Companion**: See [PLAN.md](PLAN.md) for feature milestones and architecture.
+> **Status:** Private production deployment live. Backup/restore tooling is implemented and proven against disposable local Docker infrastructure (see "Backup and Restore -- Observed Results" below); it has not yet been applied to or run against the live VPS/GCP. Provider migration remains unimplemented.
+> **Last updated:** 2026-10-03
+> **Companion:** See [PLAN.md](PLAN.md) for feature order and active implementation plans.
 
----
+## Current Production Topology
 
-## 📍 Current Situation
+```text
+Internet
+  -> Cloudflare free-tier DNS/Tunnel
+  -> cloudflared on OVH VPS
+  -> loopback-only application origins
+       - Capture Web
+       - Office Web
+       - Foundry Web
+       - App API
+       - Foundry Service
 
-| Asset | Details |
-| :--- | :--- |
-| **VPS** | OVH, 12 GB RAM, available until **Feb 2027**. PostgreSQL 17 + pgvector now live (Postgres-only; App API/Foundry still run locally against it over an SSH tunnel) |
-| **Risk** | OVH raising rates in 2027; need portability to alternative VPS providers (Database Mart, Hetzner, etc.) |
-| **GCP** | Existing project with OAuth client configured; free-tier resources available |
-| **Timeline** | Personal project for ~1 year; commercialization is possible but not certain |
+VPS private runtime
+  - PostgreSQL 17 + pgvector
+  - Temporal
+  - Python AI worker
+  - six immutable application images deployed by GitHub Actions
 
-> **Status note (2026-09-08)**: This document predates the Phase 0I TypeScript rebaseline (App API/Foundry on Fastify/Kysely) and still describes the earlier FastAPI/Alembic/Next.js target architecture below — treat the component list as directional, not literal, until it is replanned for the current stack. VPS SSH access is on port **2222** (not 22; hardened during a prior box setup), key-only auth. Postgres is bound to the VPS's own `127.0.0.1:5432` only — never exposed publicly — and reached from local dev machines via SSH tunnel. Reusable IaC now lives at `infrastructure/vps/` (bash, run from the operator machine): SSH hardening, firewall, Docker, and a shared-Postgres-cluster bootstrap script, shared across expense-tax-management and future family apps — see `infrastructure/vps/README.md` for usage and current tested-vs-designed-only status ahead of the Feb 2027 provider switch.
-
-### Guiding Principles
-
-1. **VPS-Portable IaC**: Every piece of infrastructure on the VPS must be reproducible from code. Zero manual setup steps.
-2. **GCP Free-Tier Only**: Use GCP serverless and on-demand resources exclusively. **No always-on GCP compute.**
-3. **Automated Backups to GCP**: Database state is continuously backed up to Google Cloud Storage, enabling rapid recovery on any new VPS.
-4. **Provider-Agnostic**: Switching VPS providers should take **< 2 hours** with a tested runbook.
-
----
-
-## 🏗️ Phase A — Personal Use (Now → Feb 2027)
-
-### Target Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Google Cloud Platform (Free-Tier / Serverless Only)            │
-│                                                                  │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │
-│  │  Cloud Run       │  │  Cloud Storage   │  │  Cloud        │  │
-│  │  (min-instances=0│  │  (Receipt files  │  │  Scheduler    │  │
-│  │   Next.js PWA)   │  │   & DB backups)  │  │  (Cron jobs)  │  │
-│  └────────┬─────────┘  └──────────────────┘  └───────┬───────┘  │
-│           │ HTTPS                                     │ Webhook  │
-└───────────┼───────────────────────────────────────────┼──────────┘
-            │                                           │
-            ▼                                           ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  OVH VPS (12 GB RAM) — Docker Compose via IaC                    │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ Traefik (API Gateway + TLS + ForwardAuth)                  │ │
-│  │  ├─ /api/*  → FastAPI (Uvicorn)                            │ │
-│  │  └─ ForwardAuth → JWT validation → X-User-Id headers       │ │
-│  ├─────────────────────────────────────────────────────────────┤ │
-│  │ FastAPI Backend (Python 3.13+)                              │ │
-│  │ PostgreSQL 17 + pgvector                                    │ │
-│  │ FalkorDB (Graphiti graph backend, ~100 MB RAM)              │ │
-│  │ Temporal Server + Temporal Python Worker                    │ │
-│  │ Backup Cron Container (pg_dump → GCS)                       │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
+GCP
+  - Secret Manager production environment bundle
+  - GitHub OIDC/WIF identities
+  - Cloudflare Terraform state bucket
 ```
 
-### What Runs Where
+## Completed Infrastructure
 
-| Component | Location | Cost | Rationale |
-| :--- | :--- | :--- | :--- |
-| **Next.js 16 PWA** | GCP Cloud Run (`min-instances=0`) | $0 (free tier: 2M requests/mo) | Global CDN, scale-to-zero, no cold-start concerns for a static-heavy PWA |
-| **Receipt & PDF Storage** | GCP Cloud Storage | < $0.15/mo for 5 GB | Scalable, CDN-ready, signed URLs for direct browser upload |
-| **Database Backups** | GCP Cloud Storage (separate bucket, Nearline class) | < $0.10/mo | Nearline for infrequent access; 30-day retention lifecycle policy |
-| **Cloud Scheduler** | GCP Cloud Scheduler | $0 (free tier: 3 jobs) | Triggers daily Gmail scan and nightly backup verification |
-| **FastAPI Backend** | OVH VPS | Included | Sub-millisecond query latency to collocated PostgreSQL & FalkorDB |
-| **PostgreSQL 17 + pgvector** | OVH VPS | Included | Primary data store, full-text search, vector similarity |
-| **FalkorDB** | OVH VPS | Included | Lightweight graph DB for Graphiti (~100 MB RAM vs. Neo4j's 1.5–3 GB) |
-| **Temporal Server + Worker** | OVH VPS | Included | Long-polling workers cannot be serverless; VPS is already always-on |
-| **Traefik** | OVH VPS | Included | API gateway with automatic HTTPS, Docker-native service discovery, ForwardAuth for gateway-level AuthN/AuthZ, rate limiting |
+- VPS SSH hardening, UFW policy, Docker, and reusable bootstrap scripts.
+- Private production Compose deployment under `expense-tax-management/deploy/production/`.
+- GitHub Actions immutable-image build, migration, health check, rollback, and deployment workflow.
+- Cloudflare Tunnel with explicit product host/path routing and no public VPS application ports.
+- Clerk DNS, SPF/DKIM, DMARC monitoring, signed webhook delivery, and authenticated smoke verification.
+- Application-origin body limits, bounded process-local rate limits, security headers, and fail-closed route policy.
+- Protected `dev` development branch; production deployment remains restricted to successful `main` CI.
 
-### VPS RAM Budget (12 GB)
+## Current Sources of Truth
 
-| Service | Estimated RAM | Notes |
-| :--- | :--- | :--- |
-| PostgreSQL 17 | ~1.5 GB | `shared_buffers=512MB`, `work_mem=64MB` |
-| FalkorDB | ~100 MB | Redis module, vastly lighter than Neo4j |
-| Temporal Server | ~500 MB | Go binary, efficient |
-| Temporal Worker (Python) | ~500 MB | PaddleOCR model loaded in-process |
-| FastAPI (Uvicorn, 2 workers) | ~400 MB | Python + SQLAlchemy + Pydantic |
-| Traefik | ~70 MB | API gateway + auto-TLS + ForwardAuth |
-| OS + Docker overhead | ~1 GB | Ubuntu base + Docker daemon |
-| **Total Used** | **~4.1 GB** | |
-| **Available Headroom** | **~7.9 GB** | Comfortable margin for spikes, PaddleOCR inference, future services |
+| Concern | Path |
+|---|---|
+| Production deployment workflow | `.github/workflows/expense-tax-deploy.yml` |
+| Production Compose and scripts | `expense-tax-management/deploy/production/` |
+| Cloudflare Tunnel/DNS Terraform | `infrastructure/cloudflare/expense-tax/` |
+| VPS base provisioning | `infrastructure/vps/` |
+| Local shared services | `infrastructure/docker-compose.common.yml` |
+| App-local development overlay | `expense-tax-management/docker-compose.yml` |
 
----
+`infrastructure/docker-compose.common.yml`, its Nginx gateway, `expense-service/`, and `frontend/web/` are local/transitional surfaces. They are not the current production edge or canonical application services.
 
-## 🔧 Infrastructure as Code (IaC) Strategy
+## Remaining Infrastructure Work
 
-The entire VPS deployment must be reproducible from a single repository checkout. No manual SSH and install steps.
+| Work | Status | Trigger/owner |
+|---|---|---|
+| Automated PostgreSQL backup to GCS | Built; proven locally (see below). Task 1 Terraform never applied; no live writer key/VPS install yet | Operator: apply Task 1, create writer key, `bootstrap.sh --only backup` |
+| Restore verification and recovery drill | Built; proven locally (see below) against disposable PostgreSQL + real `age` encryption. Never run against real GCS/VPS/Cloudflare | Operator: first live monthly drill after the above |
+| Production GCS receipt-storage adapter and credentials | Not built; local storage adapter only | Separate storage/infrastructure plan |
+| VPS provider migration runbook automation | Partial base bootstrap only | Required before OVH term ends in Feb 2027 |
+| Shared-cluster `30-postgres.sh` live proof | Designed, not run on current box | Fresh VPS or second family app |
+| Phase 3D mailbox broker Cloud Run project | Planned | Phase 3D-A after Phase 3C |
+| Gmail OAuth production verification | Planned with Phase 3D | Start during mailbox implementation; external review may take weeks |
+| Search/graph production infrastructure | Deferred | Replan with Phases 6 and 9 |
+| Cloud Run deployment for web frontends | Not current architecture | Separate migration/cost decision only |
 
-### Repository Structure
+## Cost and Security Policy
 
-```
-infrastructure/
-├── docker-compose.yml              # Local dev (macOS Docker Desktop)
-├── docker-compose.prod.yml         # Production VPS deployment
-├── traefik/
-│   ├── traefik.yml                 # Static config (ACME, Docker provider, dashboard)
-│   └── dynamic/                    # Dynamic config (middleware definitions)
-├── postgres/
-│   ├── postgresql.conf             # Tuned for 12 GB VPS (shared_buffers, etc.)
-│   └── init.sql                    # Extension setup (pgvector, pg_trgm)
-├── backup/
-│   ├── Dockerfile                  # Lightweight Alpine + pg_dump + gsutil
-│   ├── backup.sh                   # pg_dump → compress → gsutil cp to GCS
-│   ├── restore.sh                  # gsutil cp → pg_restore
-│   └── crontab                     # Nightly backup schedule (inside container)
-├── temporal/
-│   └── dynamicconfig.yaml          # Temporal server tuning
-├── scripts/
-│   ├── bootstrap.sh                # One-command VPS setup (install Docker, clone repo, up)
-│   ├── deploy.sh                   # Pull latest images, rolling restart
-│   ├── health-check.sh             # Verify all services are healthy
-│   └── migrate-vps.sh              # Full migration runbook script (see below)
-├── .env.example                    # Template for production secrets
-└── README.md                       # Deployment documentation
-```
+- Keep VPS stateful/orchestration services always-on; no always-on GCP compute.
+- Scale-to-zero Cloud Run is allowed only when an approved phase requires it; Phase 3D broker uses `min-instances=0`.
+- Cloudflare use stays on free Tunnel/DNS/proxy controls. Paid WAF, distributed rate limiting, Workers, Access, or Cloud Armor requires explicit cost approval.
+- Production secrets stay in Secret Manager. Exactly one non-destroyed environment-bundle version remains after rotation.
+- PostgreSQL superuser credentials never enter GitHub or GCP.
+- VPS origins stay loopback-only. Cloudflare Tunnel is the public ingress path.
+- No production mutation, Terraform apply, GCP/Clerk write, workflow dispatch, push, PR creation, or merge without immediate explicit confirmation.
 
-### One-Command VPS Bootstrap
+## Backup and Restore -- Observed Results (2026-10-03)
 
-```bash
-# On a fresh Ubuntu 22.04+ VPS:
-curl -fsSL https://raw.githubusercontent.com/<repo>/main/infrastructure/scripts/bootstrap.sh | bash
-```
+Full design: [`vps-backup-and-restore.md`](sub-plans/vps-backup-and-restore.md).
+Tasks 2-7 implemented and locally verified; Task 1 (Terraform) offline-validated
+only; Task 6/8's live-VPS and real-Cloudflare steps remain operator-only.
+Observed, not planned:
 
-`bootstrap.sh` will:
-1. Install Docker Engine + Docker Compose v2
-2. Clone the repository
-3. Copy `.env.example` → `.env` (prompt for secrets)
-4. Pull all Docker images
-5. Run `docker compose -f docker-compose.prod.yml up -d`
-6. Run Alembic migrations (`uv run alembic upgrade head`)
-7. Seed default categories
-8. Run `health-check.sh` and print status
+- **Dump (Task 3):** against a disposable PostgreSQL 17 container seeded
+  with 5 representative databases (app, foundry, temporal,
+  temporal_visibility, mailbox), `pg_dumpall --globals-only` +
+  `pg_dump --format=custom` for each, each re-validated with a fresh
+  `pg_restore --list`. A forced mid-dump failure (invalid role) left a
+  pre-seeded success marker byte-identical.
+- **Receipts and manifest (Task 4):** against real seeded receipt files,
+  observed correct behavior for first-run full (2 files), same-month
+  daily delta (exactly the 1 new file, correct parent-id chaining),
+  unchanged-window (0 files, still a valid archive), new-calendar-month
+  full (re-archives all 3 files), and a future-mtime receipt correctly
+  deferred to the next run.
+- **Encrypt and upload (Task 5):** a temporary `age` identity generated
+  with real `age-keygen`; the full pipeline run end to end against a
+  directory-backed fake GCS transport enforcing the real
+  creation-only-upload precondition; the uploaded ciphertext decrypted
+  with the matching private identity and every manifest-referenced
+  checksum (globals, each database dump, the receipts archive) verified
+  against the decrypted bytes.
+- **Restore (Task 7):** a 5-database seeded SOURCE backed up (full + one
+  daily delta), restored onto a completely empty DESTINATION PostgreSQL
+  17 + empty receipt directory. Observed: restore refuses a non-empty
+  destination without explicit confirmation; after restoring, all 5
+  databases report the correct row count; both the full and daily
+  receipt files are present with correct bytes; the final
+  `{"status":"restored",...}` report matches every restored database.
+- **Recovery drill orchestration (Task 8):** `recovery-drill.sh` proven,
+  with fake deploy/health-check/smoke-test commands standing in for real
+  product infrastructure, in four scenarios: full pass; a failing
+  health-check fails the drill; exceeding the RTO deadline fails the
+  drill even when every individual step passed; a
+  restored-vs-supported schema-migration-version mismatch is reported
+  and migrations are skipped without itself failing the drill.
+- **Not yet observed (operator-only, out of this pass's scope):** Task 1's
+  Terraform applied against real GCP; a real writer service-account key
+  created and placed in Secret Manager; `bootstrap.sh --only backup` run
+  against the live VPS; a monthly drill against the real bucket/VPS; any
+  Cloudflare cutover simulation or rollback; real authenticated product
+  smoke tests. Proven RPO/RTO numbers above come from disposable local
+  infrastructure, not the live system.
 
-### VPS Migration Runbook (`migrate-vps.sh`)
+## VPS Provider Switch
 
-When switching from OVH to another provider (Database Mart, Hetzner, etc.):
+OVH availability ends in February 2027. Before migration:
 
-```
-Step 1: On OLD VPS  → Run backup.sh (final pg_dump → GCS)
-Step 2: On NEW VPS  → Run bootstrap.sh (provision from scratch)
-Step 3: On NEW VPS  → Run restore.sh (pull latest backup from GCS → pg_restore)
-Step 4: Update DNS  → Point domain A record to new VPS IP
-Step 5: On NEW VPS  → Run health-check.sh (verify all services)
-Step 6: On OLD VPS  → docker compose down (decommission)
-```
+1. Implement and test backup/restore against disposable infrastructure.
+2. Select replacement provider and provision reachable Ubuntu host manually.
+3. Run `infrastructure/vps/bootstrap.sh` through the provider-specific first-access bridge.
+4. Restore PostgreSQL and validate role/schema ownership.
+5. Deploy current immutable images with production Compose.
+6. Install Cloudflare Tunnel connector and switch ingress only after health checks pass.
+7. Monitor for 24 hours before decommissioning old host.
 
-**Target migration time: < 2 hours** (mostly waiting for DNS propagation).
-
----
-
-## 💾 Database Backup Strategy
-
-### Automated Nightly Backups
-
-A dedicated lightweight Docker container (`backup/Dockerfile`) runs inside the VPS Docker Compose network:
-
-```yaml
-# In docker-compose.prod.yml
-backup:
-  build: ./infrastructure/backup
-  environment:
-    - PGHOST=postgres
-    - PGUSER=${POSTGRES_USER}
-    - PGPASSWORD=${POSTGRES_PASSWORD}
-    - PGDATABASE=${POSTGRES_DB}
-    - GCS_BUCKET=${BACKUP_GCS_BUCKET}
-    - GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcs-sa-key.json
-  volumes:
-    - ./infrastructure/backup:/scripts:ro
-    - ${GCS_SA_KEY_PATH}:/secrets/gcs-sa-key.json:ro
-  depends_on:
-    - postgres
-```
-
-### Backup Flow
-
-```
-Nightly (2:00 AM UTC via crontab inside container)
-    │
-    ├─ pg_dump --format=custom --compress=9 → /tmp/backup_YYYYMMDD.dump
-    ├─ gsutil cp → gs://${BACKUP_BUCKET}/postgres/backup_YYYYMMDD.dump
-    ├─ FalkorDB: GRAPH.DUMP → gsutil cp → gs://${BACKUP_BUCKET}/falkordb/
-    ├─ Prune local: keep last 3 days locally
-    └─ GCS Lifecycle: Nearline 30-day retention, auto-delete after 90 days
-```
-
-### Backup Verification
-
-**Cloud Scheduler** (GCP free tier) triggers a weekly `POST /api/v1/admin/verify-backup` endpoint that:
-1. Lists the latest backup file in GCS
-2. Checks timestamp is within 26 hours (guards against missed backups)
-3. Checks file size is within expected range (guards against corrupt/empty dumps)
-4. Logs result; sends alert email on failure
-
-### Recovery Point Objective (RPO)
-
-| Scenario | Data Loss Window |
-| :--- | :--- |
-| VPS hardware failure | ≤ 24 hours (nightly backup) |
-| Accidental data deletion | ≤ 24 hours (restore from GCS) |
-| VPS provider switch | ≤ 24 hours (same backup + restore flow) |
-
-> [!NOTE]
-> For tighter RPO (e.g., < 1 hour) in a future commercial scenario, PostgreSQL WAL archiving to GCS can be added. This is not needed for personal use.
-
----
-
-## ☁️ GCP Services Used (Free-Tier & On-Demand Only)
-
-| GCP Service | Usage | Pricing Tier | Monthly Est. |
-| :--- | :--- | :--- | :--- |
-| **Cloud Run** | Next.js PWA (scale-to-zero) | Free tier (2M requests, 360K vCPU-s) | $0.00 |
-| **Cloud Storage** (Standard) | Receipt images & PDFs | $0.020/GB/mo | < $0.15 |
-| **Cloud Storage** (Nearline) | Database backups (90-day retention) | $0.010/GB/mo | < $0.05 |
-| **Cloud Scheduler** | 2 cron jobs (daily Gmail scan trigger, weekly backup verify) | Free tier (3 jobs) | $0.00 |
-| **Artifact Registry** | Docker images for Cloud Run | Free tier (500 MB) | $0.00 |
-| **Secret Manager** | API keys, OAuth tokens | Free tier (6 active versions) | $0.00 |
-| **Cloud Build** (optional) | CI/CD pipeline on push | Free tier (120 min/day) | $0.00 |
-| **Total GCP** | | | **< $0.25/mo** |
-
-### GCP Services Explicitly Avoided
-
-| Service | Why Not |
-| :--- | :--- |
-| **Cloud SQL** | Always-on managed PostgreSQL starts at ~$7/mo. VPS is cheaper and already running. |
-| **GKE / GCE** | Always-on Kubernetes or VM. Not needed for personal use. |
-| **Cloud Functions (Gen 2)** | Considered for the FastAPI backend, but cold starts (3–5s for Python + heavy deps) degrade UX. Also, Temporal workers require persistent connections that Cloud Functions cannot maintain. |
-| **Memorystore** | Managed Redis. FalkorDB on VPS is sufficient and free. |
-
----
-
-## 🔄 Phase B — VPS Provider Switch (Feb 2027+)
-
-### Trigger
-
-OVH contract expires or rates become uncompetitive.
-
-### Candidate Providers
-
-| Provider | Plan | RAM | Storage | Monthly Cost | Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Database Mart** | VPS-2 | 8 GB | 100 GB SSD | ~$8/mo | US-based, good peering |
-| **Hetzner Cloud** | CPX31 | 8 GB | 160 GB SSD | ~€10/mo (~$11) | EU (Falkenstein/Helsinki), excellent price-performance |
-| **Contabo** | Cloud VPS M | 16 GB | 200 GB SSD | ~$7/mo | Budget option, sometimes slower I/O |
-| **Vultr** | Cloud Compute | 8 GB | 160 GB SSD | $48/mo | Premium, global locations |
-| **DigitalOcean** | Droplet | 8 GB | 160 GB SSD | $48/mo | Premium, good docs |
-
-### Migration Checklist
-
-- [ ] Run `backup.sh` on current VPS (final backup to GCS)
-- [ ] Provision new VPS (Ubuntu 22.04+ LTS)
-- [ ] Run `bootstrap.sh` on new VPS
-- [ ] Run `restore.sh` (pull latest backup from GCS)
-- [ ] Update DNS A record to new VPS IP
-- [ ] Run `health-check.sh` on new VPS
-- [ ] Verify Next.js PWA (Cloud Run) connects to new API endpoint
-- [ ] Update Cloud Scheduler webhook URLs if backend domain changed
-- [ ] Monitor for 24h, then decommission old VPS
-- [ ] Update `.env` in Secret Manager if any secrets changed
-
----
-
-## 🚀 Phase C — Commercialization (If/When, 1+ Year Out)
-
-If the project is commercialized, the architecture can evolve toward fully managed GCP services for operational simplicity and scalability. This is **not needed now** and should only be considered when:
-- Multiple paying tenants exist
-- SLA/uptime requirements exceed what a single VPS provides
-- You have revenue to justify the cost increase
-
-### Option C1: Hybrid (Keep VPS for Stateful, GCP for Stateless)
-
-Minimal change from Phase A. Add:
-- **Cloud Monitoring + Alerting** for uptime SLA
-- **Cloud Armor** (WAF) in front of Cloud Run for DDoS protection
-- **Multiple VPS nodes** behind a load balancer for HA (if needed)
-
-**Cost**: ~$15–25/mo (VPS + minimal GCP)
-
-### Option C2: Full GCP Migration (Managed Services)
-
-| Component | Current (VPS) | GCP Managed | Monthly Est. |
-| :--- | :--- | :--- | :--- |
-| FastAPI Backend | Docker on VPS | **Cloud Run** (scale-to-zero, `min-instances=1` for low latency) | ~$5–15 |
-| PostgreSQL + pgvector | Docker on VPS | **Cloud SQL for PostgreSQL** (db-f1-micro + pgvector) | ~$7–15 |
-| FalkorDB / Neo4j | Docker on VPS | **Neo4j AuraDB Free** (limited) or **Cloud Memorystore** + FalkorDB module | $0–29 |
-| Temporal Server | Docker on VPS | **Temporal Cloud** (managed SaaS) | $0 (free tier: 100 actions/mo) → ~$25/mo at scale |
-| Temporal Worker | Docker on VPS | **Cloud Run Jobs** (on-demand, scale-to-zero) | ~$2–5 |
-| **Total** | **~$11/mo** | | **~$40–90/mo** |
-
-> [!WARNING]
-> Full GCP migration is 4–8× more expensive than VPS for the same workload.
-> Only justified when you need managed HA, automated patching, and SLA guarantees
-> that a single VPS cannot provide.
-
-### Option C3: Kubernetes (GKE Autopilot)
-
-Only if the system grows to many microservices and needs auto-scaling:
-- **GKE Autopilot**: Pay only for pod resources consumed. No node management.
-- **Cost**: Starts at ~$70/mo minimum (Autopilot management fee + pod resources).
-- **When**: 10+ microservices, multiple workers, high traffic.
-
-> [!CAUTION]
-> GKE is overkill for this project unless it reaches significant commercial scale.
-> Avoid premature Kubernetes adoption.
-
----
-
-## 📋 IaC Implementation Tasks (Phase A)
-
-These will be implemented as part of the feature milestones in [PLAN.md](PLAN.md):
-
-| Task | Implemented In | Status |
-| :--- | :--- | :--- |
-| GitHub Actions CI (backend + frontend) | Phase 1A (CI/CD Pipeline) | ⚪ Planned |
-| `docker-compose.prod.yml` (production stack) | Phase 1B (VPS Deployment) | ⚪ Planned |
-| Traefik config (API gateway + auto-TLS + ForwardAuth) | Phase 1B / 1C (VPS + Gateway Auth) | ⚪ Planned |
-| `bootstrap.sh` (one-command VPS setup) | Phase 1B (VPS Deployment) | ⚪ Planned |
-| `deploy.sh` (pull + rolling restart) | Phase 1A / 1B (CI/CD + VPS) | ⚪ Planned |
-| `health-check.sh` (service verification) | Phase 1B (VPS Deployment) | ⚪ Planned |
-| `migrate-vps.sh` (provider switch runbook) | Phase 1B (VPS Deployment) | ⚪ Planned |
-| Gateway AuthN/AuthZ (JWT + header injection) | Phase 1C (Gateway Auth) | ⚪ Planned |
-| `backup.sh` + `restore.sh` + backup Dockerfile | Phase 0D (Cloud Storage) | ⚪ Planned |
-| Cloud Run deployment (Next.js) | Phase 0F (Web UI) | ⚪ Planned |
-| Cloud Scheduler cron jobs | Phase 3D (Email Scanning) | ⚪ Planned |
-| GCS lifecycle policies | Phase 0D (Cloud Storage) | ⚪ Planned |
-
----
-
-## 📎 References
-
-- [Docker Compose Production Best Practices](https://docs.docker.com/compose/production/)
-- [Traefik v3 Documentation](https://doc.traefik.io/traefik/)
-- [GCS Nearline Storage Class](https://cloud.google.com/storage/docs/storage-classes#nearline)
-- [Cloud Run Pricing (Free Tier)](https://cloud.google.com/run/pricing)
-- [Cloud Scheduler Free Tier](https://cloud.google.com/scheduler/pricing)
-- [Temporal Cloud Pricing](https://temporal.io/pricing)
-- [FalkorDB vs Neo4j Benchmarks](https://www.falkordb.com/)
-- [pg_dump Documentation](https://www.postgresql.org/docs/17/app-pgdump.html)
+Target cutover remains under two hours after backup/restore automation is proven. Current scripts alone do not meet that target yet.

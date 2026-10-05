@@ -66,6 +66,38 @@ async def test_issuer_creates_short_lived_jwt_with_machine_secret(valid_token):
     }
 
 
+async def test_issuer_accepts_clerk_m2m_jwt_without_not_before():
+    token = jwt_with_claims(
+        {
+            "iss": "https://clerk.test",
+            "aud": ["app-api-machine"],
+            "scope": "jobs:write",
+            "scopes": ["jobs:write"],
+            "sub": "ai-worker-app-machine",
+            "jti": "jti-123",
+            "iat": 800,
+            "exp": 1_000,
+        }
+    )
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"token": token})
+
+    issuer = ClerkM2MTokenIssuer(
+        machine_secret_key="ak_dev_secret",
+        audience="app-api-machine",
+        scopes=("jobs:write",),
+        source_machine_id="ai-worker-app-machine",
+        issuer="https://clerk.test",
+        client_factory=lambda **kwargs: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), **kwargs
+        ),
+        now=lambda: 900,
+    )
+
+    assert await issuer.issue() == token
+
+
 async def test_provider_reuses_cached_token_until_refresh_window(valid_token):
     calls = 0
 

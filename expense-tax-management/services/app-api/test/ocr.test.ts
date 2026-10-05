@@ -43,7 +43,7 @@ const JOB = {
   businessId: null,
   workflowType: "OcrReceiptWorkflow",
   workflowId: `job-${JOB_ID}`,
-  taskQueue: "expense-tax-ai-worker",
+  taskQueue: "expense-tax-processing",
   runId: "run-1",
   status: "DISPATCHED" as const,
   targetAggregateType: "expense",

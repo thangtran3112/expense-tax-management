@@ -141,7 +141,14 @@ describe("inferred types", () => {
     expectTypeOf<JobReferenceV1>().toEqualTypeOf<{
       schemaVersion: 1;
       jobId: string;
-      workflowType: string;
+      workflowType:
+        | "FoundationEchoWorkflow"
+        | "OcrReceiptWorkflow"
+        | "ForwardedReceiptWorkflow"
+        | "ExpenseEnrichmentWorkflow"
+        | "MailboxScanWorkflow"
+        | "MailboxOcrReceiptWorkflow"
+        | "MailboxMaterializeWorkflow";
       workflowId: string;
     }>();
   });

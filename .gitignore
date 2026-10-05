@@ -252,14 +252,26 @@ public/swe-worker-*.js
 **/*.tfstate.*
 **/crash.log
 **/crash.*.log
+**/*.auto.tfvars
+**/*.auto.tfvars.json
+**/terraform.tfvars
+**/terraform.tfvars.json
 
 # Local agent planning and code graph state
 /docs/superpowers/
 .codegraph/
-# Keep reviewed architecture specs versioned while ignoring other superpowers scratch data.
+# Keep executable policy input and active implementation documents versioned while ignoring scratch data.
 !/docs/
 !/docs/superpowers/
 !/docs/superpowers/specs/
-!/docs/superpowers/specs/2026-09-10-clerk-auth-integration-design.md
+!/docs/superpowers/specs/2026-09-11-phase-1c-gateway-hardening-design.md
+!/docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md
+!/docs/superpowers/specs/2026-09-12-phase-3d-connected-mailbox-design.md
 !/docs/superpowers/plans/
-!/docs/superpowers/plans/2026-09-10-clerk-auth-integration.md
+!/docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md
+!/docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md
+!/docs/superpowers/plans/2026-09-12-phase-3d-b-mailbox-discovery.md
+!/docs/superpowers/plans/2026-09-12-phase-3d-c-mailbox-ingestion.md
+
+# Local agent worktrees
+.worktrees/

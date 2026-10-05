@@ -16,6 +16,8 @@ schema_files=(
   "job-result-submit-v1.schema.json"
   "ocr-extraction-result-v1.schema.json"
   "ocr-job-input-v1.schema.json"
+  "expense-enrichment-input-v1.schema.json"
+  "expense-enrichment-result-v1.schema.json"
 )
 class_names=(
   "JobReferenceV1"
@@ -23,6 +25,8 @@ class_names=(
   "JobResultSubmitRequestV1"
   "OcrExtractionResultV1"
   "OcrJobInputV1"
+  "ExpenseEnrichmentInputV1"
+  "ExpenseEnrichmentResultV1"
 )
 output_files=(
   "internal_messages.py"
@@ -30,6 +34,8 @@ output_files=(
   "job_result_submit_v1.py"
   "ocr_extraction_result_v1.py"
   "ocr_job_input_v1.py"
+  "expense_enrichment_input_v1.py"
+  "expense_enrichment_result_v1.py"
 )
 
 for i in "${!schema_files[@]}"; do

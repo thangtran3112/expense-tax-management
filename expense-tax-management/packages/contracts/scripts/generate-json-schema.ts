@@ -8,6 +8,8 @@ import {
   JobStatusUpdateRequestV1Schema,
   OcrExtractionResultV1Schema,
   OcrJobInputV1Schema,
+  ExpenseEnrichmentInputV1Schema,
+  ExpenseEnrichmentResultV1Schema,
 } from "../src/index.js";
 
 interface InternalMessageSchema {
@@ -41,6 +43,16 @@ const INTERNAL_MESSAGE_SCHEMAS: readonly InternalMessageSchema[] = [
     schema: OcrJobInputV1Schema,
     title: "OcrJobInputV1",
     fileName: "ocr-job-input-v1.schema.json",
+  },
+  {
+    schema: ExpenseEnrichmentInputV1Schema,
+    title: "ExpenseEnrichmentInputV1",
+    fileName: "expense-enrichment-input-v1.schema.json",
+  },
+  {
+    schema: ExpenseEnrichmentResultV1Schema,
+    title: "ExpenseEnrichmentResultV1",
+    fileName: "expense-enrichment-result-v1.schema.json",
   },
 ];
 

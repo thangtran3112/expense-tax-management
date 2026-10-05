@@ -1,0 +1,27 @@
+{
+  "name": "@expense-tax/workflow-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/worker.js",
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js",
+    "test": "vitest run --dir test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test"
+  },
+  "dependencies": {
+    "@expense-tax/contracts": "workspace:*",
+    "@temporalio/activity": "1.23.0",
+    "@temporalio/client": "1.23.0",
+    "@temporalio/worker": "1.23.0",
+    "@temporalio/workflow": "1.23.0",
+    "jose": "^6.2.12",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "1.23.0"
+  }
+}

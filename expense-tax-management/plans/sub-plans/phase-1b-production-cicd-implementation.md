@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status:** Complete. Retained because production deployment boundary tests read the Task 8 operator-only requirement. Do not execute this plan; current phase status lives in `../PLAN.md`.
+
 **Goal:** Publish immutable application images after green CI, synchronize one retained GCP secret version, and deploy private application containers to the live VPS against its existing PostgreSQL instance.
 
 **Architecture:** GitHub-hosted runners build six SHA-tagged GHCR images, authenticate to GCP through repository-restricted OIDC Workload Identity Federation, fetch one production dotenv bundle, and deploy over a dedicated SSH identity. Production Compose attaches database clients to existing external network `postgres_default`, keeps every application endpoint on VPS loopback, migrates before restart, and restores the previous image tag if health checks fail.
 
 **Tech Stack:** GitHub Actions, Docker Buildx, GHCR, Docker Compose v2, GCP Secret Manager, GCP IAM/WIF, Bash, Node.js 24, Vitest, PostgreSQL 17, Temporal.
 
-**Spec:** `plans/sub-plans/phase-1b-production-cicd-design.md`
+**Current status:** `../PLAN.md` and `../ROADMAP.md`
 
 ## Global Constraints
 

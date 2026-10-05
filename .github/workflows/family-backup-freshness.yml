@@ -1,0 +1,89 @@
+name: Family Backup Freshness
+
+# Daily RPO check (vps-backup-and-restore.md Task 6): authenticates as the
+# SEPARATE, list-only freshness-monitor identity (infrastructure/gcp/backup)
+# -- never the VPS writer -- and fails loudly as the backup content ages,
+# without ever reading or downloading a single backup object's content.
+#
+# Ruling (fix round 2): `dev` is this repository's default branch, so
+# merging a `schedule:` trigger activates it immediately on every push to
+# `dev` -- even before Task 1's GCP backup infrastructure is applied, and
+# even on an hourly cadence that would burn a meaningful share of the
+# owner's free GitHub Actions minutes (~720 min/month at 5 min/run) for a
+# bucket that doesn't exist yet. Changed hourly -> once daily, plus the
+# job-level `if:` below, which skips the job entirely (0 minutes consumed)
+# until an operator actually sets the GCP_BACKUP_BUCKET repository
+# variable. Cost: RPO-breach detection latency widens from ~1h to ~24h in
+# the worst case (a breach right after the daily run isn't caught until
+# the next one) -- acceptable because the RPO itself is already 24h; a
+# once-daily check still catches every breach within one RPO window, it
+# just loses the early-warning margin an hourly cadence would have given
+# at the 18h/22h thresholds. `workflow_dispatch` remains for an operator
+# to check on demand without waiting for the schedule.
+on:
+  schedule:
+    - cron: "17 14 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check-freshness:
+    name: Check latest backup age
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Skips entirely (0 Actions minutes consumed) until an operator sets
+    # this repository variable -- i.e. until Task 1's bucket actually
+    # exists. A manual workflow_dispatch while still unconfigured skips
+    # too, rather than running only to fail fast inside the script below.
+    if: ${{ vars.GCP_BACKUP_BUCKET != '' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud (list-only freshness-monitor identity)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_BACKUP_FRESHNESS_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BACKUP_FRESHNESS_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+
+      - name: Install gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Find the latest backup object's age
+        env:
+          GCP_BACKUP_BUCKET: ${{ vars.GCP_BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          : "${GCP_BACKUP_BUCKET:?GCP_BACKUP_BUCKET repository variable is required}"
+
+          # storage.objects.list only -- never storage.objects.get. No
+          # backup content is ever read or downloaded by this identity.
+          latest_updated="$(gcloud storage objects list "gs://${GCP_BACKUP_BUCKET}" \
+            --format='value(updated)' | sort -r | head -1)"
+
+          if [[ -z "$latest_updated" ]]; then
+            echo "::error::No backup objects found in gs://${GCP_BACKUP_BUCKET} at all"
+            exit 1
+          fi
+
+          now_epoch=$(date -u +%s)
+          latest_epoch=$(date -u -d "$latest_updated" +%s)
+          age_hours=$(( (now_epoch - latest_epoch) / 3600 ))
+
+          echo "Latest backup object updated: ${latest_updated} (${age_hours}h ago)"
+
+          if (( age_hours >= 24 )); then
+            echo "::error::RPO BREACH: latest backup is ${age_hours}h old (>= 24h RPO)"
+            exit 1
+          elif (( age_hours >= 22 )); then
+            echo "::error::PAGE: latest backup is ${age_hours}h old (>= 22h, RPO breach imminent)"
+            exit 1
+          elif (( age_hours >= 18 )); then
+            echo "::warning::Latest backup is ${age_hours}h old (>= 18h) -- investigate before it becomes a page"
+          else
+            echo "Backup is fresh (${age_hours}h old)"
+          fi
