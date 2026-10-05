@@ -39,8 +39,9 @@ real investigation (ping OK, ports 80/443 "connection refused" =
 reachable but nothing listening, port 22 silently timed out = actually
 just moved) before `nc -vz <ip> 2222` confirmed the real port. **Record
 the hardened port and connection details somewhere durable the moment
-you run this** (a password manager entry, `.keys/<provider>/README.md`,
-wherever — anywhere except "memory"). This directory's job is to make
+you run this**: Firestore `family-config`, `shared/vps` (`VPS_HOST`,
+`VPS_PORT`, `VPS_USER`; see `common/config/README.md`), never only in
+memory. This directory's job is to make
 the *setup* reproducible; it can't make the *fact of which port you
 chose* rediscoverable on its own.
 
@@ -101,6 +102,10 @@ cd infrastructure/vps
 per-app role passwords, generated on the VPS — never invented locally)
 to a local path, `chmod 600`. Omit it to leave secrets VPS-only and
 fetch manually later: `ssh -p <port> ... cat /opt/family-app/postgres/.env`.
+Store the fetched values in Firestore `family-config` (superuser password
+in `shared/vps-postgres`, app role values in the app's `ops` profile; see
+`common/config/README.md`), then delete the local copy. Never keep it in
+the repository.
 
 Postgres itself is bound to the VPS's own `127.0.0.1:5432` — never
 public. Reach it from a dev machine via SSH tunnel:
