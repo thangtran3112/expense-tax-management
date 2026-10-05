@@ -89,8 +89,7 @@ printing values, and on the laptop always uses gcloud configuration `personal`.
      `render-env.sh` already does. Do not store it unless that changes.
 2. **Remove Secret Manager from `infrastructure/gcp/ai-trading/`.** Delete the
    `ai-trading-env-bundle` secret resource and both accessor bindings, including the
-   binding on `expense-tax-env-files`; that secret is deleted after the family-config
-   rollout. If a workflow must read Firestore in CI, grant its service account
+   binding on `expense-tax-env-files`; that secret was deleted on 2026-10-05. If a workflow must read Firestore in CI, grant its service account
    `roles/datastore.viewer` (or `roles/datastore.user`) on `tobytran-portfolio`. Keep IAM
    simple: project-level roles, no per-resource conditions (owner preference).
 3. **Deploy like expense.** The VPS reads Firestore itself at deploy time with

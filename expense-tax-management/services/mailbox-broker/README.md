@@ -24,10 +24,10 @@ database, or Clerk mailbox identities — it deploys the base Compose only,
 with `MAILBOX_FEATURE_ENABLED=false` passed to `app-api` as a hardcoded
 literal.
 
-To enable: an operator sets `MAILBOX_FEATURE_ENABLED=true` and every
-mailbox env var in their own shell before running
-`infrastructure/gcp/expense-tax/sync-production-secret.sh` (which then
-requires and uploads the mailbox keys to the production secret bundle),
+To enable: an operator sets every mailbox env var, then
+`MAILBOX_FEATURE_ENABLED=true`, in the Firestore production profile
+(`common/config/family_config.py set expense-tax-management/production
+<NAME>`; `deploy.sh` refuses an enabled profile with missing mailbox keys),
 and separately runs `deploy/production/bootstrap-mailbox-vault-db.sh`
 (operator-only, never part of normal deploy) to create the
 `mailbox_vault` database and its two roles before the first enabled
