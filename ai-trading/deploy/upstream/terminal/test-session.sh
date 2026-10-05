@@ -20,6 +20,7 @@ check "alice@example.com" "alice-example-com"
 check "bob@example.com" "bob-example-com"
 check "" "default"
 check "---" "default"
+# shellcheck disable=SC2016 # literal on purpose: hostile input must stay unexpanded
 check '$(reboot);rm -rf /' "--reboot--rm--rf--"
 check "averyveryverylongemailaddress@example.com" "averyveryverylongemailaddress-ex"
 exit "$status"

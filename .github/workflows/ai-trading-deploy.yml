@@ -84,12 +84,13 @@ jobs:
           ssh_opts=(-i "$key" -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
           scp_opts=(-i "$key" -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes -P "$VPS_PORT")
           ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 0700 /tmp/ai-trading-deploy"
-          scp "${scp_opts[@]}" \
-            ai-trading/deploy/production/docker-compose.yml \
-            ai-trading/deploy/production/deploy.sh \
-            ai-trading/deploy/production/health-check.sh \
-            "$VPS_USER@$VPS_HOST:/tmp/ai-trading-deploy/"
-          printf '%s\n' "$GITHUB_TOKEN" | ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" \
+           scp "${scp_opts[@]}" \
+             ai-trading/deploy/production/docker-compose.yml \
+             ai-trading/deploy/production/deploy.sh \
+             ai-trading/deploy/production/health-check.sh \
+             "$VPS_USER@$VPS_HOST:/tmp/ai-trading-deploy/"
+           # shellcheck disable=SC2029 # GHCR_USER and IMAGE_TAG expand on the runner on purpose
+           printf '%s\n' "$GITHUB_TOKEN" | ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" \
             "read -r GH_TOKEN; set -Eeuo pipefail; DOCKER_CONFIG=/dev/shm/ai-trading-docker-config-\$\$; cleanup() { sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker logout ghcr.io >/dev/null 2>&1 || true; sudo rm -rf \"\$DOCKER_CONFIG\" /tmp/ai-trading-deploy; }; trap cleanup EXIT; sudo install -d -o root -g root -m 0700 \"\$DOCKER_CONFIG\"; printf '%s' \"\$GH_TOKEN\" | sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker login ghcr.io --username '$GHCR_USER' --password-stdin; sudo install -d -m 0755 /opt/family-app/ai-trading; sudo install -o root -g root -m 0644 /tmp/ai-trading-deploy/docker-compose.yml /opt/family-app/ai-trading/docker-compose.yml; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/deploy.sh /opt/family-app/ai-trading/deploy.sh; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/health-check.sh /opt/family-app/ai-trading/health-check.sh; sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" IMAGE_TAG='$IMAGE_TAG' /opt/family-app/ai-trading/deploy.sh"
       - name: Remove runner SSH material
         if: always()
