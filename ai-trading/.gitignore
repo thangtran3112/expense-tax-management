@@ -1,0 +1,10 @@
+# Agent and experiment scratch space. Never committed.
+temp/
+
+# Reference checkouts used for evaluation only; never deployed.
+packages/deer-flow/
+packages/ag-ui/
+
+# Real env files never live in the repository; only *.env.example templates do.
+deploy/production/env/*.env
+deploy/local/secrets/
