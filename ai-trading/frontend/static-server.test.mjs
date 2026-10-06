@@ -1,6 +1,14 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createStaticServer, resolveObjectPath, resolveUnderRoot } from "./static-server.mjs";
+
+const root = await mkdtemp(join(tmpdir(), "ai-trading-static-server-"));
+await writeFile(join(root, "404.html"), "<!doctype html><html>fixture 404</html>");
+await writeFile(join(root, "login.txt"), "fixture-flight-payload");
+after(() => rm(root, { recursive: true, force: true }));
 
 test("root maps to index.html", () => {
   assert.equal(resolveObjectPath("/"), "index.html");
@@ -43,11 +51,10 @@ test("resolveUnderRoot accepts a benign filename that merely starts with '..'", 
   assert.equal(resolveUnderRoot("/app/out", "apps/..bar.css"), "/app/out/apps/..bar.css");
 });
 
-// The next two tests run against the real built `./out/` directory (the
-// module's own ROOT), driving actual HTTP requests through the real server
-// — not a source grep or a reimplementation of its logic.
+// Drive real HTTP requests through the real server, using a disposable
+// static export fixture so `pnpm test` works before `pnpm build` in CI.
 test("a 404 fallback serves 404.html's own content-type and cache-control, not the requested path's", async () => {
-  const server = createStaticServer();
+  const server = createStaticServer(root);
   await new Promise((res) => server.listen(0, res));
   const port = server.address().port;
   try {
@@ -56,14 +63,14 @@ test("a 404 fallback serves 404.html's own content-type and cache-control, not t
     assert.equal(res.status, 404);
     assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8");
     assert.equal(res.headers.get("cache-control"), "no-store");
-    assert.ok(/<!doctype html|<html/i.test(body), "fallback body is the 404 page, not an empty/JS response");
+    assert.equal(body, "<!doctype html><html>fixture 404</html>");
   } finally {
     server.close();
   }
 });
 
-test("a real RSC Flight payload has its component MIME type and no-store cache policy", async () => {
-  const server = createStaticServer();
+test("an RSC Flight object has its component MIME type and no-store cache policy", async () => {
+  const server = createStaticServer(root);
   await new Promise((res) => server.listen(0, res));
   const port = server.address().port;
   try {
@@ -71,13 +78,14 @@ test("a real RSC Flight payload has its component MIME type and no-store cache p
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("content-type"), "text/x-component");
     assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.equal(await res.text(), "fixture-flight-payload");
   } finally {
     server.close();
   }
 });
 
 test("a traversal request through real HTTP input never serves resolveUnderRoot's thrown path", async () => {
-  const server = createStaticServer();
+  const server = createStaticServer(root);
   await new Promise((res) => server.listen(0, res));
   const port = server.address().port;
   try {

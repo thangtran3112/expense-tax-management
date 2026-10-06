@@ -77,7 +77,12 @@ MOCK
 chmod +x "$MOCK_BIN/gsutil"
 export PATH="$MOCK_BIN:$PATH"
 
-live_gen() { local d="$FAKE_GCS_ROOT/$1/$2/live"; [[ -s "$d" ]] && printf '%s' "$(<"$d")" || true; }
+live_gen() {
+  local d="$FAKE_GCS_ROOT/$1/$2/live"
+  if [[ -s "$d" ]]; then
+    printf '%s' "$(<"$d")"
+  fi
+}
 live_file() { local b="$1" o="$2" g; g="$(live_gen "$b" "$o")"; [[ -n "$g" ]] && printf '%s/%s/%s/%s.content' "$FAKE_GCS_ROOT" "$b" "$o" "$g"; }
 
 BUCKET=test-hub

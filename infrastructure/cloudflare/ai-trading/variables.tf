@@ -29,9 +29,9 @@ variable "vibe_trading_hostname" {
 }
 
 variable "access_allowed_emails" {
-   type        = list(string)
-   description = "Emails allowed through Cloudflare Access. Supplied as TF_VAR_access_allowed_emails from the [cloudflare] section of the ai-trading-env-bundle secret; never committed."
-   sensitive   = true
+  type        = list(string)
+  description = "Emails allowed through Cloudflare Access. Supplied as TF_VAR_access_allowed_emails from the ai-trading/cloudflare Firestore profile; never committed."
+  sensitive   = true
 
   validation {
     condition     = length(var.access_allowed_emails) > 0 && alltrue([for e in var.access_allowed_emails : can(regex("^[^@\\s]+@[^@\\s]+$", e))])

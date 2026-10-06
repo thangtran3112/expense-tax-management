@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# ShellCheck 0.10 cannot see test shims exported to child shells or called
+# through sourced deploy functions; those bodies are reachable at runtime.
+# shellcheck disable=SC2317
 # Offline test for production/deploy.sh's Firestore-render + atomic-staging
 # contract (A9a1): render_profiles() + stage_secrets() + rollback, with a
-# fake family_config.py standing in for the real CLI (which lives only on
-# origin/dev's main checkout, not this worktree -- see
-# .superpowers/sdd/01h-static-hub-clerk-implementation/task-9-preflight.md).
+# fake family_config.py standing in for the merged shared CLI
+# (common/config/family_config.py) so failures are deterministic.
 # No real Firestore, Secret Manager, gcloud, or VPS credential is used
 # anywhere in this file. Everything runs under one mktemp -d root outside the
 # repository (matches ai-trading/AGENTS.md's "never put env files under

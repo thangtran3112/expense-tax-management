@@ -58,11 +58,11 @@ export function resolveUnderRoot(root, objectPath) {
   return full;
 }
 
-async function readUnderRoot(objectPath) {
-  return readFile(resolveUnderRoot(ROOT, objectPath));
+async function readUnderRoot(root, objectPath) {
+  return readFile(resolveUnderRoot(root, objectPath));
 }
 
-export function createStaticServer() {
+export function createStaticServer(root = ROOT) {
   return createServer(async (req, res) => {
     const url = new URL(req.url, "http://static-server");
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -74,10 +74,10 @@ export function createStaticServer() {
     let status = 200;
     let servedPath = objectPath;
     try {
-      body = await readUnderRoot(objectPath);
+      body = await readUnderRoot(root, objectPath);
     } catch {
       try {
-        body = await readUnderRoot("404.html");
+        body = await readUnderRoot(root, "404.html");
         status = 404;
         servedPath = "404.html";
       } catch {
