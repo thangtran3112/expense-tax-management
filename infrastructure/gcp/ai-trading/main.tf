@@ -157,16 +157,6 @@ resource "google_secret_manager_secret_iam_member" "deploy_env_bundle_accessor" 
   member    = "serviceAccount:${google_service_account.deploy.email}"
 }
 
-# Reused, read-only: the OVH deploy SSH key (AGENTS.md's one shared
-# exception). This secret is provisioned by expense-tax-management's own
-# Terraform, not this root; granting access here only references its ID.
-resource "google_secret_manager_secret_iam_member" "deploy_ovh_keys_accessor" {
-  project   = var.project_id
-  secret_id = "expense-tax-env-files"
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.deploy.email}"
-}
-
 resource "google_secret_manager_secret_iam_member" "terraform_env_bundle_accessor" {
   project   = var.project_id
   secret_id = google_secret_manager_secret.env_bundle.secret_id

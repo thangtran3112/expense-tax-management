@@ -19,7 +19,7 @@ until an operator explicitly approves cleanup; no current code reads it.
 | `google_secret_manager_secret.env_bundle` | `ai-trading-env-bundle`, labels `app=ai-trading`, `versioning=single`. |
 | `google_iam_workload_identity_pool.deploy` + provider `github` | Trusts `ai-trading-deploy.yml` on `refs/heads/main`, environment `ai-trading-production`. |
 | `google_iam_workload_identity_pool.terraform` + provider `github` | Trusts `ai-trading-infra.yml` on `refs/heads/main`, environment `ai-trading-production`. |
-| `google_service_account.deploy` | `roles/secretmanager.secretAccessor` on `ai-trading-env-bundle` (retained, unused by current code) and on `expense-tax-env-files` (the reused OVH SSH key). |
+| `google_service_account.deploy` | `roles/secretmanager.secretAccessor` on `ai-trading-env-bundle` (retained, unused by current code); deploy SSH key comes from Firestore `shared/vps`, not the expense-tax secret. |
 | `google_service_account.terraform` | `roles/secretmanager.secretAccessor` on `ai-trading-env-bundle` (retained, unused by current code); `roles/storage.objectAdmin` on the state bucket. |
 | `google_project_iam_member.deploy_family_config_viewer` / `terraform_family_config_viewer` | Additive: `roles/datastore.viewer` (project-wide, read-only) on both service accounts, so CI can read the shared Firestore `family-config` database instead of the bundle above. Declared in this same root's Terraform, applied by the same full-root `terraform apply` as every other resource here (see "First apply" below) — no separate or targeted apply. Until an operator reviews and applies it, `.github/workflows/ai-trading-{deploy,infra}.yml`'s Firestore reads fail with a permission error. |
 
@@ -49,14 +49,12 @@ terraform apply tfplan
 rm -f tfplan
 ```
 
-This one full-root apply is also how the two additive `roles/datastore.viewer`
-grants (resource table above) take effect — there is no separate apply for
-them. If the rest of this root was already applied earlier, `terraform plan`
-shows only those two grants as new; review that plan before `apply` runs it,
-same as any other change to this root. Run this, reviewing the plan for the expected resource additions/changes
-before applying — not a no-op; a first-ever apply creates every resource in
-the table above, and a later apply that only adds the two viewer grants
-should show exactly those two as new, nothing else — before any push to
+This one full-root apply also adds the two `roles/datastore.viewer` grants;
+there is no separate apply for them. If this root was applied before the
+static buckets were added, expect both viewer grants **and** the bucket/uploader
+resources in the plan. Review all changes before applying; the retained Secret
+Manager resource and its existing bindings must not be replaced or destroyed.
+Apply before any push to
 `main` that would trigger `ai-trading-deploy.yml`/`ai-trading-infra.yml` —
 their Firestore reads fail with a permission error until these grants are
 applied. No CI job applies this root automatically; it is always this
