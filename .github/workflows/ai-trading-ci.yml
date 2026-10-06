@@ -57,6 +57,8 @@ jobs:
         run: pnpm build
       - name: Check static export
         run: ../deploy/ci/check-static-export.sh out
+      - name: Upload-hub-static mock-gcloud test
+        run: ../deploy/ci/upload-hub-static.test.sh
 
   scripts:
     name: Scripts and compose
@@ -76,8 +78,6 @@ jobs:
           files=(ai-trading/deploy/upstream/terminal/*.sh ai-trading/deploy/ci/*.sh
             ai-trading/deploy/production/*.sh infrastructure/cloudflare/ai-trading/*.sh)
           shellcheck "${files[@]}"
-      - name: Upload-hub-static mock-gsutil test
-        run: ai-trading/deploy/ci/upload-hub-static.test.sh
       - name: Upload-mirofish-static mock-gcloud test
         run: ai-trading/deploy/ci/upload-mirofish-static.test.sh
       - name: Clerk publishable key validator test (F1 fix round 1)
