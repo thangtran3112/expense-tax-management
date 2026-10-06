@@ -15,6 +15,9 @@ services:
       POSTGRES_USER: expense_temporal
       POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       POSTGRES_SEEDS: postgres
+      # On two networks the default bind (`hostname -i`) picks one IP; bind all instead.
+      BIND_ON_IP: 0.0.0.0
+      TEMPORAL_BROADCAST_ADDRESS: 127.0.0.1
       DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development.yaml
     volumes:
       - ./dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/development.yaml:ro

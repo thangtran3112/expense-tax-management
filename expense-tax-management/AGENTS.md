@@ -25,8 +25,8 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Clerk SPF/DKIM CNAMEs verified. DMARC: `_dmarc.tobytran.dev` = `v=DMARC1; p=none; adkim=s; aspf=s`.
 - Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
 - Authenticated production smoke passed 13/13.
-- Phase 3B deduplication is deployed. Phase 3C is implemented on `dev` but not deployed. Phase 3D-A, 3D-B, and 3D-C are implemented on `dev` but not deployed. All of 3D stays inert in production (`MAILBOX_FEATURE_ENABLED` unset) pending operator activation; 3D-B/3D-C production use additionally requires the runtime migration Task 7 operator cutover below.
-- Temporal dispatch routing is data-driven (Task 7 Stage A, `app.temporal_dispatch_routing`): generation 1 = legacy Python routing (namespace `default`, queue `expense-tax-ai-worker`) until an operator runs `advance` (Stage B). `dev` no longer hardcodes `expense-tax-processing` for new jobs, so the prior release hazard is resolved. Task 7 Stage B source is merged: `workflow-worker` ships idle in production Compose alongside `ai-worker`; the remaining operator cutover sequence (shared Temporal activation, non-production smoke, `advance`, drain) and Stage C Python removal are not yet executed.
+- Release 2026-10-05 (`main` `d7426e5`, expense only; ai-trading stays on `dev`) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert: `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B, and family-config runtime env (the VPS loads the production profile from Firestore at deploy time).
+- Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`). Dispatch routing advanced to generation 2 on 2026-10-06: new jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`); generation 1 had nothing to drain, and the Python `ai-worker` is idle. Remaining: Stage C Python removal (runbook Phase 3) after real jobs complete on the TypeScript worker.
 
 ## Boundaries
 
@@ -36,6 +36,11 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Do not edit generated contracts/clients directly.
 - Use tests first for behavior changes; config-only changes need direct verification.
 - Smallest correct diff.
+
+## Env and Secrets
+
+- Single source for all family-app env and secrets: Firestore `family-config` (`tobytran-portfolio`): `shared/*` reused values, `apps/<app>/profiles/<profile>` app env; access only via `common/config/family_config.py`.
+- Laptop and VPS mirror: both load env at runtime through that CLI; no env/key files in the repo; GitHub keeps CI copies only, refreshed from Firestore.
 
 ## Authorization
 
@@ -73,7 +78,6 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 
 - Production mutation requires explicit deployment approval.
 - VPS hosts APIs, Temporal, workers, and stateful orchestration; no always-on GCP compute.
-- Current production GCP owns Secret Manager/IAM/GitHub OIDC/WIF; Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
-- Secret Manager production bundle retains exactly one non-destroyed version.
+- Production GCP owns the Cloudflare Terraform WIF and state; family config lives in Firestore `family-config` (`tobytran-portfolio`); Phase 3D mailbox broker runs as a VPS container; no new GCP compute.
 - Temporal database bootstrap remains an explicit operator-only Task 8; normal deploy never runs `bootstrap-temporal-db.sh`.
 - Current infrastructure sources: `infrastructure/vps/`, `infrastructure/cloudflare/expense-tax/`, `.github/workflows/expense-tax-deploy.yml`.

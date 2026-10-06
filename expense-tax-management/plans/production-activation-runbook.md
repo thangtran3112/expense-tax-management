@@ -29,7 +29,7 @@ explicitly granted by the owner before its mutating steps run.
 | Access | Needed for |
 |---|---|
 | VPS SSH + sudo (root) | Phases 0, 1, 3, 4; `infrastructure/vps/bootstrap.sh` runs from an operator machine and pushes over SSH/SCP |
-| GCP project `expense-tax-tobytran-2026` (Secret Manager Admin on secret `expense-tax-production-env`, Storage Admin for Task 1 apply) | Phases 0, 1, 4 |
+| Firestore owner access, project `tobytran-portfolio` (database `family-config`), for production env edits; GCP project `expense-tax-tobytran-2026` (Storage Admin for Task 1 apply) | Phases 0, 1, 4 |
 | Clerk production dashboard (or `clerk-cli`) | Phase 4 Step 2 (three new machine identities) |
 | Google Cloud Console OAuth client | Phase 4 Step 3 |
 | GitHub repo admin (Actions UI: re-run jobs, `workflow_dispatch` for the Cloudflare workflow) | Phases 1, 3, 4 |
@@ -51,8 +51,8 @@ explicitly granted by the owner before its mutating steps run.
   green, and never start Stage C (Phase 3) before Phase 2's drain proof reads
   zero.
 - Never set `MAILBOX_FEATURE_ENABLED=true` before the Phase 4 vault bootstrap,
-  Clerk identities, and Google OAuth client all exist — `sync-production-secret.sh`
-  will refuse (missing required shell/database keys) but do not attempt it blind.
+  Clerk identities, and Google OAuth client all exist — `deploy.sh`
+  will refuse (missing required mailbox keys) but do not attempt it blind.
 - Never run `terraform apply` for `infrastructure/gcp/backup/` or
   `infrastructure/cloudflare/expense-tax/` without the owner watching the
   `plan` output first (both are explicitly operator/approval-gated in their
@@ -71,7 +71,7 @@ output. The artifacts have expired, but treat both credentials as exposed.
 
 | # | Where | Action |
 |---|---|---|
-| R.1 | Cloudflare dashboard | Roll the API token used by `CLOUDFLARE_API_TOKEN` (same permissions: Account Cloudflare Tunnel Edit, Zone DNS Edit), then update the GitHub `CLOUDFLARE_API_TOKEN` secret and any local operator copy. |
+| R.1 | Cloudflare dashboard | Roll the API token used by `CLOUDFLARE_API_TOKEN` (same permissions: Account Cloudflare Tunnel Edit, Zone DNS Edit). Update the value in Firestore first (`shared/cloudflare` group), then refresh the GitHub copy with `common/config/family_config.py get shared/cloudflare CLOUDFLARE_API_TOKEN \| gh secret set CLOUDFLARE_API_TOKEN --env production --repo thangtran3112/family-app`. |
 | R.2 | Cloudflare dashboard | Networking > Tunnels > `expense-tax` > Overview > **Refresh token**. Existing connections stay up; new ones need the new token. Then force-disconnect stale connections. |
 | R.3 | operator machine | Save the new token to a local mode-0600 file (never paste it into a terminal command), then run `infrastructure/vps/bootstrap-cloudflared.sh --host HOST --user USER --key PATH --ssh-port PORT --known-hosts-file PATH --tunnel-token-file PATH`. It installs `/etc/cloudflared/expense-tax-tunnel.token` and restarts `expense-tax-cloudflared.service`. Single connector: expect a brief interruption. Verify every tunnel hostname responds, then delete the local token file. |
 
@@ -96,7 +96,7 @@ Choose one:
 | # | Where | Command / action |
 |---|---|---|
 | 0A.1 | local (operator, real GCP creds) | Fill `infrastructure/gcp/backup/terraform.tfvars` (gitignored) per `infrastructure/gcp/backup/README.md`: `project_id`, `bucket_name`, `github_repository`, `wif_pool_id`. Run `terraform plan`, review, then `terraform apply` (operator only — this doc does not run it). |
-| 0A.2 | local | Create the writer key once, outside Terraform state: `gcloud iam service-accounts keys create /tmp/backup-writer-key.json --iam-account=expense-tax-backup-writer@expense-tax-tobytran-2026.iam.gserviceaccount.com`, transfer its content into the shared-infrastructure Secret Manager bundle, then `shred -u /tmp/backup-writer-key.json` (`infrastructure/gcp/backup/README.md`). |
+| 0A.2 | local | Create the writer key once, outside Terraform state: `gcloud iam service-accounts keys create /tmp/backup-writer-key.json --iam-account=expense-tax-backup-writer@expense-tax-tobytran-2026.iam.gserviceaccount.com`, transfer its content into Firestore `family-config` (`shared/backup` group, set with `family_config.py set shared/backup <NAME> --raw`), then `shred -u /tmp/backup-writer-key.json` (`infrastructure/gcp/backup/README.md`). |
 | 0A.3 | VPS (via operator machine) | `infrastructure/vps/bootstrap.sh --host <VPS_HOST> --ssh-user <USER> --ssh-key <PATH> --app apps/expense-tax-management.conf --only backup --backup-gcs-uri <gs://... from Task 1 output> --backup-host-id <id> --age-recipient <age1... public recipient> --receipt-volume expense-tax-production_expense_tax_production_storage --backup-writer-key-file <local path> --backup-image <pinned digest>` (`infrastructure/vps/bootstrap.sh` usage text, lines 36-63). Installs the `family-app-backup.timer` (every 12h, `Persistent=true`) and enables it immediately. |
 | 0A.4 | VPS | Verify: `systemctl list-timers family-app-backup.timer`; after the first run, `bash infrastructure/backup/check-backup-freshness.sh` (or wait for `.github/workflows/family-backup-freshness.yml`, which stays skipped — 0 Actions minutes — until repo variable `GCP_BACKUP_BUCKET` is set). |
 
@@ -151,19 +151,35 @@ matches `plans/sub-plans/runtime-typescript-temporal-migration.md`'s own
 "Operator cutover sequence" (steps a-h), reordered so the irreversible step
 (stopping legacy Temporal) happens right before the fix, not hours before it.
 
+**VPS env helper:** define this shell function on the VPS before running any
+step below that needs the production profile:
+
+```bash
+etm_compose() {
+  sudo env FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json \
+    IMAGE_TAG="$(cat /opt/expense-tax-management/app/deployed-image-tag)" \
+    /opt/expense-tax-management/app/family_config.py run expense-tax-management/production --env-file-var PRODUCTION_ENV_FILE -- \
+    sh -c 'docker compose --project-name expense-tax-production --env-file "$PRODUCTION_ENV_FILE" -f /opt/expense-tax-management/app/docker-compose.yml "$@"' sh "$@"
+}
+```
+
+It loads the production profile from Firestore for one command, passing it
+to `docker compose` as a temp env file, and removes that temp file
+afterwards.
+
 | # | Where | Step |
 |---|---|---|
 | 1.1 | GitHub (PR) | Merge `dev` → `main` (required check green, current with `dev`). Triggers `Expense Tax CI` then `Expense Tax Deploy` (`workflow_run` on CI success, `head_branch == 'main'`). |
 | 1.2 | GitHub Actions UI | Confirm: `build` job succeeds (8 images pushed, incl. `expense-tax-workflow-worker`, `expense-tax-mailbox-broker`); `deploy` job **fails** at `require_shared_temporal` or `is_known_key`. Confirm via VPS `docker ps`/`curl` that the previous release's containers are still running unchanged — `deploy.sh` dies before any `compose pull`/`up`/env-file swap. |
 | 1.3 | — | **STOP: owner approval required.** Next step stops legacy Temporal; downtime begins here. |
-| 1.4 | VPS | Preserve rollback material per `infrastructure/README.md` §"Shared Temporal Activation" step 1: record the last known-good image tag (`/opt/expense-tax-management/app/deployed-image-tag`), copy the current `docker-compose.yml`/`deploy.sh`/`/etc/expense-tax-management/production.env` into a root-only recovery directory. Keep `temporal`/`temporal_visibility` databases and role `expense_temporal` as-is. |
-| 1.5 | VPS | Create `family_shared` network once; stage `infrastructure/temporal/{docker-compose.yml,dynamicconfig.yaml,bootstrap-namespaces.sh}` into `/opt/family-app/temporal/`; create root-only mode-`0600` `/etc/family-app/temporal.env` with **only** `TEMPORAL_DB_PASSWORD` set to the **existing** `expense_temporal` role password (kept in the separate shared-infrastructure secret bundle — never the Expense bundle, never newly generated). |
+| 1.4 | VPS | Preserve rollback material per `infrastructure/README.md` §"Shared Temporal Activation" step 1: record the last known-good image tag (`/opt/expense-tax-management/app/deployed-image-tag`), copy the current `docker-compose.yml`/`deploy.sh` into a root-only recovery directory. Keep `temporal`/`temporal_visibility` databases and role `expense_temporal` as-is. |
+| 1.5 | VPS | Create `family_shared` network once; stage `infrastructure/temporal/{docker-compose.yml,dynamicconfig.yaml,bootstrap-namespaces.sh}` into `/opt/family-app/temporal/`; create root-only mode-`0600` `/etc/family-app/temporal.env` with **only** `TEMPORAL_DB_PASSWORD` set to the **existing** `expense_temporal` role password, sourced from Firestore `shared/temporal` `TEMPORAL_DB_PASSWORD` (verify it equals the existing role password before use — never newly generated). |
 | 1.6 | VPS | Stop the legacy Temporal container. Verify empty: `docker ps --quiet --filter "label=com.docker.compose.project=expense-tax-production" --filter label=com.docker.compose.service=temporal`. |
 | 1.7 | VPS | `sudo docker compose --project-name family-temporal --env-file /etc/family-app/temporal.env -f /opt/family-app/temporal/docker-compose.yml up -d --wait` then `sudo bash /opt/family-app/temporal/bootstrap-namespaces.sh` then `sudo docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace default` (verifies Python's `default` histories are intact; namespace bootstrap creates `expense-tax` once). |
-| 1.8 | operator machine | Rotate the Expense secret bundle: `DATABASE_ENV_PATH=.keys/ovh/postgres-vps.env infrastructure/gcp/expense-tax/sync-production-secret.sh` (`MAILBOX_FEATURE_ENABLED` left unset — do not enable mailbox yet). Publishes a clean bundle under the current `scripts/lib/production-secret-bundle.mjs` key set, which contains no `TEMPORAL_DB_PASSWORD` key at all; enforces the one-non-destroyed-version postcondition automatically. |
-| 1.9 | GitHub Actions UI | Re-run the Step 1.2 failed workflow run's `deploy` job ("Re-run failed jobs"). It re-fetches the rotated bundle, passes `require_shared_temporal`, runs `app-api-migrate`/`foundry-service-migrate` (migrations `017`-`021` apply: `temporal_dispatch_routing`, `mailbox_connections`, `mailbox_discovery`, `mailbox_ingestion`, `expense_source_connected_mailbox`), starts all 8 services including idle `workflow-worker`, then `health-check.sh` (now also polls `family-temporal` cluster/`expense-tax` namespace health). |
+| 1.8 | operator machine | Verify the VPS reader key and production profile: run `infrastructure/gcp/family-config/install-reader-key.sh` once if `/etc/family-app/config-reader.json` is not installed yet on the VPS (it verifies with `keys expense-tax-management/production` on the VPS). Locally, confirm `common/config/family_config.py keys expense-tax-management/production` lists no `TEMPORAL_DB_PASSWORD` key and shows `MAILBOX_FEATURE_ENABLED` (left `false` — do not enable mailbox yet). |
+| 1.9 | GitHub Actions UI | Re-run the Step 1.2 failed workflow run's `deploy` job ("Re-run failed jobs"). It loads the current production profile from Firestore on the VPS, passes `require_shared_temporal`, runs `app-api-migrate`/`foundry-service-migrate` (migrations `017`-`021` apply: `temporal_dispatch_routing`, `mailbox_connections`, `mailbox_discovery`, `mailbox_ingestion`, `expense_source_connected_mailbox`), starts all 8 services including idle `workflow-worker`, then `health-check.sh` (now also polls `family-temporal` cluster/`expense-tax` namespace health). |
 | 1.10 | VPS | Verify TS worker polling: `docker exec family-temporal temporal task-queue describe --address temporal:7233 --namespace expense-tax --task-queue expense-tax-processing`. |
-| 1.11 | VPS | Verify routing generation: `docker compose --project-name expense-tax-production --env-file /etc/expense-tax-management/production.env -f docker-compose.yml run --rm app-api-migrate node dist/temporal/dispatch-routing.js status` → expect `generation: 1`, `namespace: "default"`, `taskQueue: "expense-tax-ai-worker"` (unchanged — Stage A is a no-op until `advance`). |
+| 1.11 | VPS | Verify routing generation: `etm_compose run --rm app-api-migrate node dist/temporal/dispatch-routing.js status` → expect `generation: 1`, `namespace: "default"`, `taskQueue: "expense-tax-ai-worker"` (unchanged — Stage A is a no-op until `advance`). |
 
 **Rollback:** see Rollback Matrix #1 (shared Temporal failure) and #2 (release
 deploy failure — `deploy.sh`'s own `ERR` trap handles this automatically once
@@ -190,7 +206,7 @@ drains its own backlog, with no container restart.
 | 2.1 | (optional) | Non-production smoke (OCR, forwarding, enrichment end-to-end against the TS worker) if a non-production shared-Temporal environment exists — **open question #7**, none is defined in this repo today. |
 | 2.2 | VPS | Re-run the Phase 1.11 `status` command immediately before advancing. |
 | 2.3 | — | **STOP: owner approval required.** Advancing redirects every *new* job to the TypeScript worker; existing jobs keep draining on `ai-worker`. |
-| 2.4 | VPS | `docker compose --project-name expense-tax-production --env-file /etc/expense-tax-management/production.env -f docker-compose.yml run --rm app-api-migrate node dist/temporal/dispatch-routing.js advance --from-generation 1` → generation becomes `2`, namespace `expense-tax`, queue `expense-tax-processing` (`src/temporal/dispatch-routing.ts`: `advanceDispatchRouting`, one transaction, exclusive advisory lock, refuses unless current generation equals `1`). |
+| 2.4 | VPS | `etm_compose run --rm app-api-migrate node dist/temporal/dispatch-routing.js advance --from-generation 1` → generation becomes `2`, namespace `expense-tax`, queue `expense-tax-processing` (`src/temporal/dispatch-routing.ts`: `advanceDispatchRouting`, one transaction, exclusive advisory lock, refuses unless current generation equals `1`). |
 | 2.5 | VPS | Repeat the `status` command (2.2) until `nonTerminalJobsByGeneration` and `pendingOutboxRowsByGeneration` both show `0` for generation `1`, while `ai-worker` keeps running and processing them. No active Temporal Schedules exist in this codebase today (confirmed: no `ScheduleClient` call in `services/`), so the sub-plan's "pause old schedules" step is a no-op. |
 
 **Rollback:** see Rollback Matrix #3 — `advance` has no reverse command.
@@ -272,26 +288,26 @@ and does not depend on Phase 3 at all.
   and installs docker-compose.mailbox.yml beside docker-compose.yml"), wired
   into `pnpm ci:test` via `check:temporal-infrastructure`. No manual
   placement or per-release sync is required anymore.
-- `sync-production-secret.sh` does not yet contain the four
-  exact-value lock lines for `CLERK_MAILBOX_SERVICE_AUDIENCE` /
-  `CLERK_MAILBOX_APP_API_SUBJECT` / `CLERK_MAILBOX_WORKER_SUBJECT` /
-  `CLERK_MAILBOX_BROKER_SUBJECT` (only required-presence checks exist today)
-  — per `docs/superpowers/plans/2026-09-12-phase-3d-a-mailbox-broker.md`
-  Task 5 Step 7, those lines are added *after* Step 2 below creates the real
-  Clerk machine IDs. This is a source change (a follow-up commit), not just a
-  config step; until it lands, correctness depends on operator discipline
-  rather than a hard-coded ID check.
+- The four Clerk mailbox values (`CLERK_MAILBOX_SERVICE_AUDIENCE`,
+  `CLERK_MAILBOX_APP_API_SUBJECT`, `CLERK_MAILBOX_WORKER_SUBJECT`,
+  `CLERK_MAILBOX_BROKER_SUBJECT`) are set directly in the Firestore
+  production profile after Step 2 below creates the real Clerk machine
+  identities. `deploy.sh` requires them (and the derived
+  `MAILBOX_SERVICE_TOKEN_*`/`MAILBOX_SERVICE_JWKS_URL` values, which must
+  equal `CLERK_ISSUER_URL`, `CLERK_JWKS_URL`, and
+  `CLERK_MAILBOX_SERVICE_AUDIENCE`) whenever `MAILBOX_FEATURE_ENABLED=true`.
+  No source commit is needed.
 
 | # | Where | Step |
 |---|---|---|
-| 1 | VPS | First confirm the real container name — **do not assume it**: `docker ps --format '{{.Names}}'` (the repo's own `infrastructure/vps/steps/30-postgres.sh` names it `family-app-postgres`, but this is not guaranteed for every host and is not changed by this runbook). **Vault bootstrap** (operator-only, never part of normal deploy): `POSTGRES_CONTAINER=<name confirmed above> POSTGRES_SUPERUSER_PASSWORD=<shared cluster password> MAILBOX_VAULT_MIGRATOR_DB_PASSWORD=<new> MAILBOX_VAULT_RUNTIME_DB_PASSWORD=<new> deploy/production/bootstrap-mailbox-vault-db.sh`. The script's own default (`expense-tax-postgres`) is almost certainly wrong for this cluster — **always pass `POSTGRES_CONTAINER` explicitly**; the default is intentionally left unchanged here since the real production container name is not determinable from this repository. Creates database `mailbox_vault`, roles `mailbox_vault_migrator` (DDL) and `mailbox_vault_runtime` (DML-only). |
+| 1 | VPS | First confirm the real container name — **do not assume it**: `docker ps --format '{{.Names}}'` (the repo's own `infrastructure/vps/steps/30-postgres.sh` names it `family-app-postgres`, but this is not guaranteed for every host and is not changed by this runbook). **Vault bootstrap** (operator-only, never part of normal deploy): `POSTGRES_CONTAINER=<name confirmed above> POSTGRES_SUPERUSER_PASSWORD=<value from Firestore shared/vps-postgres POSTGRES_SUPERUSER_PASSWORD, e.g. via family_config.py get shared/vps-postgres POSTGRES_SUPERUSER_PASSWORD piped/exported in the operator session, never echoed> MAILBOX_VAULT_MIGRATOR_DB_PASSWORD=<new> MAILBOX_VAULT_RUNTIME_DB_PASSWORD=<new> deploy/production/bootstrap-mailbox-vault-db.sh`. The script's own default (`expense-tax-postgres`) is almost certainly wrong for this cluster — **always pass `POSTGRES_CONTAINER` explicitly**; the default is intentionally left unchanged here since the real production container name is not determinable from this repository. Creates database `mailbox_vault`, roles `mailbox_vault_migrator` (DDL) and `mailbox_vault_runtime` (DML-only); store both new role passwords in Firestore `expense-tax-management/ops`. |
 | 2 | Clerk dashboard (production instance) | **Clerk mailbox identities** — create three machine identities: `app-api-mailbox`, `workflow-worker-mailbox`, `mailbox-broker-app`. Record each machine secret key and the exact subject strings (`workflow-worker-mailbox` is the required exact value for `CLERK_MAILBOX_WORKER_SUBJECT` per `services/mailbox-broker/README.md`). Then add the four lock lines described in Prerequisites above. |
-| 3 | Google Cloud Console | **Google OAuth client** — scope exactly `https://www.googleapis.com/auth/gmail.readonly` (`plans/PLAN.md` Remaining-Phase Constraints). Redirect URI derived from Cloudflare config (Step 5 below): `https://expense-mailbox.tobytran.dev/oauth/google/callback` (`services/mailbox-broker/src/routes/oauth.ts`, `infrastructure/cloudflare/expense-tax/main.tf` line 65). Record client ID/secret into the operator's `~/.zshrc`-sourced shell environment that `sync-production-secret.sh` reads. |
-| 4 | operator machine | **Secret bundle with `MAILBOX_FEATURE_ENABLED=true`**: set `MAILBOX_FEATURE_ENABLED=true` plus every required shell/database/Clerk-runtime key in the operator shell (`infrastructure/gcp/expense-tax/sync-production-secret.sh`'s inline required-variable checks), ensure `.keys/ovh/postgres-vps.env` (or the real `$DATABASE_ENV_PATH`) also carries `MAILBOX_BROKER_DATABASE_URL`/`MAILBOX_BROKER_MIGRATION_DATABASE_URL` pointing at the roles from Step 1, then run `infrastructure/gcp/expense-tax/sync-production-secret.sh`. |
+| 3 | Google Cloud Console | **Google OAuth client** — scope exactly `https://www.googleapis.com/auth/gmail.readonly` (`plans/PLAN.md` Remaining-Phase Constraints). Redirect URI derived from Cloudflare config (Step 5 below): `https://expense-mailbox.tobytran.dev/oauth/google/callback` (`services/mailbox-broker/src/routes/oauth.ts`, `infrastructure/cloudflare/expense-tax/main.tf` line 65). Store the client ID, secret, and redirect URI in the Firestore production profile with `family_config.py set expense-tax-management/production GOOGLE_OAUTH_CLIENT_ID` (value from stdin), and likewise for `GOOGLE_OAUTH_CLIENT_SECRET` and `GOOGLE_OAUTH_REDIRECT_URI`. |
+| 4 | operator machine | **Production profile with mailbox enabled**: set every mailbox key in `expense-tax-management/production` with `family_config.py set` — machine secrets, vault keys/active key ID, public base URL, allowed redirect origins, Clerk mailbox audience/subjects, `MAILBOX_BROKER_DATABASE_URL`/`MAILBOX_BROKER_MIGRATION_DATABASE_URL` using the container host `postgres:5432` and the roles from Step 1, and `MAILBOX_SERVICE_TOKEN_ISSUER`/`MAILBOX_SERVICE_TOKEN_AUDIENCE`/`MAILBOX_SERVICE_JWKS_URL` equal to the Clerk values — then set `MAILBOX_FEATURE_ENABLED` to `true` last. |
 | 5 | GitHub Actions UI (`workflow_dispatch`, `apply: true`) | **Cloudflare Terraform apply** — `.github/workflows/expense-tax-cloudflare.yml`'s `apply` job (production environment), after reviewing its `plan` artifact, creates the `expense-mailbox.tobytran.dev` DNS record and the `/oauth/google/callback` → `http://127.0.0.1:8300` Tunnel ingress rule (`infrastructure/cloudflare/expense-tax/main.tf`). |
 | 6 | — | **STOP: owner approval required** before the deploy that flips the flag live. |
-| 7 | GitHub Actions UI | Re-run the latest successful "Expense Tax Deploy" run ("Re-run all jobs") — `deploy.sh` re-fetches the now-mailbox-enabled bundle, overlays `docker-compose.mailbox.yml` (now present per Prerequisites), runs `mailbox-broker-migrate`, starts `mailbox-broker` + the mailbox-augmented `app-api`/`workflow-worker` env, and `health-check.sh` additionally polls `http://127.0.0.1:8300/health/live`. |
-| 8 | VPS | **3D-B schedule reconcile** (one-time; safe to repeat): `docker compose --project-name expense-tax-production --env-file /etc/expense-tax-management/production.env -f docker-compose.yml run --rm -e MAILBOX_FEATURE_ENABLED=true -e TEMPORAL_HOST=temporal:7233 -e TEMPORAL_NAMESPACE=expense-tax app-api-migrate node dist/temporal/mailbox-schedule-reconcile.js reconcile` (`services/app-api/src/temporal/mailbox-schedule-reconcile.ts` — the `app-api-migrate` service's own environment carries neither `MAILBOX_FEATURE_ENABLED` nor `TEMPORAL_HOST`/`TEMPORAL_NAMESPACE`, so all three must be passed on this one-off `run` invocation). Creates the daily `02:00` Temporal Schedule for every existing active/scan-enabled connection. |
+| 7 | GitHub Actions UI | Re-run the latest successful "Expense Tax Deploy" run ("Re-run all jobs") — `deploy.sh` loads the current production profile from Firestore on the VPS, overlays `docker-compose.mailbox.yml` (now present per Prerequisites), runs `mailbox-broker-migrate`, starts `mailbox-broker` + the mailbox-augmented `app-api`/`workflow-worker` env, and `health-check.sh` additionally polls `http://127.0.0.1:8300/health/live`. |
+| 8 | VPS | **3D-B schedule reconcile** (one-time; safe to repeat): `etm_compose run --rm -e MAILBOX_FEATURE_ENABLED=true -e TEMPORAL_HOST=temporal:7233 -e TEMPORAL_NAMESPACE=expense-tax app-api-migrate node dist/temporal/mailbox-schedule-reconcile.js reconcile` (`services/app-api/src/temporal/mailbox-schedule-reconcile.ts` — the `app-api-migrate` service's own environment carries neither `MAILBOX_FEATURE_ENABLED` nor `TEMPORAL_HOST`/`TEMPORAL_NAMESPACE`, so all three must be passed on this one-off `run` invocation). Creates the daily `02:00` Temporal Schedule for every existing active/scan-enabled connection. |
 | 9 | — | **Before enabling for real tenants:** run the Gmail test-account end-to-end verification (`test/e2e/connected-mailbox.e2e.test.ts`, operator-gated, never run in CI) against the production-shaped VPS stack, per `plans/PLAN.md` 3D-C Operator Activation item 3. |
 
 **Rollback:** see Rollback Matrix #4.
@@ -333,9 +349,9 @@ tooling in this repo).
 | # | Failure point | Rollback |
 |---|---|---|
 | 1 | Shared Temporal activation fails (Phase 1, steps 1.4-1.7) | Stop the shared server first. Restore the saved Expense Compose file, `deploy.sh`, env file, and prior image tag (1.4's recovery directory); restart the old Temporal service against the **same preserved** `temporal`/`temporal_visibility` databases. Verify `default` namespace histories and Python worker polling before resuming dispatch. Never start the legacy server until the shared server is stopped (`infrastructure/README.md`). Application image rollback alone cannot recover a failed shared Temporal server — this manual sequence is required. |
-| 2 | Release deploy fails after state mutation (Phase 1 step 1.9, or Phase 3 step 3.3/3.4) | `deploy.sh`'s own `ERR` trap runs automatically: restores the prior env file, restores `IMAGE_TAG` to the previous recorded tag, treats `workflow-worker`/`mailbox-broker` as optional-image services (probes `docker manifest inspect`; drops them from the rollback set only if genuinely missing for that tag), re-runs `health-check.sh` with the reduced required-worker list, and verifies running images match the restored tag. **Caveat for Phase 3:** once Stage C's new `docker-compose.yml`/`deploy.sh` are installed on disk, an automatic rollback operates over that same Python-free service set — it cannot restore `ai-worker` even transiently (acceptable only because Phase 2's drain proof is required before Phase 3 starts). |
+| 2 | Release deploy fails after state mutation (Phase 1 step 1.9, or Phase 3 step 3.3/3.4) | `deploy.sh`'s own `ERR` trap runs automatically: restores `IMAGE_TAG` to the previous recorded tag (the deploy no longer persists an env file; it reloads the production profile from Firestore on every run), treats `workflow-worker`/`mailbox-broker` as optional-image services (probes `docker manifest inspect`; drops them from the rollback set only if genuinely missing for that tag), re-runs `health-check.sh` with the reduced required-worker list, and verifies running images match the restored tag. **Caveat for Phase 3:** once Stage C's new `docker-compose.yml`/`deploy.sh` are installed on disk, an automatic rollback operates over that same Python-free service set — it cannot restore `ai-worker` even transiently (acceptable only because Phase 2's drain proof is required before Phase 3 starts). |
 | 3 | `advance` regretted (Phase 2) | No reverse command exists (`dispatch-routing.ts` only implements `status`/`advance`). Manual, migration-credentialed SQL is required: `UPDATE app.temporal_dispatch_routing SET generation = generation + 1, temporal_namespace = 'default', task_queue = 'expense-tax-ai-worker', updated_at = now() WHERE singleton = true AND generation = <current>;` — only meaningful **before** Stage C (Phase 3) removes `ai-worker`, and only affects *new* enqueues; jobs already stamped with the post-`advance` target keep that target. Treat as high-risk, operator-typed SQL, not a provided tool. |
-| 4 | Mailbox activation fails (Phase 4) | Set `MAILBOX_FEATURE_ENABLED=false` in the operator shell, re-run `sync-production-secret.sh`, then re-run the deploy job. `deploy.sh` drops `mailbox-broker` from `APPLICATION_SERVICES` and the base `docker-compose.yml` needs none of the mailbox env/vault DB/Clerk identities — no destructive cleanup of the (now simply unused) vault database or Clerk identities is required. |
+| 4 | Mailbox activation fails (Phase 4) | Set `MAILBOX_FEATURE_ENABLED` to `false` with `printf false \| common/config/family_config.py set expense-tax-management/production MAILBOX_FEATURE_ENABLED`, then re-run the deploy job. `deploy.sh` drops `mailbox-broker` from `APPLICATION_SERVICES` and the base `docker-compose.yml` needs none of the mailbox env/vault DB/Clerk identities — no destructive cleanup of the (now simply unused) vault database or Clerk identities is required. |
 
 ---
 
@@ -347,7 +363,6 @@ tooling in this repo).
 | `expense-tax-management/plans/PLAN.md` | Status line, Handoff section, and the 3D-A/3D-B/3D-C Operator Activation checklists (mark each completed step). |
 | `expense-tax-management/plans/ROADMAP.md` | "Remaining Infrastructure Work" table and "Backup and Restore — Observed Results" section: replace "proven locally only" language with real VPS/GCS/live-drill results once Phases 0 and 5 run for real. |
 | `expense-tax-management/plans/sub-plans/runtime-typescript-temporal-migration.md` | Check off the remaining Task 7 Stage B/Stage C boxes as each is actually observed. |
-| `infrastructure/gcp/expense-tax/sync-production-secret.sh` | Add the four Clerk-mailbox exact-value lock lines once the real machine IDs exist (Phase 4 Step 2) — a source commit, not just a config change. |
 | `infrastructure/README.md` | Note the activation date under "Shared Temporal Activation" once complete. |
 | `.github/workflows/expense-tax-deploy.yml` | Done (commit `bf4489c`): now transfers and installs `docker-compose.mailbox.yml` automatically; no further action needed. |
 
@@ -370,10 +385,8 @@ tooling in this repo).
 3. `infrastructure/gcp/backup/terraform.tfvars` real values (gitignored,
    untracked) — the README's example (`expense-tax-tobytran-2026-backups`)
    may or may not be what the owner intends to apply.
-4. The live Secret Manager bundle's exact current key set (not inspectable
-   here) — specifically whether it still carries a stale `TEMPORAL_DB_PASSWORD`
-   line from before this PR. Phase 1 step 1.8 resolves this regardless of
-   which preflight reason step 1.2 actually hits.
+4. **Resolved** — the production profile was migrated to Firestore without a
+   `TEMPORAL_DB_PASSWORD` key.
 5. Whether a non-production environment with shared Temporal exists anywhere
    for Phase 2's optional smoke step — none is defined in this repository.
 6. Real Clerk machine-identity IDs and Google OAuth client ID/secret (Phase 4

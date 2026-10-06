@@ -25,6 +25,9 @@ assert.equal(temporal.environment.SKIP_DB_CREATE, "true");
 assert.equal(temporal.environment.POSTGRES_USER, "expense_temporal");
 assert.match(temporal.environment.POSTGRES_PWD, /^\$\{TEMPORAL_DB_PASSWORD:\?/);
 assert.equal(temporal.environment.POSTGRES_SEEDS, "postgres");
+// Two networks give the container two IPs; bind all so `temporal` resolves to a listening address.
+assert.equal(temporal.environment.BIND_ON_IP, "0.0.0.0");
+assert.equal(temporal.environment.TEMPORAL_BROADCAST_ADDRESS, "127.0.0.1");
 assert.ok(temporal.healthcheck?.test?.includes("health"));
 assert.ok(temporal.volumes?.some((mount) => mount.includes("dynamicconfig.yaml")));
 assert.deepEqual(temporal.networks, ["shared", "database"]);
