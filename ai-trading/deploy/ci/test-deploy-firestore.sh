@@ -246,10 +246,11 @@ status="$(run_scenario "$s1")"
 if [[ "$status" != 0 ]]; then
   fail "case1: expected exit 0, got $status"
 else
+  # GNU stat -f prints filesystem data before failing; try -c first, then BSD -f.
   for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
     f="$s1/secrets/$name"
     [[ -f "$f" ]] || { fail "case1: missing $f"; continue; }
-    [[ "$(stat -f '%p' "$f" 2>/dev/null || stat -c '%a' "$f")" == *600 ]] || fail "case1: $f not mode 600"
+    [[ "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)" == 600 ]] || fail "case1: $f not mode 600"
   done
   grep -q 'fake-not-real-gateway' "$s1/secrets/auth.env" 2>/dev/null || fail "case1: auth.env missing renamed gateway content"
   [[ -f "$s1/secrets/gateway.env" ]] && fail "case1: gateway.env should have been renamed to auth.env, not left behind"
@@ -446,7 +447,7 @@ status9=0
   stat() {
     if [[ "${1:-}" == -c && "${2:-}" == '%u:%a' ]]; then
       local mode
-      mode="$(command stat -f '%Lp' "$3" 2>/dev/null || command stat -c '%a' "$3" 2>/dev/null)"
+      mode="$(command stat -c '%a' "$3" 2>/dev/null || command stat -f '%Lp' "$3" 2>/dev/null)"
       printf '0:%s\n' "$mode"
     else
       command stat "$@"
@@ -471,7 +472,7 @@ else
   for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
     f="$s9/secrets/$name"
     [[ -f "$f" ]] || { fail "case9: missing $f"; continue; }
-    real_mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)"
+    real_mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)"
     [[ "$real_mode" == "600" ]] || fail "case9: $f's real mode is $real_mode, not 600"
   done
   grep -q 'fake-not-real-gateway' "$s9/secrets/auth.env" 2>/dev/null || fail "case9: auth.env missing renamed gateway content"
@@ -507,7 +508,7 @@ else
   [[ "$(cat "$s11/compose-profiles.out" 2>/dev/null)" == mirofish ]] || fail "case11: COMPOSE_PROFILES should be mirofish when activation succeeds"
   f="$s11/runtime/mirofish.env"
   [[ -f "$f" ]] || fail "case11: missing $f"
-  [[ "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)" == "600" ]] || fail "case11: $f not mode 600"
+  [[ "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)" == "600" ]] || fail "case11: $f not mode 600"
   grep -q '^ZEP_API_KEY=' "$f" 2>/dev/null || fail "case11: mirofish.env missing ZEP_API_KEY"
   grep -q '^LLM_API_KEY=' "$f" 2>/dev/null || fail "case11: mirofish.env missing LLM_API_KEY"
   shopt -s nullglob
@@ -738,7 +739,7 @@ fi
 grep -q 'ZEP_API_KEY=prior-zep' "$s21/runtime/mirofish.env" 2>/dev/null || fail "case21: mirofish.env not restored to its PRIOR content after rollback"
 grep -q 'LLM_API_KEY=prior-llm' "$s21/runtime/mirofish.env" 2>/dev/null || fail "case21: mirofish.env not restored to its PRIOR content after rollback"
 grep -q 'fake-zep-not-real' "$s21/runtime/mirofish.env" 2>/dev/null && fail "case21: mirofish.env still holds this run's NEW (fake) render after rollback"
-[[ "$(stat -f '%Lp' "$s21/runtime/mirofish.env" 2>/dev/null || stat -c '%a' "$s21/runtime/mirofish.env" 2>/dev/null)" == "600" ]] || fail "case21: restored mirofish.env is not mode 600"
+[[ "$(stat -c '%a' "$s21/runtime/mirofish.env" 2>/dev/null || stat -f '%Lp' "$s21/runtime/mirofish.env" 2>/dev/null)" == "600" ]] || fail "case21: restored mirofish.env is not mode 600"
 for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s21/secrets/$name" 2>/dev/null || fail "case21: $name not restored to its prior content after rollback"
 done
@@ -939,7 +940,7 @@ status27=0
   stat() {
     if [[ "${1:-}" == -c && "${2:-}" == '%u:%a' ]]; then
       local mode
-      mode="$(command stat -f '%Lp' "$3" 2>/dev/null || command stat -c '%a' "$3" 2>/dev/null)"
+      mode="$(command stat -c '%a' "$3" 2>/dev/null || command stat -f '%Lp' "$3" 2>/dev/null)"
       printf '0:%s\n' "$mode"
     else
       command stat "$@"
