@@ -15,6 +15,9 @@
 			header_up Cf-Access-Authenticated-User-Email local-dev@example.test
 		}
 	}
+	handle /api* {
+		reverse_proxy mirofish:5001
+	}
 	handle {
 		reverse_proxy web:3000
 	}

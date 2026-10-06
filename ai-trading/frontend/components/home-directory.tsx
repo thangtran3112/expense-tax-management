@@ -25,7 +25,9 @@ export function HomeDirectory() {
 
   // Matches the search query AND the active category; this is what actually renders.
   const filteredApps = searchedApps.filter((app) => activeCategory === "all" || app.category === activeCategory);
-  const filteredLiveApps = filteredApps.filter((app) => app.status === "live");
+  // Every non-planned status (live, setup-required, ...) gets a category card; only
+  // "planned" apps move to the separate "Coming next" section below.
+  const filteredCardApps = filteredApps.filter((app) => app.status !== "planned");
   const filteredPlannedApps = filteredApps.filter((app) => app.status === "planned");
 
   const visibleCategories =
@@ -113,7 +115,7 @@ export function HomeDirectory() {
       ) : (
         <>
           {visibleCategories.map((category) => {
-            const apps = filteredLiveApps.filter((app) => app.category === category.id);
+            const apps = filteredCardApps.filter((app) => app.category === category.id);
             if (apps.length === 0) return null;
             return (
               <section key={category.id} className="mt-8">

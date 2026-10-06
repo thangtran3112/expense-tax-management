@@ -9,7 +9,7 @@ Terraform for the ai-trading tunnel, its two DNS records, and the Cloudflare Acc
 
 ## Token policy
 
-Use the single shared `CLOUDFLARE_AGENT_API_TOKEN` token described in `ai-trading/AGENTS.md`. It is the same token used by `expense-tax-management`; do not create another one. Permissions may only be broadened, never restricted. If a change needs a permission the token lacks, open the Cloudflare dashboard with the user and add it, then re-copy the value into `ai-trading-env-bundle` if Cloudflare rotates it.
+Use the single shared `shared/cloudflare` `CLOUDFLARE_API_TOKEN` described in `ai-trading/AGENTS.md`. It is the same token used by `expense-tax-management`; do not create another one. Permissions may only be broadened, never restricted. If a change needs a permission the token lacks, open the Cloudflare dashboard with the user and add it, then update `shared/cloudflare`'s stored value in Firestore if Cloudflare rotates it (`printf '%s' "$NEW_VALUE" | common/config/family_config.py set shared/cloudflare CLOUDFLARE_API_TOKEN`).
 
 The Cloudflare provider reads `CLOUDFLARE_API_TOKEN` from the environment; no Terraform variable holds the token.
 
@@ -31,20 +31,25 @@ Install Terraform, or prefix each `terraform` command with `docker run --rm -it 
 
 ```bash
 cd infrastructure/cloudflare/ai-trading
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- \
+CLI=../../../common/config/family_config.py
+$CLI run ai-trading/cloudflare -- \
   terraform init -backend-config="bucket=tobytran-portfolio-tfstate"
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- terraform plan -out=tfplan
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- terraform apply -auto-approve tfplan
+$CLI run ai-trading/cloudflare -- terraform plan -out=tfplan
+$CLI run ai-trading/cloudflare -- terraform apply -auto-approve tfplan
 rm -f tfplan
 ```
 
-`env-bundle.py exec` adds `CLOUDFLARE_API_TOKEN` and `TF_VAR_cloudflare_account_id`, `TF_VAR_access_allowed_emails` from the `[cloudflare]` section of `ai-trading-env-bundle` to the environment. Apply `infrastructure/cloudflare/zero-trust` first; this root's `terraform_remote_state` data source reads its `one_time_pin_idp_id` output.
+`family_config.py run` adds `CLOUDFLARE_API_TOKEN`, `TF_VAR_cloudflare_account_id`, and `TF_VAR_access_allowed_emails` from the `ai-trading/cloudflare` Firestore profile to the environment. Apply `infrastructure/cloudflare/zero-trust` first; this root's `terraform_remote_state` data source reads its `one_time_pin_idp_id` output.
 
 After the first apply, fetch the tunnel token for local/manual use from the Cloudflare API (the deploy workflow does this automatically in `render-env.sh`):
 
 ```bash
+cd infrastructure/cloudflare/ai-trading
 TUNNEL_ID="$(terraform output -raw tunnel_id)"
-curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/cfd_tunnel/$TUNNEL_ID/token" \
-  | jq -r '.result'
+export TUNNEL_ID
+../../../common/config/family_config.py run ai-trading/cloudflare -- bash -c '
+  curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+    "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/cfd_tunnel/$TUNNEL_ID/token" \
+    | jq -r ".result"
+'
 ```

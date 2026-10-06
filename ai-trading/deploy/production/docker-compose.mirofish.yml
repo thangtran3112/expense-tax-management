@@ -1,0 +1,39 @@
+# ai-trading production stack: MiroFish (release 1, fourth upstream app).
+# Loaded as a sibling file alongside docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.mirofish.yml ...
+# Never merged into docker-compose.yml directly -- see Task 5's File Structure
+# note in plans/subplans/01i-mirofish-upstream-implementation.md.
+name: ai-trading
+
+services:
+  mirofish:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-mirofish-backend:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    # MiroFish is disabled until Task 9 renders this file on the VPS. Compose
+    # v2.24+ accepts the optional long syntax, so missing keys cannot break
+    # `docker compose config` or unrelated services.
+    profiles: ["mirofish"]
+    env_file:
+      - path: ${AI_TRADING_RUNTIME_ENV_DIR:-/run/family-app/ai-trading}/mirofish.env
+        required: false
+    volumes:
+      - mirofish-uploads:/app/uploads
+    networks: [mirofish]
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+networks:
+  # Joined only by Plan A's authenticated `gateway:8080` service. No host
+  # port is published; gateway reaches this service as `mirofish:5001`.
+  mirofish: {}
+
+volumes:
+  mirofish-uploads: {}

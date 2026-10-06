@@ -1,6 +1,6 @@
 # AI Trading: Status
 
-Main tracker for the family AI trading assistant. Child plans and phase details live in `subplans/`. Scratch files go in `../temp/` (gitignored). Upstream code lives in `../packages/`: the three deployed apps become git submodules in release 1; deer-flow and AG-UI stay gitignored references.
+Main tracker for the family AI trading assistant. Child plans and phase details live in `subplans/`. Scratch files go in `../temp/` (gitignored). The four release-1 upstream apps are pinned in `../packages/` as git submodules; deer-flow and AG-UI stay gitignored references. No ai-trading service has been deployed to production.
 
 > `family-app` is a public GitHub repository. Never commit balances, positions, account numbers, broker credentials, or API keys.
 
@@ -11,7 +11,7 @@ A private web app (later iPad and iPhone) for two family users:
 - Active trading support: technical-analysis Q&A, news- and earnings-driven tactical ideas, scans of preset stock and futures watchlists, backtesting, and forward-testing on an Interactive Brokers paper account.
 - Long-term investing support: growth and reasonable-value sector research, covered-call Q&A, covered-call scanning and alerts for hedging and income.
 
-Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-hedge-fund, and Vibe-Trading unmodified. Release 2 adds our own solution, the Family Desk, as the hub's fourth app.
+Releases: release 1 (MVP) is a Trading Hub web app for four unmodified upstream apps: TradingAgents, ai-hedge-fund, Vibe-Trading, and experimental MiroFish. Release 2 adds our own solution, the Family Desk, as the hub's fifth app.
 
 ## Constraints
 
@@ -27,10 +27,11 @@ Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-h
 |---|---|---|---|
 | 0 | Upstream package evaluation | Done (2026-10-04) | [subplans/00-upstream-evaluation.md](subplans/00-upstream-evaluation.md) |
 | 0b | App shell evaluation (deer-flow, AG-UI) | Done (2026-10-04) | [subplans/00b-app-shell-evaluation.md](subplans/00b-app-shell-evaluation.md) |
-| 1 | Release 1 (MVP) design: Trading Hub web app running the three upstream apps unmodified | Spec written, awaiting review | [subplans/01-release-1-hub-design.md](subplans/01-release-1-hub-design.md) |
-| 2 | Release 1 implementation plan | Done (2026-10-04) | [subplans/01-release-1-hub-plan.md](subplans/01-release-1-hub-plan.md) and [subplans/01-release-1-hub-tasks/](subplans/01-release-1-hub-tasks/) |
-| 3 | Release 1 build and deploy | Build done and verified locally (Tasks 0-7); pull request to `dev` open; Task 8 operator steps and first deploy pending | See "Release 1 build notes" below |
-| 4 | Release 2 design: our own solution (Family Desk) as the hub's fourth app | Approved in conversation; revisit after the MVP ships | [subplans/02-release-2-desk-design.md](subplans/02-release-2-desk-design.md) |
+| 1 | Release 1 (MVP) design: Trading Hub web app with four upstream apps | MiroFish, static-hosting, and sync-skills addenda approved; service-controls addendum awaiting review | [subplans/01-release-1-hub-design.md](subplans/01-release-1-hub-design.md), [subplans/01d-mirofish-hub-design.md](subplans/01d-mirofish-hub-design.md), [subplans/01e-static-hub-gcs-design.md](subplans/01e-static-hub-gcs-design.md), [subplans/01f-upstream-sync-skills-design.md](subplans/01f-upstream-sync-skills-design.md), [subplans/01g-hub-service-controls-design.md](subplans/01g-hub-service-controls-design.md) |
+| 2 | Release 1 implementation plan | Original three-app plan complete; MiroFish, static hub, and sync-skill plans approved and implemented offline | [subplans/01-release-1-hub-plan.md](subplans/01-release-1-hub-plan.md) (prior scope); [subplans/01h-static-hub-clerk-implementation.md](subplans/01h-static-hub-clerk-implementation.md); [subplans/01i-mirofish-upstream-implementation.md](subplans/01i-mirofish-upstream-implementation.md); [subplans/01j-upstream-sync-skills-implementation.md](subplans/01j-upstream-sync-skills-implementation.md) |
+| 3 | Release 1 build and deploy | Original three-app hub merged to `dev` (PR #21); expanded four-app hub, GCS static builds, Clerk/Caddy gateway, Firestore deploy wiring, and four sync skills verified offline in this uncommitted worktree. First production deploy and staged browser/provider checks pending. | See "Release 1 build notes" and the addenda below |
+| 3B | Post-MVP hub settings: turn each upstream backend on/off | Requested; written spec awaiting review; build after four-app MVP, before Family Desk | [subplans/01g-hub-service-controls-design.md](subplans/01g-hub-service-controls-design.md) |
+| 4 | Release 2 design: our own solution (Family Desk) as the hub's fifth app | Approved in conversation; revisit after the MVP ships | [subplans/02-release-2-desk-design.md](subplans/02-release-2-desk-design.md) |
 | 5+ | Release 2 plan and build | Later | |
 
 ## Decisions
@@ -75,6 +76,11 @@ Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-h
 
 ## Open Questions
 
+- MiroFish stays upstream-source-compatible: build its original Vue client into a GCS bucket and run its unmodified Flask backend on VPS. Financial prediction is not shipped upstream. The owner approved Zep Cloud's free tier for public/non-sensitive experiments and has OpenAI/Anthropic keys (MiroFish uses OpenAI-compatible APIs directly). The submodule, backend image, and static build are implemented offline (see [subplans/01i-mirofish-upstream-implementation.md](subplans/01i-mirofish-upstream-implementation.md)); activation still needs Firestore Zep/LLM profiles and a deployed authenticated gateway. See [subplans/01d-mirofish-hub-design.md](subplans/01d-mirofish-hub-design.md).
+- The owner prefers client-only frontend builds in GCS buckets: the hub and the original MiroFish UI are static, while backend, files, and SQLite state stay on VPS (except mandatory hosted Zep graph memory). GCS alone has no custom-domain HTTPS. The Cloudflare Workers and Clerk-verified VPS gateway pass offline checks; live routing/auth and browser checks still require an operator-approved staging spike. See [subplans/01e-static-hub-gcs-design.md](subplans/01e-static-hub-gcs-design.md).
+- Four project-local upstream-sync skills are implemented offline in `.opencode/skills/`; when an upstream must diverge, create a fork and put `DIVERGENCE.md` **in that fork**. Do not write a local-only commit inside an upstream submodule. OpenCode discovery after integration remains unverified. See [subplans/01f-upstream-sync-skills-design.md](subplans/01f-upstream-sync-skills-design.md).
+- Post-MVP settings phase: either approved family user can start/stop TradingAgents, AI Hedge Fund, Vibe-Trading, or MiroFish to save VPS RAM; state persists across deploys. Static frontend remains in GCS, and a Clerk-protected VPS helper allows only these four actions without exposing Docker to the browser. See [subplans/01g-hub-service-controls-design.md](subplans/01g-hub-service-controls-design.md).
+- The family-config Firestore handoff and `common/config/family_config.py` merged to `dev` in PR #23. This worktree predates that merge; reconcile it before integration. Runtime deploy scripts now target Firestore profiles, but the real profiles, CI reader IAM, and Clerk claims still need operator setup. The existing transitional Secret Manager resource and its one enabled version remain untouched; do not auto-delete them.
 - Release 1 verification spike (first implementation task): section 13 of [subplans/01-release-1-hub-design.md](subplans/01-release-1-hub-design.md). It covers OVH headroom, the Cloudflare Zero Trust free plan, tunnel headers and websockets, terminals on iPad, per-user terminal sessions, provider spend limits, Dependabot with nested submodules, and Financial Datasets pricing.
 - Release 2 verification spike (needs the account owner): section 13 of [subplans/02-release-2-desk-design.md](subplans/02-release-2-desk-design.md). It covers IBKR paper market-data sharing and concurrent sessions, subscription cost, IV history, the paper account-id prefix, unattended gateway login, the Finnhub free tier, image attachments over AG-UI, and host headroom.
 - Each spike item has a decided fallback.
@@ -83,8 +89,9 @@ Releases: release 1 (MVP) is a Trading Hub web app that runs TradingAgents, ai-h
 
 | Package | Path | Commit | License | Verdict |
 |---|---|---|---|---|
-| TradingAgents | `packages/trading-agents` | `1394a3f72aa4` | Apache-2.0 | Deployed unmodified in the hub (browser terminal); reference for the Desk |
-| ai-hedge-fund | `packages/ai-hedge-fund` | `78b779c1389e` | MIT | Deployed unmodified in the hub (browser terminal); persona prompts for the Desk later |
-| Vibe-Trading | `packages/vibe-trading` | `251b094320c1` | MIT + NOTICE | Deployed unmodified in the hub (own hostname); options math, IBKR connector, and Telegram pattern adapted into the Desk |
+| TradingAgents | `packages/trading-agents` | `1394a3f72aa4` | Apache-2.0 | Integrated unmodified into the local hub (browser terminal); reference for the Desk |
+| ai-hedge-fund | `packages/ai-hedge-fund` | `78b779c1389e` | MIT | Integrated unmodified into the local hub (browser terminal); persona prompts for the Desk later |
+| Vibe-Trading | `packages/vibe-trading` | `251b094320c1` | MIT + NOTICE | Integrated unmodified into the local hub (own hostname); options math, IBKR connector, and Telegram pattern adapted into the Desk |
+| MiroFish | `packages/mirofish` | `7657031ac01184afe2cb220f5ee3545573b5e843` | AGPL-3.0 | Unmodified Vue client built as static assets for GCS, Flask backend image built locally; financial prediction is not shipped and activation needs Zep Cloud + OpenAI-compatible LLM key |
 | deer-flow | `packages/deer-flow` | `ee44d1ebc77d` | MIT | Borrow scheduler, auth, and chat UI patterns; do not fork |
 | AG-UI | `packages/ag-ui` | `97f789cc1c48` | MIT | Adopt the protocol; skip CopilotKit |

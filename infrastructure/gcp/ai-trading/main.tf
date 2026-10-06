@@ -46,6 +46,7 @@ locals {
 resource "google_project_service" "apis" {
   for_each = toset([
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
@@ -179,4 +180,30 @@ resource "google_storage_bucket_iam_member" "terraform_state_admin" {
   bucket = var.state_bucket
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.terraform.email}"
+}
+
+# --- Firestore family-config read access (additive) --------------------------
+#
+# ai-trading-deploy.yml's render-env.sh and ai-trading-infra.yml's
+# terraform plan/apply steps now read the ai-trading/cloudflare profile from
+# the shared Firestore database family-config (project tobytran-portfolio)
+# through common/config/family_config.py, instead of the old Secret Manager
+# bundle. roles/datastore.viewer is project-wide (Firestore has no
+# per-document IAM condition support), read-only, and additive: it grants no
+# access to Secret Manager, Storage, or any other resource, and changes
+# nothing about the two deploy_* / terraform_* secretmanager.secretAccessor
+# bindings above or the real ai-trading-env-bundle secret value. Operator-
+# applied like the rest of this root -- see this file's header comment;
+# nothing here runs plan or apply.
+
+resource "google_project_iam_member" "deploy_family_config_viewer" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${google_service_account.deploy.email}"
+}
+
+resource "google_project_iam_member" "terraform_family_config_viewer" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${google_service_account.terraform.email}"
 }

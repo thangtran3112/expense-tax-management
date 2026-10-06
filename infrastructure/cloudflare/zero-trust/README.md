@@ -6,7 +6,7 @@ State: bucket `tobytran-portfolio-tfstate`, prefix `cloudflare/zero-trust`.
 
 ## Token policy
 
-Use the single shared `CLOUDFLARE_AGENT_API_TOKEN` token described in `ai-trading/AGENTS.md`. Never create a narrower token for this root. If Cloudflare refuses a call because the token lacks a permission, broaden it in the dashboard with the user; never restrict it.
+Use the single shared `shared/cloudflare` `CLOUDFLARE_API_TOKEN` described in `ai-trading/AGENTS.md`. Never create a narrower token for this root. If Cloudflare refuses a call because the token lacks a permission, broaden it in the dashboard with the user; never restrict it.
 
 ## Organization resource: create vs. adopt
 
@@ -26,11 +26,12 @@ Apply this root before `infrastructure/cloudflare/ai-trading`; the ai-trading ro
 
 ```bash
 cd infrastructure/cloudflare/zero-trust
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- \
+CLI=../../../common/config/family_config.py
+$CLI run ai-trading/cloudflare -- \
   terraform init -backend-config="bucket=tobytran-portfolio-tfstate"
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- terraform plan -out=tfplan
-python3 ../../secrets/env-bundle.py exec ai-trading cloudflare -- terraform apply -auto-approve tfplan
+$CLI run ai-trading/cloudflare -- terraform plan -out=tfplan
+$CLI run ai-trading/cloudflare -- terraform apply -auto-approve tfplan
 rm -f tfplan
 ```
 
-`env-bundle.py exec` adds `CLOUDFLARE_API_TOKEN` and `TF_VAR_cloudflare_account_id` from the `[cloudflare]` section of `ai-trading-env-bundle` to the environment; the provider reads `CLOUDFLARE_API_TOKEN` directly, so no Terraform variable holds the token.
+`family_config.py run` adds `CLOUDFLARE_API_TOKEN` and `TF_VAR_cloudflare_account_id` from the `ai-trading/cloudflare` Firestore profile to the environment; the provider reads `CLOUDFLARE_API_TOKEN` directly, so no Terraform variable holds the token.

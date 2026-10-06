@@ -86,13 +86,50 @@ services:
       start_period: 120s
       retries: 3
 
+  gateway:
+    # Not digest-pinned yet, unlike this file's other images: `caddy:2-alpine`
+    # matches the tag already used unpinned in
+    # ai-trading/deploy/local/docker-compose.override.yml. Pin it before the
+    # real production deploy (Task 9) by running
+    # `docker pull caddy:2-alpine && docker inspect --format '{{index .RepoDigests 0}}' caddy:2-alpine`
+    # and using that exact value here.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [gateway, ta, ahf, mirofish]
+    mem_limit: 64m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/__healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  auth:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-auth:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/auth.env
+    networks: [gateway]
+    mem_limit: 128m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8181/__auth/check').then((r) => process.exit(r.status === 401 ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
   cloudflared:
     image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
     restart: unless-stopped
     command: ["tunnel", "--metrics", "0.0.0.0:2000", "run"]
     env_file:
       - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/cloudflared.env
-    networks: [hub, ta, ahf, vibe]
+    networks: [hub, ta, ahf, vibe, gateway]
     mem_limit: 128m
     security_opt: ["no-new-privileges:true"]
 
@@ -101,6 +138,7 @@ networks:
   ta: {}
   ahf: {}
   vibe: {}
+  gateway: {}
 
 volumes:
   ta-data: {}

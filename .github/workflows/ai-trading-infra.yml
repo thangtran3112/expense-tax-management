@@ -7,7 +7,7 @@ on:
       - "infrastructure/gcp/ai-trading/**"
       - "infrastructure/cloudflare/zero-trust/**"
       - "infrastructure/cloudflare/ai-trading/**"
-      - "infrastructure/secrets/**"
+      - "common/config/**"
       - "infrastructure/gcp/bootstrap-state.sh"
       - ".github/workflows/ai-trading-infra.yml"
   push:
@@ -16,7 +16,7 @@ on:
       - "infrastructure/gcp/ai-trading/**"
       - "infrastructure/cloudflare/zero-trust/**"
       - "infrastructure/cloudflare/ai-trading/**"
-      - "infrastructure/secrets/**"
+      - "common/config/**"
       - "infrastructure/gcp/bootstrap-state.sh"
       - ".github/workflows/ai-trading-infra.yml"
   workflow_dispatch:
@@ -69,7 +69,7 @@ jobs:
       - run: terraform validate
 
   bundle-and-scripts:
-    name: Bundle tool tests and shellcheck
+    name: Scripts and shellcheck
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -78,7 +78,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: python3 -m unittest infrastructure/secrets/test_env_bundle.py
       - run: shellcheck infrastructure/gcp/bootstrap-state.sh
 
   plan-or-apply:
@@ -106,10 +105,10 @@ jobs:
       - name: "Zero Trust: init"
         run: terraform -chdir=infrastructure/cloudflare/zero-trust init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
       - name: "Zero Trust: plan"
-        run: python3 infrastructure/secrets/env-bundle.py exec ai-trading cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust plan -out=tfplan
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust plan -out=tfplan
       - name: "Zero Trust: apply"
         if: github.event_name == 'workflow_dispatch' && inputs.apply
-        run: python3 infrastructure/secrets/env-bundle.py exec ai-trading cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust apply -auto-approve tfplan
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust apply -auto-approve tfplan
       - name: "Zero Trust: remove plan file"
         if: always()
         run: rm -f infrastructure/cloudflare/zero-trust/tfplan
@@ -117,10 +116,10 @@ jobs:
       - name: "ai-trading: init"
         run: terraform -chdir=infrastructure/cloudflare/ai-trading init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
       - name: "ai-trading: plan"
-        run: python3 infrastructure/secrets/env-bundle.py exec ai-trading cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading plan -out=tfplan
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading plan -out=tfplan
       - name: "ai-trading: apply"
         if: github.event_name == 'workflow_dispatch' && inputs.apply
-        run: python3 infrastructure/secrets/env-bundle.py exec ai-trading cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading apply -auto-approve tfplan
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading apply -auto-approve tfplan
       - name: "ai-trading: remove plan file"
         if: always()
         run: rm -f infrastructure/cloudflare/ai-trading/tfplan

@@ -32,6 +32,52 @@ export default async function AppPage({ params }: Props) {
     );
   }
 
+  if (app.kind === "upstream-setup") {
+    const Icon = appIcons[app.icon];
+    return (
+      <PageShell breadcrumb={app.name}>
+        <div className="mx-auto w-full max-w-[720px] px-4 py-12 md:px-6">
+          <div className="rounded-xl border border-border bg-card p-6 text-center sm:p-8">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-md bg-muted">
+              <Icon aria-hidden size={20} />
+            </div>
+            <h1 className="mt-4 text-2xl font-semibold text-foreground">{app.name}</h1>
+            <div className="mt-2 flex justify-center">
+              <StatusBadge app={app} />
+            </div>
+            <p className="mt-4 text-muted-foreground">{app.summary}</p>
+            <dl className="mt-4 space-y-1 text-left text-sm text-muted-foreground">
+              <div>
+                <dt className="inline font-medium text-foreground">Good for: </dt>
+                <dd className="inline">{app.goodFor}</dd>
+              </div>
+              <div>
+                <dt className="inline font-medium text-foreground">Cost: </dt>
+                <dd className="inline">{app.costNote}</dd>
+              </div>
+              <div>
+                <dt className="inline font-medium text-foreground">Needs: </dt>
+                <dd className="inline">{app.requiredKeys.join(", ")}</dd>
+              </div>
+            </dl>
+            <p className="mt-6 text-left text-sm text-muted-foreground">
+              Both of us share this experimental instance&apos;s projects. Activation (auth, keys, and a verified
+              end-to-end run) is a separate, reviewed change — this page has no launch link yet.
+            </p>
+            <div className="mt-6 flex justify-center gap-4 text-sm">
+              <a href={app.sourceUrl} target="_blank" rel="noopener" className="underline underline-offset-2">
+                Pinned source
+              </a>
+              <a href={app.licenseUrl} target="_blank" rel="noopener" className="underline underline-offset-2">
+                AGPL-3.0 license
+              </a>
+            </div>
+          </div>
+        </div>
+      </PageShell>
+    );
+  }
+
   const Icon = appIcons[app.icon];
   return (
     <PageShell breadcrumb={app.name}>

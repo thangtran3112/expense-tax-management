@@ -1,21 +1,23 @@
 import type { LucideIcon } from "lucide-react";
-import { Bot, LineChart, MessagesSquare, Rocket } from "lucide-react";
+import { Bot, Fish, LineChart, MessagesSquare, Rocket } from "lucide-react";
 
 export const hubCategories = [
   { id: "research", label: "Research and analysis" },
   { id: "funds", label: "Funds and backtesting" },
+  { id: "simulation", label: "Simulation lab" },
   { id: "desk", label: "Family desk" },
 ] as const;
 
 export type CategoryId = (typeof hubCategories)[number]["id"];
 
-export type AppIconKey = "tradingAgents" | "hedgeFund" | "vibeTrading" | "familyDesk";
+export type AppIconKey = "tradingAgents" | "hedgeFund" | "vibeTrading" | "familyDesk" | "mirofish";
 
 export const appIcons: Record<AppIconKey, LucideIcon> = {
   tradingAgents: Bot,
   hedgeFund: LineChart,
   vibeTrading: MessagesSquare,
   familyDesk: Rocket,
+  mirofish: Fish,
 };
 
 type BaseApp = {
@@ -38,7 +40,15 @@ export type ExternalApp = BaseApp & {
   url: string;
   firstVisitNote: readonly string[];
 };
-export type HubApp = PlannedApp | TerminalApp | ExternalApp;
+export type UpstreamSetupApp = BaseApp & {
+  kind: "upstream-setup";
+  status: "setup-required";
+  sourceUrl: string;
+  licenseUrl: string;
+  pinnedCommit: string;
+  requiredKeys: readonly string[];
+};
+export type HubApp = PlannedApp | TerminalApp | ExternalApp | UpstreamSetupApp;
 
 const vibeTradingUrl = process.env.NEXT_PUBLIC_VIBE_TRADING_URL ?? "https://vibe-trading.tobytran.dev";
 
@@ -91,6 +101,24 @@ export const hubApps: readonly HubApp[] = [
       "Paste the Vibe-Trading access key into Server API key.",
       "Save it; the key is stored with the other ai-trading secrets.",
     ],
+  },
+  {
+    slug: "mirofish",
+    kind: "upstream-setup",
+    status: "setup-required",
+    name: "MiroFish",
+    category: "simulation",
+    tags: ["Multi-agent simulation", "Upload to report", "Experimental"],
+    icon: "mirofish",
+    device: "touch",
+    summary:
+      "Experimental simulation lab: upload source material and watch thousands of AI agents with independent memory interact in a digital sandbox, then read a report. Financial prediction is not shipped upstream yet.",
+    goodFor: "Trying the original MiroFish simulator — not stock, futures, or broker analysis.",
+    costNote: "Needs a Zep Cloud free-tier key and an OpenAI-compatible LLM key, both kept server-side.",
+    sourceUrl: "https://github.com/666ghj/MiroFish/tree/7657031ac01184afe2cb220f5ee3545573b5e843",
+    licenseUrl: "https://github.com/666ghj/MiroFish/blob/7657031ac01184afe2cb220f5ee3545573b5e843/LICENSE",
+    pinnedCommit: "7657031ac01184afe2cb220f5ee3545573b5e843",
+    requiredKeys: ["ZEP_API_KEY", "LLM_API_KEY"],
   },
   {
     slug: "desk",

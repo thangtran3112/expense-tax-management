@@ -44,7 +44,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm build
+      - run: pnpm test
+      - name: Build static export
+        env:
+          # Syntactically valid but fake Clerk publishable key (decodes to
+          # "ci-fake.clerk.accounts.dev$") -- PR CI never has the real,
+          # repo-variable-sourced key (ai-trading-deploy.yml), and the
+          # frontend's own requireClerkPublishableKey() fails the build
+          # closed if this is empty, so a fake key is required here, never
+          # a real one.
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2ktZmFrZS5jbGVyay5hY2NvdW50cy5kZXYk
+        run: pnpm build
+      - name: Check static export
+        run: ../deploy/ci/check-static-export.sh out
 
   scripts:
     name: Scripts and compose
@@ -53,6 +65,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Terminal session names
         run: sh ai-trading/deploy/upstream/terminal/test-session.sh
       - name: Shellcheck
@@ -61,16 +76,37 @@ jobs:
           files=(ai-trading/deploy/upstream/terminal/*.sh ai-trading/deploy/ci/*.sh
             ai-trading/deploy/production/*.sh infrastructure/cloudflare/ai-trading/*.sh)
           shellcheck "${files[@]}"
+      - name: Upload-hub-static mock-gsutil test
+        run: ai-trading/deploy/ci/upload-hub-static.test.sh
+      - name: Upload-mirofish-static mock-gcloud test
+        run: ai-trading/deploy/ci/upload-mirofish-static.test.sh
+      - name: Clerk publishable key validator test (F1 fix round 1)
+        run: ai-trading/deploy/ci/check-clerk-publishable-key.test.sh
+      - name: deploy.sh Firestore-render test (A9a1)
+        run: ai-trading/deploy/ci/test-deploy-firestore.sh
+      - name: render-env.sh test (A9a2)
+        run: ai-trading/deploy/ci/test-render-env.sh
+      - name: Auth service tests
+        working-directory: ai-trading/auth
+        run: |
+          npm ci
+          npm test
+      - name: Worker tests
+        run: |
+          node --test infrastructure/cloudflare/ai-trading/worker/*.test.js
+          node --test infrastructure/cloudflare/ai-trading/workers/*.test.js
       - name: Validate compose files
         run: |
           set -euo pipefail
           secrets="$RUNNER_TEMP/ai-trading-secrets"
           mkdir -p "$secrets"
-          for name in tradingagents ai-hedge-fund vibe-trading cloudflared; do : >"$secrets/$name.env"; done
+          for name in tradingagents ai-hedge-fund vibe-trading cloudflared auth; do : >"$secrets/$name.env"; done
           export AI_TRADING_SECRETS_DIR="$secrets"
           export AI_TRADING_IMAGE_TAG=0123456789abcdef0123456789abcdef01234567
-          docker compose -f ai-trading/deploy/production/docker-compose.yml config --quiet
           docker compose -f ai-trading/deploy/production/docker-compose.yml \
+            -f ai-trading/deploy/production/docker-compose.mirofish.yml config --quiet
+          docker compose -f ai-trading/deploy/production/docker-compose.yml \
+            -f ai-trading/deploy/production/docker-compose.mirofish.yml \
             -f ai-trading/deploy/local/docker-compose.override.yml config --quiet
 
   images:
@@ -80,10 +116,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          submodules: recursive
           persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - name: Build images
+        uses: docker/bake-action@v7
+        env:
+          TAG: ci
+          # Syntactically valid but fake Clerk publishable key (decodes to
+          # "ci-fake.clerk.accounts.dev$"); see ai-trading-deploy.yml for
+          # the real, repo-variable-sourced production key.
+          CLERK_PUBLISHABLE_KEY: pk_test_Y2ktZmFrZS5jbGVyay5hY2NvdW50cy5kZXYk
+        with:
+          files: |
+            ai-trading/deploy/docker-bake.hcl
+            ai-trading/deploy/docker-bake.ci.hcl
+          load: true
+      - name: Build MiroFish static frontend
+        # Not in the default Bake group (it exports files, not an image) and
+        # not loadable (--load needs an image target); built separately with
+        # its own GHA cache scope from docker-bake.ci.hcl.
         uses: docker/bake-action@v7
         env:
           TAG: ci
@@ -91,7 +143,7 @@ jobs:
           files: |
             ai-trading/deploy/docker-bake.hcl
             ai-trading/deploy/docker-bake.ci.hcl
-          load: true
+          targets: mirofish-frontend
       - name: Smoke tests
         env:
           TAG: ci

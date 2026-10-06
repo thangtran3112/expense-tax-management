@@ -2,7 +2,7 @@
 
 Status: Approved on 2026-10-04 (decisions D8 and D9 in [STATUS.md](../STATUS.md)). Implementation plan: [01-release-1-hub-plan.md](01-release-1-hub-plan.md). Planning-time corrections are folded into sections 4.2, 6, 7.3, 8, and 10.
 
-Related: [STATUS.md](../STATUS.md), [00-upstream-evaluation.md](00-upstream-evaluation.md), [00b-app-shell-evaluation.md](00b-app-shell-evaluation.md), [02-release-2-desk-design.md](02-release-2-desk-design.md) (our own solution, next release).
+Related: [STATUS.md](../STATUS.md), [00-upstream-evaluation.md](00-upstream-evaluation.md), [00b-app-shell-evaluation.md](00b-app-shell-evaluation.md), [01d-mirofish-hub-design.md](01d-mirofish-hub-design.md) (fourth upstream app; unmodified Vue and Flask split between GCS and VPS), [01e-static-hub-gcs-design.md](01e-static-hub-gcs-design.md) (supersedes this spec's Next server and Access assumptions), [01f-upstream-sync-skills-design.md](01f-upstream-sync-skills-design.md) (upstream compatibility and divergence), [02-release-2-desk-design.md](02-release-2-desk-design.md) (our own solution, next release).
 
 ## 1. Purpose
 
@@ -40,7 +40,7 @@ Not in release 1: the Family Desk and everything it needs (API, Postgres, schedu
 
 - Upstream code is never edited. Everything we add lives outside `ai-trading/packages/`.
 - `family-app` is a public repository. No secrets, email addresses, balances, positions, or account numbers are committed.
-- Hosting: the OVH VPS until February 2027, then a new VPS or the home Ubuntu server. Everything is infrastructure as code. Never hosted on GCP; GCS holds Terraform state only.
+- Backend hosting: the OVH VPS until February 2027, then a new VPS or the home Ubuntu server. Everything is infrastructure as code. Static hub/MiroFish UI assets and Terraform state live in GCS; no application backend runs on GCP. See the superseding static-hosting addendum.
 - No order placement: none of the apps is connected to a broker.
 - LLM providers: Anthropic and OpenAI.
 

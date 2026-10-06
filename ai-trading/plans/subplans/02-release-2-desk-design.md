@@ -6,7 +6,7 @@ Related: [STATUS.md](../STATUS.md) (decisions log), [01-release-1-hub-design.md]
 
 ## 1. Purpose and Users
 
-The Family Desk is the Trading Hub's fourth app, next to the three upstream apps from release 1. Its first release gives each of the two users a daily habit and one shared assistant.
+The Family Desk is the Trading Hub's fifth app, next to the four upstream apps from release 1. Its first release adds **our own backend**, combining useful research-agent and data-routing ideas from TradingAgents, the investor-persona and risk logic from ai-hedge-fund, and market/option/tool patterns from Vibe-Trading. MiroFish remains a separate, unmodified simulation app; it is not a source for the Desk's trading backend. Upstream submodules continue syncing independently, and any adapted/copied code carries its license and attribution.
 
 | User role | Style | Value in this release |
 |---|---|---|
@@ -36,8 +36,8 @@ Not in release 2: intraday scans and alerts, backtesting, IBKR paper order place
 
 ## 3. Constraints
 
-- Self-hosted with Docker. Never hosted on GCP. GCS is used only for backups and Terraform state.
-- The Desk runs on the same host as the hub: the OVH VPS until February 2027, then a new VPS or the home Ubuntu server. The whole stack must stay recreatable from this repository, a secrets bundle, and the latest backup.
+- Self-hosted backend with Docker on VPS; client-side hub/Desk pages are static assets in GCS. GCS also holds backups and Terraform state. No GCP application backend.
+- The Desk backend runs on the same VPS as the upstream backends until February 2027, then a new VPS or the home Ubuntu server. The whole stack must stay recreatable from this repository, the approved family configuration store, and the latest backup.
 - Shared VPS and GCP infrastructure lives in `infrastructure/`. App-specific deployment lives in `ai-trading/deploy/production/`.
 - Broker access: Interactive Brokers paper account only. This release contains no order-placement code.
 - LLMs: Anthropic and OpenAI APIs. A self-hosted DeepSeek model behind an OpenAI-compatible endpoint must be addable by configuration later.

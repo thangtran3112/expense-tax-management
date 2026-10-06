@@ -7,3 +7,6 @@
 [submodule "ai-trading/packages/vibe-trading"]
 	path = ai-trading/packages/vibe-trading
 	url = https://github.com/HKUDS/Vibe-Trading.git
+[submodule "ai-trading/packages/mirofish"]
+	path = ai-trading/packages/mirofish
+	url = https://github.com/666ghj/MiroFish.git

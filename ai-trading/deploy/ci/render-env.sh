@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Renders the four ai-trading production env files into OUT_DIR from the
-# Secret Manager bundle: tradingagents.env, ai-hedge-fund.env, vibe-trading.env
-# (via infrastructure/secrets/env-bundle.py render) and cloudflared.env (the
-# live Cloudflare Tunnel token, fetched through the Cloudflare API).
+# Renders ai-trading's one CI-staged env file into OUT_DIR: cloudflared.env
+# (the live Cloudflare Tunnel token, fetched through the Cloudflare API using
+# the ai-trading/cloudflare family-config profile). The three upstream env
+# files (tradingagents, ai-hedge-fund, vibe-trading) and the gateway/auth
+# profile are rendered on the VPS itself at deploy time
+# (ai-trading/deploy/production/deploy.sh), not here -- this script never
+# calls infrastructure/secrets/env-bundle.py and never reads the old
+# ai-trading-env-bundle Secret Manager blob.
 # Usage: ai-trading/deploy/ci/render-env.sh OUT_DIR
 set -Eeuo pipefail
 umask 077
@@ -10,9 +14,11 @@ umask 077
 OUT_DIR="${1:?usage: render-env.sh OUT_DIR}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-BUNDLE_TOOL="$REPO_ROOT/infrastructure/secrets/env-bundle.py"
+FAMILY_CONFIG="$REPO_ROOT/common/config/family_config.py"
 
-python3 "$BUNDLE_TOOL" render ai-trading --out-dir "$OUT_DIR" tradingagents ai-hedge-fund vibe-trading
+# OUT_DIR is created owner-only (0700): only the account running this script
+# can read the tunnel token written below.
+install -d -m 0700 "$OUT_DIR"
 
 FETCH_SCRIPT="$(mktemp)"
 cleanup() { rm -f "$FETCH_SCRIPT"; }
@@ -44,4 +50,4 @@ SCRIPT_EOF
 chmod 0700 "$FETCH_SCRIPT"
 
 export OUT_DIR
-python3 "$BUNDLE_TOOL" exec ai-trading cloudflare -- bash "$FETCH_SCRIPT"
+python3 "$FAMILY_CONFIG" run ai-trading/cloudflare -- bash "$FETCH_SCRIPT"

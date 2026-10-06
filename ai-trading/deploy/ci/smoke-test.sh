@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-tests locally loaded ai-trading images.
-# Usage: ai-trading/deploy/ci/smoke-test.sh [web|ta-terminal|ahf-terminal|vibe-trading|all]
+# Usage: ai-trading/deploy/ci/smoke-test.sh [web|ta-terminal|ahf-terminal|vibe-trading|mirofish-backend|mirofish|gateway|all]
 # REGISTRY and TAG select the images (same defaults as docker-bake.hcl).
 set -Eeuo pipefail
 
@@ -13,6 +13,7 @@ cleanup() {
   if ((${#containers[@]})); then
     docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
   fi
+  docker network rm smoke-gateway-net >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -75,6 +76,10 @@ smoke_web() {
   expect_status 404 http://127.0.0.1:13000/apps/unknown
   expect_body "/u/tradingagents/" http://127.0.0.1:13000/apps/tradingagents
   expect_body "/u/ai-hedge-fund/" http://127.0.0.1:13000/apps/ai-hedge-fund
+  local headers
+  headers="$(curl -fsSI http://127.0.0.1:13000/)"
+  grep -qi '^cache-control: no-store' <<<"$headers" || fail "expected no-store Cache-Control on /"
+  grep -qi '^x-frame-options: DENY' <<<"$headers" || fail "expected X-Frame-Options on /"
 }
 
 # smoke_terminal SERVICE CLI BASE_PATH HOST_PORT
@@ -110,19 +115,135 @@ smoke_vibe() {
   expect_status 401 "$url" "${site[@]}" -H "Authorization: Bearer wrong-key" -H "X-Forwarded-Proto: https"
 }
 
+# smoke_mirofish_backend: dummy, non-secret keys only, no real Zep/LLM call.
+# This never signals "the simulation engine works" (Review Focus #1).
+smoke_mirofish_backend() {
+  start smoke-mirofish-backend "$(image mirofish-backend)" 15001 5001 \
+    -e LLM_API_KEY=sk-smoke-dummy -e ZEP_API_KEY=z_smoke-dummy
+  expect_status 200 http://127.0.0.1:15001/health
+  expect_body '"status":"ok"' http://127.0.0.1:15001/health
+  expect_body '"service":"MiroFish Backend"' http://127.0.0.1:15001/health
+}
+
+# smoke_mirofish_frontend: the real `docker buildx bake mirofish-frontend`
+# export output (ai-trading/frontend-artifacts/mirofish), not a container.
+# Checks the static Vue build is present, content-hashed, and built with a
+# real VITE_API_BASE_URL (no leftover localhost:5001 dev default).
+smoke_mirofish_frontend() {
+  local dir="ai-trading/frontend-artifacts/mirofish"
+  [[ -f "$dir/index.html" ]] || fail "$dir/index.html missing -- run docker buildx bake mirofish-frontend first"
+  grep -qE 'assets/index-[A-Za-z0-9_-]+\.js' "$dir/index.html" || fail "$dir/index.html does not reference a content-hashed assets/index-*.js bundle"
+  compgen -G "$dir/assets/index-*.js" >/dev/null || fail "$dir/assets has no hashed index-*.js bundle"
+  if grep -qF "localhost:5001" -r "$dir"; then
+    fail "mirofish static build still references localhost:5001"
+  fi
+  echo "ok   mirofish static build has no localhost:5001 reference"
+}
+
+# sign_smoke_cookie KEY_HEX EMAIL EXP_OFFSET_SECONDS: signs a cookie value
+# with the same HMAC scheme as ai-trading/auth/src/session.js, using only
+# Node (already a dependency of this script's own checks elsewhere), so this
+# test needs no extra tooling beyond Docker.
+sign_smoke_cookie() {
+  docker run --rm node:24-alpine node -e '
+const { createHmac } = require("node:crypto");
+const key = Buffer.from(process.argv[1], "hex");
+const payload = JSON.stringify({ email: process.argv[2], exp: Math.floor(Date.now() / 1000) + Number(process.argv[3]) });
+const body = Buffer.from(payload).toString("base64url");
+const mac = createHmac("sha256", key).update(body).digest("base64url");
+process.stdout.write(`__ai_trading_session=${body}.${mac}`);
+' "$1" "$2" "$3"
+}
+
+smoke_gateway() {
+  local net="smoke-gateway-net" key
+  docker network rm "$net" >/dev/null 2>&1 || true
+  docker network create "$net" >/dev/null
+  key="$(printf 'a%.0s' {1..64})"
+
+  docker run -d --name smoke-auth --network "$net" --network-alias auth \
+    -e SESSION_SIGNING_KEY="$key" -e ALLOWED_EMAILS=smoke@example.test \
+    -e ALLOWED_ORIGINS=https://trading.example.test \
+    "$(image auth)" >/dev/null
+  containers+=(smoke-auth)
+
+  # Header-echo stand-in for ta-terminal: returns whatever it received as
+  # Cf-Access-Authenticated-User-Email, so the test can prove Caddy replaced
+  # a forged value before any upstream ever saw it. No WebSocket code here --
+  # this container is swapped for a real ttyd image below for that check.
+  docker run -d --name smoke-echo-upstream --network "$net" --network-alias ta-terminal \
+    python:3.12-alpine python3 -c '
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = self.headers.get("Cf-Access-Authenticated-User-Email", "none").encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
+' >/dev/null
+  containers+=(smoke-echo-upstream)
+
+  docker run -d --name smoke-caddy --network "$net" -p 127.0.0.1:18080:8080 \
+    -v "$PWD/ai-trading/deploy/production/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    caddy:2-alpine >/dev/null
+  containers+=(smoke-caddy)
+
+  local cookie expired_cookie body
+  cookie="$(sign_smoke_cookie "$key" smoke@example.test 3600)"
+  expired_cookie="$(sign_smoke_cookie "$key" smoke@example.test -10)"
+
+  expect_status 401 http://127.0.0.1:18080/u/tradingagents/
+  expect_status 403 http://127.0.0.1:18080/__auth/session \
+    -X POST -H 'Origin: https://evil.example.test' -H 'Content-Type: application/json' -d '{}'
+  expect_status 401 http://127.0.0.1:18080/u/tradingagents/ --cookie "$expired_cookie"
+
+  body="$(curl -s --cookie "$cookie" -H 'Cf-Access-Authenticated-User-Email: attacker@evil.com' \
+    http://127.0.0.1:18080/u/tradingagents/)"
+  [[ "$body" == "smoke@example.test" ]] || fail "expected the upstream to see the verified email, got: $body"
+  echo "ok   Caddy replaced a spoofed Cf-Access-Authenticated-User-Email header with the verified one"
+
+  # Swap the header-echo stand-in for a real ttyd to prove the WebSocket
+  # handshake actually reaches a real upstream through forward_auth + reverse_proxy.
+  # "smoke-ta-terminal" also names smoke_terminal's own container (started
+  # before smoke_gateway in the "all" dispatch order and still running for
+  # its own trap cleanup) -- rm -f it here too, same idempotent-start guard
+  # used throughout this script, so the name is free to reuse.
+  docker rm -f smoke-echo-upstream smoke-ta-terminal >/dev/null 2>&1 || true
+  docker run -d --name smoke-ta-terminal --network "$net" --network-alias ta-terminal "$(image ta-terminal)" >/dev/null
+  containers+=(smoke-ta-terminal)
+  docker restart smoke-caddy >/dev/null
+  sleep 2
+
+  local ws_status
+  ws_status="$(curl -s -o /dev/null -w '%{http_code}' --cookie "$cookie" \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    http://127.0.0.1:18080/u/tradingagents/)"
+  [[ "$ws_status" == "101" ]] || fail "expected 101 Switching Protocols through Caddy to a real ttyd, got $ws_status"
+  echo "ok   WebSocket handshake reaches a real ttyd through Caddy with a valid cookie"
+
+  docker network rm "$net" >/dev/null 2>&1 || true
+}
+
 case "${1:-all}" in
   web) smoke_web ;;
   ta-terminal) smoke_terminal ta-terminal tradingagents /u/tradingagents 17681 ;;
   ahf-terminal) smoke_terminal ahf-terminal aihf /u/ai-hedge-fund 17682 ;;
   vibe-trading) smoke_vibe ;;
+  mirofish-backend) smoke_mirofish_backend ;;
+  mirofish) smoke_mirofish_backend; smoke_mirofish_frontend ;;
+  gateway) smoke_gateway ;;
   all)
     smoke_web
     smoke_terminal ta-terminal tradingagents /u/tradingagents 17681
+    smoke_gateway
     smoke_terminal ahf-terminal aihf /u/ai-hedge-fund 17682
     smoke_vibe
+    smoke_mirofish_backend
+    smoke_mirofish_frontend
     ;;
   *)
-    echo "usage: $0 [web|ta-terminal|ahf-terminal|vibe-trading|all]" >&2
+    echo "usage: $0 [web|ta-terminal|ahf-terminal|vibe-trading|mirofish-backend|mirofish|gateway|all]" >&2
     exit 2
     ;;
 esac

@@ -8,3 +8,7 @@ packages/ag-ui/
 # The root .gitignore (Python template) ignores every lib/ directory;
 # frontend/lib/ belongs to ai-trading and must be committed.
 !frontend/lib/
+
+# Local Bake output for mirofish-frontend; never committed, CI reads it
+# directly from this path and uploads it elsewhere.
+frontend-artifacts/

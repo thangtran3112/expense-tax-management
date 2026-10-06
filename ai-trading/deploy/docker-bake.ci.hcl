@@ -29,3 +29,18 @@ target "vibe-trading" {
   cache-from = ["type=gha,scope=ai-trading-vibe-trading"]
   cache-to   = ["type=gha,scope=ai-trading-vibe-trading,mode=max"]
 }
+
+target "auth" {
+  cache-from = ["type=gha,scope=ai-trading-auth"]
+  cache-to   = ["type=gha,scope=ai-trading-auth,mode=max"]
+}
+
+target "mirofish-backend" {
+  cache-from = ["type=gha,scope=ai-trading-mirofish-backend"]
+  cache-to   = ["type=gha,scope=ai-trading-mirofish-backend,mode=max"]
+}
+
+target "mirofish-frontend" {
+  cache-from = ["type=gha,scope=ai-trading-mirofish-frontend"]
+  cache-to   = ["type=gha,scope=ai-trading-mirofish-frontend,mode=max"]
+}

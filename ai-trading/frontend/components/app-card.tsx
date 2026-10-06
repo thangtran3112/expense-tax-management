@@ -51,6 +51,9 @@ function CardBody({ app }: { app: HubApp }) {
             <ExternalLink aria-hidden size={14} />
           </span>
         )}
+        {app.kind === "upstream-setup" && (
+          <span className="inline-flex items-center gap-1">Setup required before launch</span>
+        )}
       </div>
     </>
   );

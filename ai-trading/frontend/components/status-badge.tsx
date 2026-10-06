@@ -10,6 +10,13 @@ export function StatusBadge({ app }: { app: HubApp }) {
       </span>
     );
   }
+  if (app.status === "setup-required") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+        Experimental · Setup required
+      </span>
+    );
+  }
   return (
     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent">
       <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
