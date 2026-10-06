@@ -372,6 +372,9 @@ jobs:
       - name: Build MiroFish static frontend
         uses: docker/bake-action@v7
         with:
+          # Match PR CI: the local exporter must contain Vue assets only,
+          # not provenance.json (which the public uploader rejects).
+          provenance: false
           files: |
             ai-trading/deploy/docker-bake.hcl
           targets: mirofish-frontend

@@ -479,7 +479,8 @@ describe_prior_generation() {
 validate_build
 echo "upload-mirofish-static: build validated ($OUT_DIR)"
 
-mapfile -d '' -t FILES < <(find "$OUT_DIR" -type f -print0 | sort -z)
+# Keep upload/rollback order identical on macOS and Linux regardless of locale.
+mapfile -d '' -t FILES < <(find "$OUT_DIR" -type f -print0 | LC_ALL=C sort -z)
 
 # Armed only for the mutation-risking region below: a preflight failure
 # above never needs rollback (nothing was ever touched), and nothing after

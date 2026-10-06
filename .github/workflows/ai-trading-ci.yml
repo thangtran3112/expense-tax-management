@@ -140,6 +140,9 @@ jobs:
         env:
           TAG: ci
         with:
+          # Local export would otherwise include provenance.json, which is
+          # build metadata (not a Vue asset) containing Dockerfile check text.
+          provenance: false
           files: |
             ai-trading/deploy/docker-bake.hcl
             ai-trading/deploy/docker-bake.ci.hcl
