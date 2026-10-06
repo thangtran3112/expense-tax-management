@@ -443,13 +443,14 @@ esac
     expect(dockerfile).not.toContain("|| uv sync");
   });
 
-  it("prints GCP bootstrap metadata instead of writing repository key files", () => {
+  it("bootstraps only the GCP project and pool: no deploy identity or repository key files", () => {
     const bootstrap = readFileSync(
       path.join(repoRoot, "infrastructure/gcp/expense-tax/bootstrap.sh"),
       "utf8",
     );
     const gitignore = readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
-    expect(bootstrap).toContain('OUTPUT_FILE="${1:-/dev/stdout}"');
+    expect(bootstrap).not.toContain("expense-tax-github-deploy");
+    expect(bootstrap).not.toContain("secrets create");
     expect(bootstrap).not.toContain(".keys/");
     expect(gitignore).toContain(".keys/*");
   });

@@ -26,7 +26,7 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
 - Authenticated production smoke passed 13/13.
 - Release 2026-10-05 (`main` `d7426e5`, expense only; ai-trading stays on `dev`) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert: `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B, and family-config runtime env (the VPS loads the production profile from Firestore at deploy time).
-- Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`). Dispatch routing is generation 1 (Python `ai-worker`, namespace `default`, queue `expense-tax-ai-worker`); `workflow-worker` polls `expense-tax`/`expense-tax-processing` idle. Remaining cutover: non-production smoke, `advance`, drain (runbook Phase 2), then Stage C Python removal.
+- Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`). Dispatch routing advanced to generation 2 on 2026-10-06: new jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`); generation 1 had nothing to drain, and the Python `ai-worker` is idle. Remaining: Stage C Python removal (runbook Phase 3) after real jobs complete on the TypeScript worker.
 
 ## Boundaries
 

@@ -1,6 +1,6 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Release 2026-10-05 (`main` `d7426e5`, expense only) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert, `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B with shared Temporal active, and family-config runtime env (Firestore `family-config`, `common/config/family_config.py`). Remaining: runtime migration cutover (non-production smoke, `advance`, drain), Stage C Python removal, 3D operator activation, and VPS backup tooling activation.
+> **Status:** Production foundation complete. Release 2026-10-05 (`main` `d7426e5`, expense only) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert, `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B with shared Temporal active, and family-config runtime env (Firestore `family-config`, `common/config/family_config.py`). Runtime migration Phase 2 is done (2026-10-06): generation 2 routes new jobs to the TypeScript worker; generation 1 had nothing to drain. Remaining: Stage C Python removal, 3D operator activation, and VPS backup tooling activation.
 > **Last updated:** 2026-10-04
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 

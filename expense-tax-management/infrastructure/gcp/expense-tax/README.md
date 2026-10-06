@@ -1,52 +1,35 @@
-# Expense Tax GCP Bootstrap
+# Expense Tax GCP Project Bootstrap
 
-The bootstrap script provisions the GCP identity that GitHub Actions uses for Expense
-Tax. It runs from `expense-tax-management`, never creates service-account keys, and
-never puts secret payloads in command arguments or logs.
+`bootstrap.sh` creates and validates the Expense Tax production GCP project
+(organization, billing, APIs) and the GitHub workload identity pool. It runs from
+`expense-tax-management` and reuses existing resources, so it is safe to re-run.
 
 ## Fixed resources
 
-- Project: `expense-tax-tobytran-2026`
+- Project: `expense-tax-tobytran-2026` (organization `177410718350`)
 - Billing account: `013C6D-EEE26E-EAA1A1`
-- GitHub repository condition: `thangtran3112/family-app`
-- Deploy service account: `expense-tax-github-deploy`
-- WIF pool/provider: `expense-tax-github/github`
-- Legacy secret: `expense-tax-production-env`. The last deploy path that reads it is
-  the one on `main` before the family-config release. It is disabled after that
-  release ships.
+- Workload identity pool: `expense-tax-github`. Its only provider, `cloudflare`,
+  and the `expense-tax-cf-terraform` service account come from
+  `bootstrap-cloudflare.sh`; the Cloudflare Terraform workflow uses them.
+- Legacy secret `expense-tax-production-env`: disabled on 2026-10-05. Nothing
+  reads it.
+
+The GitHub deploy identity (provider `github`, service account
+`expense-tax-github-deploy`) was removed on 2026-10-05. Production deploys no
+longer authenticate to GCP; the VPS loads its env from Firestore `family-config`
+(see `common/config/README.md`).
 
 ## Bootstrap
 
-Prerequisites: authenticated `gcloud`, billing access, Node.js 22+, and a local
-checkout. Existing resources are reported as no-op and reused.
-
 ```bash
 cd expense-tax-management
-gcloud auth list
-./infrastructure/gcp/expense-tax/bootstrap.sh > /tmp/expense-tax-bootstrap-outputs.json
+./infrastructure/gcp/expense-tax/bootstrap.sh
 ```
-
-Bootstrap prints machine-readable identity metadata to stdout (or to the file
-named by its first argument). The metadata contains no secret payload and belongs
-in Firestore `family-config` (`expense-tax-management/ops`), not in the
-repository. Existing WIF provider metadata and project placement/billing are
-validated for exact issuer, attribute mapping, repository condition,
-organization, and billing account; drift aborts bootstrap. Service-account
-impersonation uses the official repository attribute `principalSet` binding.
-Provider admission further restricts tokens to `main`, the deploy or Cloudflare
-workflow, and the `production` environment.
-
-## Production env
-
-Production env lives in Firestore `family-config`, profile
-`expense-tax-management/production` (project `tobytran-portfolio`). The VPS
-loads it at deploy time through `common/config/family_config.py`. See
-`common/config/README.md`.
 
 ## Verification
 
 ```bash
-node scripts/check-phase-1b-infrastructure.mjs
+pnpm check:cloudflare-infrastructure
 ```
 
-These checks do not contact GCP, read local secret files, or print secret values.
+These checks do not contact GCP.
