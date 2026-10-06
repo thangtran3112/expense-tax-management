@@ -214,8 +214,8 @@ Stage B source (complete): the TypeScript worker is now part of production Compo
 - [x] Update the boundary/image/secret-bundle tests that pinned "no TypeScript worker in production Compose" (Task 5) to the new contract.
 - [ ] Deploy shared Temporal namespace plus TypeScript worker to a non-production environment.
 - [ ] Run real App API -> Temporal -> TypeScript worker -> App callback smoke flows for OCR, forwarding, and enrichment.
-- [ ] Run `advance --from-generation <n>` against production once smoke passes; new jobs now target namespace `expense-tax` / queue `expense-tax-processing`.
-- [ ] Keep the Python worker running until every accepted old-generation workflow reaches a terminal state and no pending old-generation dispatch remains (`status` command); do not move open histories between SDKs or namespaces.
+- [x] Run `advance --from-generation <n>` against production once smoke passes; new jobs now target namespace `expense-tax` / queue `expense-tax-processing`. Done 2026-10-06 (generation 2); the non-production smoke was skipped because no non-production shared-Temporal environment exists (runbook open question #7).
+- [x] Keep the Python worker running until every accepted old-generation workflow reaches a terminal state and no pending old-generation dispatch remains (`status` command); do not move open histories between SDKs or namespaces. `status` showed zero generation-1 jobs and dispatches at the advance (2026-10-06).
 - [ ] Reconcile failed/stuck executions individually. Cancellation, termination, or replacement requires an operator-recorded recovery decision and idempotency proof.
 - [ ] Pause old schedules (none exist today) only after the transactional fence commits, then recreate any future schedules in namespace `expense-tax` against queue `expense-tax-processing`, preserving schedule IDs/configuration but not old histories.
 - [ ] Deploy TypeScript worker, verify polling and workflow completion, then enable new schedules and dispatch.
