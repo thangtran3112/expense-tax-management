@@ -70,6 +70,12 @@ services:
       # correct here -- unlike TEMPORAL_HOST, which is container-to-container.
       STORAGE_LOCAL_BASE_URL: ${STORAGE_LOCAL_BASE_URL:-http://127.0.0.1:8100}
       STORAGE_URL_SIGNING_KEY: ${STORAGE_URL_SIGNING_KEY:?STORAGE_URL_SIGNING_KEY is required}
+      # Web session wiring design (2026-10-06): local defaults let
+      # Capture/Office call App API cross-origin, and let the
+      # containerized worker reach App API over the Compose network
+      # instead of the loopback-only STORAGE_LOCAL_BASE_URL above.
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-http://localhost:7301,http://localhost:7302}
+      STORAGE_INTERNAL_BASE_URL: ${STORAGE_INTERNAL_BASE_URL:-http://app-api:8100}
       INBOUND_EMAIL_BASE_ADDRESS: ${INBOUND_EMAIL_BASE_ADDRESS:-receipts@inbound.expense-tax.local}
       INBOUND_WEBHOOK_SIGNING_KEY: ${INBOUND_WEBHOOK_SIGNING_KEY:?INBOUND_WEBHOOK_SIGNING_KEY is required}
       INBOUND_ROUTING_TOKEN_SECRET: ${INBOUND_ROUTING_TOKEN_SECRET:?INBOUND_ROUTING_TOKEN_SECRET is required}
@@ -240,6 +246,7 @@ services:
       dockerfile: frontend/capture-web/Dockerfile
       args:
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-pk_test_ZXhhbXBsZS5jbGVyay5jb20k}
+        NEXT_PUBLIC_APP_API_URL: ${NEXT_PUBLIC_APP_API_URL:-http://127.0.0.1:8100}
     container_name: expense-tax-capture-web
     restart: unless-stopped
     ports:
@@ -264,6 +271,7 @@ services:
       dockerfile: frontend/office-web/Dockerfile
       args:
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-pk_test_ZXhhbXBsZS5jbGVyay5jb20k}
+        NEXT_PUBLIC_APP_API_URL: ${NEXT_PUBLIC_APP_API_URL:-http://127.0.0.1:8100}
     container_name: expense-tax-office-web
     restart: unless-stopped
     ports:

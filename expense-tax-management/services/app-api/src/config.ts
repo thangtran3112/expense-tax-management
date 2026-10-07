@@ -29,6 +29,14 @@ export interface AppConfig {
   readonly temporal: TemporalConnectionConfig;
   readonly storage: StorageConnectionConfig;
   readonly inboundEmail: InboundEmailConfig;
+  /**
+   * Web session wiring design (2026-10-06) -- exact-match allowlist of
+   * trusted browser origins, comma-separated `APP_CORS_ALLOWED_ORIGINS`.
+   * Undefined (not an empty array) when unset, same convention as
+   * mailboxAllowedRedirectOrigins; `registerCors` treats both the same
+   * (CORS disabled).
+   */
+  readonly corsAllowedOrigins?: readonly string[] | undefined;
 }
 
 export type AuthProvider = "clerk" | "legacy";
@@ -105,6 +113,13 @@ export interface StorageConnectionConfig {
   readonly localDir: string;
   readonly baseUrl: string;
   readonly urlSigningKey: string;
+  /**
+   * Web session wiring design (2026-10-06) -- optional origin for internal
+   * (worker-issued) read URLs, `STORAGE_INTERNAL_BASE_URL` (e.g.
+   * `http://app-api:8100` in production). Undefined when unset: internal
+   * read URLs then fall back to `baseUrl`, today's behavior.
+   */
+  readonly internalBaseUrl?: string | undefined;
 }
 
 export interface TokenAuthorityConfig {
@@ -261,7 +276,8 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
     options.env?.STORAGE_BACKEND === undefined &&
     options.env?.LOCAL_STORAGE_DIR === undefined &&
     options.env?.STORAGE_URL_SIGNING_KEY === undefined &&
-    options.env?.STORAGE_LOCAL_BASE_URL === undefined
+    options.env?.STORAGE_LOCAL_BASE_URL === undefined &&
+    options.env?.STORAGE_INTERNAL_BASE_URL === undefined
       ? process.env
       : env;
   const inboundEnv =
@@ -380,6 +396,10 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
       env,
       "MAILBOX_ALLOWED_REDIRECT_ORIGINS",
     ),
+    corsAllowedOrigins: optionalCommaListEnvironmentValue(
+      env,
+      "APP_CORS_ALLOWED_ORIGINS",
+    ),
     mailboxEnabled: env.MAILBOX_FEATURE_ENABLED?.trim().toLowerCase() === "true",
     temporal: {
       address: requiredEnvironmentValue(temporalEnv, "TEMPORAL_HOST"),
@@ -392,6 +412,10 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
       urlSigningKey: requiredEnvironmentValue(
         storageEnv,
         "STORAGE_URL_SIGNING_KEY",
+      ),
+      internalBaseUrl: optionalBaseUrlEnvironmentValue(
+        storageEnv,
+        "STORAGE_INTERNAL_BASE_URL",
       ),
     },
     inboundEmail: {

@@ -33,6 +33,11 @@ KNOWN_ENV_KEYS=(
   CLERK_APP_SERVICE_SUBJECT CLERK_FOUNDRY_SERVICE_SUBJECT
   CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET
   STORAGE_BACKEND STORAGE_LOCAL_BASE_URL STORAGE_URL_SIGNING_KEY
+  # Web session wiring design (2026-10-06): both optional. An ordinary
+  # production env file carries real values; a fixture/env file that
+  # predates this design simply never sets them (compose's `:-` default
+  # keeps that deployable).
+  APP_CORS_ALLOWED_ORIGINS STORAGE_INTERNAL_BASE_URL
   INBOUND_EMAIL_BASE_ADDRESS INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET
   # Phase 3D-A Task 5: mailbox broker, opt-in. The production env file
   # always carries MAILBOX_FEATURE_ENABLED (true or false); every other

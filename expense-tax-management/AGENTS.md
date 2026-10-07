@@ -27,6 +27,7 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Authenticated production smoke passed 13/13.
 - Release 2026-10-05 (`main` `d7426e5`, expense only; ai-trading stays on `dev`) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert: `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B, and family-config runtime env (the VPS loads the production profile from Firestore at deploy time).
 - Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`). Dispatch routing advanced to generation 2 on 2026-10-06: new jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`); generation 1 had nothing to drain, and the Python `ai-worker` is idle. Remaining: Stage C Python removal (runbook Phase 3) after real jobs complete on the TypeScript worker.
+- Clerk production Google sign-in uses a custom OAuth client in GCP project `expense-tax-tobytran-2026` (Google Auth Platform app `Family Expense Tax`); its ID/secret live in Firestore `expense-tax-management/ops` (`CLERK_GOOGLE_OAUTH_CLIENT_*`).
 
 ## Boundaries
 
@@ -36,6 +37,7 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Do not edit generated contracts/clients directly.
 - Use tests first for behavior changes; config-only changes need direct verification.
 - Smallest correct diff.
+- Production is the only environment until commercialization (no dev or staging); local runs and the VPS are both production, except that local frontends keep Clerk development keys because Clerk rejects production keys on `localhost`.
 
 ## Env and Secrets
 

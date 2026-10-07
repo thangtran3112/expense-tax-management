@@ -4,7 +4,6 @@ import { RefreshCw, Trash2 } from "lucide-react";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
-import { uploadQueuedReceipt } from "@/lib/api";
 import {
   listQueue,
   removeQueue,
@@ -12,6 +11,7 @@ import {
   type QueueItem,
 } from "@/lib/queue";
 import { readSession } from "@/lib/session";
+import { processQueueItem, processQueuedItems } from "@/lib/upload-processor";
 
 export default function QueuePage() {
   const { getToken } = useAuth();
@@ -23,43 +23,30 @@ export default function QueuePage() {
   }
   useEffect(() => {
     let active = true;
-    void listQueue().then((loaded) => {
-      if (active) setItems(loaded);
+    void listQueue().then(async (loaded) => {
+      if (!active) return;
+      setItems(loaded);
+      // Web session wiring design (2026-10-06): process any item already
+      // queued when this page loads, including receipts queued before
+      // this release.
+      await processQueuedItems(loaded, readSession(), getToken, organization?.id);
+      if (active) await refresh();
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [getToken, organization?.id]);
 
   async function retry(item: QueueItem) {
     setBusy(item.id);
     const session = readSession();
-    try {
-      if (!session) throw new Error("Capture session unavailable");
-      await updateQueue({
-        ...item,
-        status: "uploading",
-        progress: 35,
-        error: null,
-      });
-      const result = await uploadQueuedReceipt(session, item, getToken, organization?.id);
-      await updateQueue({
-        ...item,
-        ...result,
-        status: "processing",
-        progress: 78,
-        error: null,
-      });
-    } catch (error) {
-      await updateQueue({
-        ...item,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Upload failed",
-      });
-    } finally {
-      setBusy(null);
-      await refresh();
+    if (!session) {
+      await updateQueue({ ...item, status: "failed", error: "Capture session unavailable" });
+    } else {
+      await processQueueItem(session, item, getToken, organization?.id);
     }
+    setBusy(null);
+    await refresh();
   }
 
   return (

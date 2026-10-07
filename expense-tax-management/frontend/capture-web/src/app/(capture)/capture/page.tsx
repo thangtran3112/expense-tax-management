@@ -1,16 +1,21 @@
 "use client";
 
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { Camera, FileUp, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 
 import { enqueue } from "@/lib/queue";
+import { readSession } from "@/lib/session";
+import { processQueueItem } from "@/lib/upload-processor";
 
 const accepted = "image/jpeg,image/png,image/webp,application/pdf";
 
 export default function CapturePage() {
   const input = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const { getToken } = useAuth();
+  const { organization } = useOrganization();
   const [mode, setMode] = useState<"ocr_mode_fast" | "ocr_mode_balanced" | "ocr_mode_accurate">("ocr_mode_balanced");
   const [error, setError] = useState<string | null>(null);
 
@@ -21,8 +26,13 @@ export default function CapturePage() {
       setError("Use JPEG, PNG, WebP, or PDF up to 25MB.");
       return;
     }
-    await enqueue(file, mode);
+    const item = await enqueue(file, mode);
     router.push("/queue");
+    // Web session wiring design (2026-10-06): upload right after capture
+    // when online. The Queue page's own load effect still picks it up if
+    // this upload is skipped (offline) or fails.
+    const session = readSession();
+    if (session) void processQueueItem(session, item, getToken, organization?.id);
   }
 
   return <>

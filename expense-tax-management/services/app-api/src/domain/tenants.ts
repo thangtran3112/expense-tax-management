@@ -36,6 +36,18 @@ export interface TenantDomain {
   }): Promise<MutationResult<TenantBootstrap, 201>>;
   list(actorUserId: string): Promise<readonly Tenant[]>;
   get(actorUserId: string, tenantId: string): Promise<Tenant>;
+  /**
+   * Web session wiring design (2026-10-06) -- the scopes route's personal
+   * side: the tenant's one personal profile (personal_profiles_tenant_unique)
+   * only when the caller has an active personal_membership on it. Tenant
+   * role (tenant_membership) alone never qualifies -- same join shape as
+   * domain/memberships.ts's getOwnPersonalProfile, returning the full
+   * PersonalProfile (not just id/name) as a 0- or 1-item array.
+   */
+  listOwnPersonalProfiles(
+    actorUserId: string,
+    tenantId: string,
+  ): Promise<readonly PersonalProfile[]>;
   update(input: {
     readonly actorUserId: string;
     readonly tenantId: string;
@@ -229,6 +241,36 @@ export function createTenantDomain(database: Kysely<AppDatabase>): TenantDomain 
         .executeTakeFirst();
       if (!row) throw DomainError.notFound();
       return toTenant(row);
+    },
+
+    async listOwnPersonalProfiles(actorUserId, tenantId) {
+      const rows = await database
+        .selectFrom("app.personal_profiles as profile")
+        .innerJoin("app.tenants as tenant", (join) =>
+          join
+            .onRef("tenant.id", "=", "profile.tenant_id")
+            .on("tenant.status", "=", "active"),
+        )
+        .innerJoin("app.tenant_memberships as tenant_membership", (join) =>
+          join
+            .onRef("tenant_membership.tenant_id", "=", "profile.tenant_id")
+            .on("tenant_membership.user_id", "=", actorUserId)
+            .on("tenant_membership.status", "=", "active"),
+        )
+        // Active personal_membership is the actual grant -- tenant role
+        // alone (tenant_membership above) never qualifies, same as
+        // domain/memberships.ts's getOwnPersonalProfile.
+        .innerJoin("app.personal_memberships as membership", (join) =>
+          join
+            .onRef("membership.personal_profile_id", "=", "profile.id")
+            .onRef("membership.tenant_id", "=", "profile.tenant_id")
+            .on("membership.user_id", "=", actorUserId)
+            .on("membership.status", "=", "active"),
+        )
+        .selectAll("profile")
+        .where("profile.tenant_id", "=", tenantId)
+        .execute();
+      return rows.map(toPersonalProfile);
     },
 
     async update(input) {
