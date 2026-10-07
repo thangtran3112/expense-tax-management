@@ -11,10 +11,21 @@ import {
   mergeTags,
   fetchCurrentUser,
   fetchTenantMembership,
+  fetchTenantScopes,
   TagMutationError,
   type TenantRole,
 } from "@/lib/api";
-import { readOfficeSession } from "@/lib/session";
+import type { Scope } from "@expense-tax/contracts";
+import { readOfficeSession, writeOfficeSession } from "@/lib/session";
+
+interface ScopeChoice {
+  readonly scope: Scope;
+  readonly label: string;
+}
+
+function scopeKey(scope: Scope): string {
+  return scope.kind === "personal" ? `personal:${scope.profileId}` : `business:${scope.businessId}`;
+}
 
 type Tag = {
   id: string;
@@ -144,7 +155,46 @@ export default function Settings() {
   const [roleLoading, setRoleLoading] = useState(false);
 
   const session = isLoaded && isSignedIn ? readOfficeSession() : null;
-  const isPersonal = session?.scope.kind === "personal";
+  // Web session wiring design (2026-10-06): scope picker state. Mirrors
+  // the current session's scope until the user picks a different one;
+  // writeOfficeSession persists the choice, this state keeps the active
+  // highlight and gating in sync without a full page reload.
+  const [activeScope, setActiveScope] = useState<Scope | null>(session?.scope ?? null);
+  const [scopeChoices, setScopeChoices] = useState<readonly ScopeChoice[] | undefined>(undefined);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const isPersonal = (activeScope ?? session?.scope)?.kind === "personal";
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !organizationLoaded || !organization || !session) return;
+    let active = true;
+    void fetchTenantScopes(session, getToken, organization.id)
+      .then((scopes) => {
+        if (!active) return;
+        const choices: ScopeChoice[] = [
+          ...scopes.personalProfiles.map((profile) => ({
+            scope: { kind: "personal" as const, profileId: profile.id },
+            label: profile.name,
+          })),
+          ...scopes.businesses.map((business) => ({
+            scope: { kind: "business" as const, businessId: business.id },
+            label: business.name,
+          })),
+        ];
+        setScopeChoices(choices);
+      })
+      .catch((e: unknown) => {
+        if (active) setScopeError(e instanceof Error ? e.message : "Profiles unavailable");
+      });
+    return () => {
+      active = false;
+    };
+  }, [getToken, isLoaded, isSignedIn, organization, organizationLoaded, session]);
+
+  function chooseScope(choice: ScopeChoice) {
+    if (!session) return;
+    writeOfficeSession({ ...session, scope: choice.scope, label: choice.label });
+    setActiveScope(choice.scope);
+  }
 
   // Load tenant role from API
   useEffect(() => {
@@ -288,6 +338,26 @@ export default function Settings() {
   return (
     <>
       <PageHead eyebrow="Tenant settings" title="Administration without provider controls." />
+
+      <Panel title="Active profile">
+        {scopeError && <div role="alert" className="status bad">{scopeError}</div>}
+        {scopeChoices === undefined && !scopeError && (
+          <p aria-live="polite">Loading profiles...</p>
+        )}
+        {scopeChoices?.map((choice) => (
+          <button
+            key={scopeKey(choice.scope)}
+            type="button"
+            aria-pressed={activeScope !== null && scopeKey(activeScope) === scopeKey(choice.scope)}
+            onClick={() => chooseScope(choice)}
+          >
+            {choice.label}{" "}
+            <Status tone={activeScope !== null && scopeKey(activeScope) === scopeKey(choice.scope) ? "ok" : "warn"}>
+              {choice.scope.kind === "personal" ? "Personal" : "Business"}
+            </Status>
+          </button>
+        ))}
+      </Panel>
 
       {/* Tag management - available for both Personal and Business scope */}
       <Panel title="Tag management">

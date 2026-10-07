@@ -1,8 +1,28 @@
-import { createAppApiClient } from "@expense-tax/contracts";
+import { createAppApiClient, type TenantScopes } from "@expense-tax/contracts";
 
 import type { QueueItem } from "./queue";
 import type { CaptureSession } from "./session";
 import { getAppAuthorization, type ClerkGetToken } from "./clerk";
+
+/**
+ * Web session wiring design (2026-10-06) -- the Settings scope picker's
+ * authorized choices: the caller's own personal profile (0 or 1) and
+ * every active business they have a membership on.
+ */
+export async function fetchTenantScopes(
+  session: CaptureSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+): Promise<TenantScopes> {
+  const authorization = await getAppAuthorization(getToken, organizationId);
+  const client = createAppApiClient(session.apiBaseUrl);
+  const result = await client.GET("/api/v1/tenants/{tenantId}/scopes", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: authorization,
+  });
+  if (!result.data) throw new Error("Could not load profiles");
+  return result.data;
+}
 
 export async function uploadQueuedReceipt(
   session: CaptureSession,
