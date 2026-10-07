@@ -259,3 +259,51 @@ describe("App API mailbox feature flag", () => {
     expect(config.mailboxAllowedRedirectOrigins).toEqual(["https://expense-office.test"]);
   });
 });
+
+// -------------------------------------------------------------------- //
+// Web session wiring design (2026-10-06) -- CORS allowlist and the
+// worker-facing internal storage base URL, both optional.
+// -------------------------------------------------------------------- //
+
+describe("App API CORS allowlist and internal storage base URL", () => {
+  it("leaves corsAllowedOrigins undefined when unset", () => {
+    expect(createAppConfig({ env: ENV }).corsAllowedOrigins).toBeUndefined();
+  });
+
+  it("parses a comma-separated allowlist, trimming blanks", () => {
+    const env = {
+      ...ENV,
+      APP_CORS_ALLOWED_ORIGINS:
+        " https://expense-capture.test , https://expense-office.test ,,",
+    };
+    expect(createAppConfig({ env }).corsAllowedOrigins).toEqual([
+      "https://expense-capture.test",
+      "https://expense-office.test",
+    ]);
+  });
+
+  it("treats an empty APP_CORS_ALLOWED_ORIGINS the same as unset", () => {
+    expect(
+      createAppConfig({ env: { ...ENV, APP_CORS_ALLOWED_ORIGINS: "" } })
+        .corsAllowedOrigins,
+    ).toBeUndefined();
+  });
+
+  it("leaves storage.internalBaseUrl undefined when unset", () => {
+    expect(createAppConfig({ env: ENV }).storage.internalBaseUrl).toBeUndefined();
+  });
+
+  it("parses STORAGE_INTERNAL_BASE_URL, including a non-HTTPS Compose-internal origin", () => {
+    const env = { ...ENV, STORAGE_INTERNAL_BASE_URL: "http://app-api:8100" };
+    expect(createAppConfig({ env }).storage.internalBaseUrl).toBe(
+      "http://app-api:8100",
+    );
+  });
+
+  it("rejects an invalid STORAGE_INTERNAL_BASE_URL", () => {
+    const env = { ...ENV, STORAGE_INTERNAL_BASE_URL: "not a url" };
+    expect(() => createAppConfig({ env })).toThrow(
+      "Invalid URL in environment variable: STORAGE_INTERNAL_BASE_URL",
+    );
+  });
+});
