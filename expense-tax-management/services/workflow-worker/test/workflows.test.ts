@@ -324,11 +324,11 @@ it("finishes OCR before recording deduplication with the returned job version", 
   const activities = Object.fromEntries([
     ["mark_running", 3],
     ["ocr_get_input", { fileId: "44444444-4444-4444-8444-444444444444", expectedSha256: null, modeKey: "ocr_mode_balanced", tenantId: "22222222-2222-4222-8222-222222222222", schemaVersion: 1 }],
-    ["ocr_download_receipt", new Uint8Array([1])],
+    ["ocr_verify_receipt", undefined],
     ["ocr_resolve_route", { aiModelId: "55555555-5555-4555-8555-555555555555" }],
     ["ocr_reserve", { blocked: false, reservationId: "66666666-6666-4666-8666-666666666666" }],
     ["ocr_mark_call_started", 1],
-    ["ocr_run_extraction", extraction],
+    ["ocr_extract_receipt", extraction],
     ["ocr_record_accepted", undefined],
     ["ocr_submit_extraction", 4],
     ["ocr_record_deduplication", { decision: "no_match", matchIds: [] }],
@@ -352,13 +352,79 @@ it("finishes OCR before recording deduplication with the returned job version", 
     );
 
     expect(calls.map(([name]) => name)).toEqual([
-      "mark_running", "ocr_get_input", "ocr_download_receipt", "ocr_resolve_route",
-      "ocr_reserve", "ocr_mark_call_started", "ocr_run_extraction", "ocr_record_accepted",
+      "mark_running", "ocr_get_input", "ocr_verify_receipt", "ocr_resolve_route",
+      "ocr_reserve", "ocr_mark_call_started", "ocr_extract_receipt", "ocr_record_accepted",
       "ocr_submit_extraction", "ocr_record_deduplication",
     ]);
     expect(calls[0]?.[1]).toEqual({ jobReference, expectedJobVersion: 2 });
     expect(calls[8]?.[1]).toMatchObject({ expectedJobVersion: 3, extraction });
     expect(calls[9]?.[1]).toMatchObject({ expectedJobVersion: 4 });
+    // Bug fix (2026-10-07): a fresh workflow execution always takes the
+    // "bytes stay in the activity" path, so these never run.
+    expect(calls.map(([name]) => name)).not.toContain("ocr_download_receipt");
+    expect(calls.map(([name]) => name)).not.toContain("ocr_run_extraction");
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("never calls the legacy download/extraction activities on a fresh OCR run", async () => {
+  const calls: string[] = [];
+  const workflowId = `no-legacy-ocr-${JOB_ID}`;
+  const jobReference = { schemaVersion: 1, jobId: JOB_ID, workflowType: "OcrReceiptWorkflow", workflowId };
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection, namespace: env.namespace,
+      taskQueue: TASK_QUEUE, workflowsPath,
+      activities: {
+        async mark_running() { return 3; },
+        async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
+        async ocr_download_receipt() { throw new Error("legacy download activity must not run"); },
+        async ocr_verify_receipt() { calls.push("verify"); },
+        async ocr_resolve_route() { return { aiModelId: JOB_ID }; },
+        async ocr_reserve() { return { blocked: false, reservationId: JOB_ID }; },
+        async ocr_mark_call_started() { return 1; },
+        async ocr_run_extraction() { throw new Error("legacy extraction activity must not run"); },
+        async ocr_extract_receipt() { calls.push("extract"); return { schemaVersion: 1, merchant: "Fake OCR Merchant", amount: "12.34", currency: "USD", incurredOn: "2026-09-09", confidence: 1 }; },
+        async ocr_record_accepted() { calls.push("accepted"); },
+        async ocr_submit_extraction() { return 4; },
+        async ocr_record_deduplication() { calls.push("dedup"); return { decision: "no_match", matchIds: [] }; },
+      },
+    });
+    await worker.runUntil(() => env.client.workflow.execute("OcrReceiptWorkflow", {
+      workflowId, taskQueue: TASK_QUEUE, args: [jobReference],
+    }));
+    expect(calls).toEqual(["verify", "extract", "accepted", "dedup"]);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("fails with the download message and never reserves when verification fails", async () => {
+  const calls: string[] = [];
+  const workflowId = `verify-failed-${JOB_ID}`;
+  const jobReference = { schemaVersion: 1, jobId: JOB_ID, workflowType: "OcrReceiptWorkflow", workflowId };
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection, namespace: env.namespace,
+      taskQueue: TASK_QUEUE, workflowsPath,
+      activities: {
+        async mark_running() { return 3; },
+        async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
+        async ocr_verify_receipt() {
+          throw ApplicationFailure.nonRetryable("downloaded bytes do not match the confirmed file hash");
+        },
+        async ocr_resolve_route() { calls.push("route"); return { aiModelId: JOB_ID }; },
+        async ocr_reserve() { calls.push("reserve"); return { blocked: false, reservationId: JOB_ID }; },
+        async ocr_mark_failed(input: { message: string }) { calls.push(input.message); return 4; },
+      },
+    });
+    await worker.runUntil(() => env.client.workflow.execute("OcrReceiptWorkflow", {
+      workflowId, taskQueue: TASK_QUEUE, args: [jobReference],
+    }));
+    expect(calls).toEqual(["OCR_FAILED: could not download receipt bytes"]);
   } finally {
     await env.teardown();
   }
@@ -394,7 +460,10 @@ it("runs real OCR activities with versioned callbacks through Temporal", async (
       workflowId, taskQueue: TASK_QUEUE,
       args: [{ schemaVersion: 1, jobId: JOB_ID, workflowType: "OcrReceiptWorkflow", workflowId }],
     }));
-    expect(calls).toEqual(["running", "input", "download", "route", "reserve", "started", "accepted", "result", "dedup"]);
+    // "download" appears twice: ocr_verify_receipt downloads to check the
+    // hash and discards the bytes, ocr_extract_receipt downloads again to
+    // run extraction in-process -- see ocr-receipt.ts's bytesStayOutOfHistory comment.
+    expect(calls).toEqual(["running", "input", "download", "route", "reserve", "started", "download", "accepted", "result", "dedup"]);
   } finally {
     await env.teardown();
   }
@@ -412,7 +481,7 @@ it("ends an OCR quota conflict with a typed failed result", async () => {
       activities: {
         async mark_running() { return 3; },
         async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
-        async ocr_download_receipt() { return new Uint8Array([1]); },
+        async ocr_verify_receipt() { /* no-op */ },
         async ocr_resolve_route() { return { aiModelId: JOB_ID }; },
         async ocr_reserve() { return { blocked: true, reservationId: null }; },
         async ocr_submit_failed(input: unknown) { calls.push(["failed", input]); return 4; },
@@ -440,7 +509,7 @@ it("reports a missing reservation ID as an OCR failure", async () => {
       activities: {
         async mark_running() { return 3; },
         async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
-        async ocr_download_receipt() { return new Uint8Array([1]); },
+        async ocr_verify_receipt() { /* no-op */ },
         async ocr_resolve_route() { return { aiModelId: JOB_ID }; },
         async ocr_reserve() { return { blocked: false, reservationId: null }; },
         async ocr_mark_failed() { calls.push("failed"); return 4; },
@@ -467,11 +536,11 @@ it("releases a reservation before reporting an extraction failure", async () => 
       activities: {
         async mark_running() { return 3; },
         async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
-        async ocr_download_receipt() { return new Uint8Array([1]); },
+        async ocr_verify_receipt() { /* no-op */ },
         async ocr_resolve_route() { return { aiModelId: JOB_ID }; },
         async ocr_reserve() { return { blocked: false, reservationId: JOB_ID }; },
         async ocr_mark_call_started() { return 1; },
-        async ocr_run_extraction() { throw ApplicationFailure.nonRetryable("provider failed"); },
+        async ocr_extract_receipt() { throw ApplicationFailure.nonRetryable("provider failed"); },
         async ocr_release() { calls.push("release"); },
         async ocr_mark_failed(input: { message: string }) { calls.push(input.message); return 4; },
       },
@@ -503,11 +572,11 @@ it("never marks a succeeded OCR job failed when deduplication fails", async () =
       activities: {
         async mark_running() { return 3; },
         async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
-        async ocr_download_receipt() { return new Uint8Array([1]); },
+        async ocr_verify_receipt() { /* no-op */ },
         async ocr_resolve_route() { return { aiModelId: JOB_ID }; },
         async ocr_reserve() { return { blocked: false, reservationId: JOB_ID }; },
         async ocr_mark_call_started() { return 1; },
-        async ocr_run_extraction() { return { schemaVersion: 1, merchant: "Fake OCR Merchant", amount: "12.34", currency: "USD", incurredOn: "2026-09-09", confidence: 1 }; },
+        async ocr_extract_receipt() { return { schemaVersion: 1, merchant: "Fake OCR Merchant", amount: "12.34", currency: "USD", incurredOn: "2026-09-09", confidence: 1 }; },
         async ocr_record_accepted() { calls.push("accepted"); },
         async ocr_submit_extraction() { calls.push("succeeded"); return 4; },
         async ocr_record_deduplication() { calls.push("dedup"); throw ApplicationFailure.nonRetryable("invalid callback"); },
