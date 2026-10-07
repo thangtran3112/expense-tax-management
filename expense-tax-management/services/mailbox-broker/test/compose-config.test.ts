@@ -88,7 +88,7 @@ describe("docker-compose.yml (base, mailbox-disabled)", () => {
     expect(rendered.services["mailbox-broker"]).toBeUndefined();
     expect(rendered.services["mailbox-broker-migrate"]).toBeUndefined();
     expect(rendered.services["app-api"].environment).not.toHaveProperty("CLERK_MAILBOX_SERVICE_AUDIENCE");
-  });
+  }, 30_000); // shells out to `docker compose config`, slow on CI runners
 });
 
 describe("docker-compose.mailbox.yml (opt-in override)", () => {
@@ -145,7 +145,7 @@ describe("docker-compose.mailbox.yml (opt-in override)", () => {
     expect(
       (rendered.services["workflow-worker"].environment as Record<string, string>).TEMPORAL_NAMESPACE,
     ).toBe("expense-tax");
-  });
+  }, 30_000); // shells out to `docker compose config`, slow on CI runners
 
   it("uses the real broker env var names (MAILBOX_BROKER_DATABASE_URL / MAILBOX_BROKER_MIGRATION_DATABASE_URL), not the stale MAILBOX_VAULT_DATABASE_URL* names", () => {
     const overlayText = readProductionFile("docker-compose.mailbox.yml");
