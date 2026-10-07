@@ -1,6 +1,15 @@
 import type { Metadata } from "next";
-import { NavBar } from "@/components/nav-bar";
+import localFont from "next/font/local";
 import "./globals.css";
+import { AuthProvider } from "@/components/auth-provider";
+import { AuthGate } from "@/components/auth-gate";
+
+const inter = localFont({
+  src: "../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
+  variable: "--font-inter",
+  weight: "100 900",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Trading Hub",
@@ -10,10 +19,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className="flex h-dvh flex-col bg-slate-950 text-slate-100 antialiased">
-        <NavBar />
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</main>
+    <html lang="en" className={inter.variable}>
+      <body className="flex h-dvh flex-col bg-background text-foreground antialiased">
+        <AuthProvider>
+          <AuthGate>{children}</AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );

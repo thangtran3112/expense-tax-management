@@ -1,0 +1,106 @@
+# ai-trading/deploy/production/Caddyfile
+# The "gateway" service. Every reverse-proxy and WebSocket-upgrade concern
+# lives here, declaratively -- there is no hand-written Node proxy anywhere
+# in this plan (see Global Constraints). "auth" (ai-trading/auth) is the only
+# upstream this file ever calls for a verification decision.
+{
+	admin off
+	auto_https off
+}
+
+# Vibe's own hostname is not allowed around the Clerk gateway. Use a
+# host-specific HTTP site before the catch-all routes so /api/* also reaches
+# Vibe rather than the separate MiroFish backend.
+http://vibe-trading.tobytran.dev:8080 {
+	route {
+		request_header -Cf-Access-Authenticated-User-Email
+		forward_auth auth:8181 {
+			uri /__auth/check
+			copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+		}
+		reverse_proxy vibe-trading:8899 {
+			# TLS ends at Cloudflare; Vibe's same-site API check needs https.
+			header_up X-Forwarded-Proto https
+		}
+	}
+}
+
+:8080 {
+	# Exact root + slash-descendant matchers, not a bare `/u/tradingagents*`
+	# prefix wildcard: a prefix wildcard also matches an unrelated sibling
+	# path like `/u/tradingagents-evil` (no `/` boundary required), which
+	# would wrongly route it through forward_auth to this terminal instead
+	# of 404ing it. A bare path token after `handle` only accepts a single
+	# pattern, so each pair of exact-root/slash-descendant patterns is a
+	# named matcher (`@name path ...`) instead. Confirmed with a real-Caddy
+	# RED/GREEN check: the old `*` matcher returned 401 (treated as
+	# protected) for `/u/tradingagents-evil`; this matcher 404s it while
+	# leaving the real routes (bare path and any `/slash/descendant`)
+	# unchanged.
+	@tradingagents path /u/tradingagents /u/tradingagents/*
+	@aihedgefund path /u/ai-hedge-fund /u/ai-hedge-fund/*
+
+	handle /__auth/* {
+		reverse_proxy auth:8181
+	}
+
+	# A bare sequence of directives inside `handle` is NOT executed in the
+	# order written: Caddy sorts directives by its own fixed global default
+	# order, which runs `forward_auth` before `request_header` -- verified
+	# empirically with `caddy adapt` and the real-Caddy integration test
+	# below, which caught this exact miscompile (the strip ran *after*
+	# `copy_headers`, deleting the just-verified header entirely, so the
+	# upstream saw no identity header at all instead of the forged one or
+	# the verified one). `route` forces literal, as-written execution order.
+	handle @tradingagents {
+		route {
+			request_header -Cf-Access-Authenticated-User-Email
+			forward_auth auth:8181 {
+				uri /__auth/check
+				copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+			}
+			reverse_proxy ta-terminal:7681
+		}
+	}
+
+	handle @aihedgefund {
+		route {
+			request_header -Cf-Access-Authenticated-User-Email
+			forward_auth auth:8181 {
+				uri /__auth/check
+				copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+			}
+			reverse_proxy ahf-terminal:7681
+		}
+	}
+
+	handle /__healthz {
+		respond 200
+	}
+
+	# MiroFish (01i): same `route { }` wrapper as the /u/* blocks above, for
+	# the same reason -- a bare sequence would run `forward_auth` before
+	# `request_header`, leaking the just-verified header unstripped if a
+	# caller supplied its own value instead of the one Caddy just set.
+	# Flask backend joins the "mirofish" compose network, defined in the
+	# sibling docker-compose.mirofish.yml; gateway joins the same network
+	# in docker-compose.yml so this hostname resolves.
+	handle /api/* {
+		route {
+			request_header -Cf-Access-Authenticated-User-Email
+			forward_auth auth:8181 {
+				uri /__auth/check
+				copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+			}
+			reverse_proxy mirofish:5001
+		}
+	}
+
+	# /__control/* (01g, not yet reviewed) is reserved the same way: no
+	# block here, so it falls through to the 404 below until that plan
+	# adds one.
+
+	handle {
+		respond 404
+	}
+}

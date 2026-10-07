@@ -1,55 +1,89 @@
 # ai-trading Production Runbook
 
-Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel and Cloudflare Access application. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`.
+Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel. Caddy and Clerk enforce the family session on every upstream route; Cloudflare Access is declared but is not a substitute for this gate. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`. Infrastructure as code: `ai-trading/plans/subplans/01c-release-1-infra-plan.md`.
 
 | Service | Reached at | Notes |
 |---|---|---|
 | `web` | `https://trading.tobytran.dev/` | Hub |
 | `ta-terminal` | `https://trading.tobytran.dev/u/tradingagents/` | TradingAgents in ttyd + tmux |
 | `ahf-terminal` | `https://trading.tobytran.dev/u/ai-hedge-fund/` | ai-hedge-fund in ttyd + tmux |
-| `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Upstream image with upstream hardening |
+| `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Caddy-verified hub session, then upstream API key and hardening |
 | `cloudflared` | outbound only | Tunnel connector |
 
 On the host:
 
-- `/opt/family-app/ai-trading/` holds the compose file, the scripts, `images.env`, and `last-good-tag`.
-- `/etc/family-app/ai-trading/` holds one root-only env file per service.
+- `/opt/family-app/ai-trading/` holds the compose file, the scripts, `common/config/family_config.py`, `images.env`, and `last-good-tag`.
+- `/etc/family-app/ai-trading/` holds one root-only env file per service, plus `.previous/` (the files from the deploy before last, restored automatically if a deploy fails).
+- `/etc/family-app/config-reader.json` holds the `family-config-reader` service account key `deploy.sh` uses to render Firestore profiles straight onto the host.
 
-## One-time setup
+Every secret and environment value lives in one Firestore database, `family-config` (project `tobytran-portfolio`), never in a file inside this repository. See `ai-trading/AGENTS.md` for the profile list and the Cloudflare token policy, and `common/config/README.md` for the schema and the `family_config.py` commands used below. The old `ai-trading-env-bundle` Secret Manager secret still exists (one retained version) but nothing reads it anymore.
 
-1. Cloudflare Zero Trust: create the organization (free plan; Cloudflare may ask for a payment method). Terraform creates the one-time PIN login method.
-2. Cloudflare API token `ai-trading-terraform` with these permissions:
-   - `Access: Apps and Policies Write`
-   - `Access: Organizations, Identity Providers, and Groups Write`
-   - `Cloudflare Tunnel Write`
-   - `DNS Write` on `tobytran.dev`
-3. GCP identity for the Terraform workflow: run `infrastructure/cloudflare/ai-trading/bootstrap-wif.sh`.
-4. GitHub environment `ai-trading-production`:
-   - vars `VPS_HOST`, `VPS_PORT`, `VPS_USER`, `CLOUDFLARE_ACCOUNT_ID`, `TF_STATE_BUCKET`, `GCP_AI_TRADING_CF_WORKLOAD_IDENTITY_PROVIDER`, `GCP_AI_TRADING_CF_SERVICE_ACCOUNT`;
-   - secrets `VPS_DEPLOY_SSH_KEY`, `VPS_DEPLOY_KNOWN_HOSTS`, `AI_TRADING_CLOUDFLARE_API_TOKEN`, and `AI_TRADING_ACCESS_ALLOWED_EMAILS` (a JSON list such as `["<allowed-email-1>","<allowed-email-2>"]`). The two allowed emails must differ within their first 29 characters, because ttyd truncates the identity at 29 characters and two emails sharing that prefix would share one terminal session.
-5. LLM keys:
-   - Create one Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a monthly spend limit (start at $10).
-   - If an OpenAI project budget only alerts, fund that project with prepaid credit and turn auto-recharge off.
-6. Secrets bundle:
-   - Create `~/secure/ai-trading/` (mode 700) and copy `env/*.env.example` into it without the `.example` suffix.
-   - Fill in the real values and delete unused lines. `write-secrets.sh` rejects empty or `replace-me` values.
+## Bootstrap (once, in order)
 
-## First deploy
+1. State bucket: `CLOUDSDK_ACTIVE_CONFIG_NAME=personal infrastructure/gcp/bootstrap-state.sh --project tobytran-portfolio --bucket tobytran-portfolio-tfstate`.
+2. Apply `infrastructure/gcp/ai-trading` (creates the `ai-trading-deploy` and `ai-trading-terraform` workload identity pools, their service accounts, the static-hosting buckets, and grants both service accounts `roles/datastore.viewer` so CI can read Firestore — one root, one operator-reviewed `terraform plan`/`apply`, not a second apply). See that root's README for the access-token apply steps. Do this before any push to `main` that would run `ai-trading-deploy.yml`/`ai-trading-infra.yml`'s Firestore reads — they fail with a permission error until this root's `datastore.viewer` grants are applied.
+3. Create the `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, `ai-trading/gateway`, `ai-trading/clerk`, `ai-trading/cloudflare`, and `ai-trading/deploy` profiles in Firestore (see "Editing values" below); `ai-trading/cloudflare` must exist before any Terraform apply that reads Cloudflare values out of it, and before the first deploy.
+4. Apply `infrastructure/cloudflare/zero-trust`, then `infrastructure/cloudflare/ai-trading`, through `common/config/family_config.py run ai-trading/cloudflare -- terraform ...` (see those roots' READMEs).
+5. Release to `main` with ai-trading paths only (never merge all of `dev` into `main`). The push runs `ai-trading-deploy`, which builds images, pushes them to GHCR, and deploys to the VPS, which renders its own env files from Firestore.
 
-1. Apply Terraform once from the operator machine (see `infrastructure/cloudflare/ai-trading/README.md`, "First apply").
-2. Put `TUNNEL_TOKEN=<terraform output -raw tunnel_token>` into `~/secure/ai-trading/cloudflared.env`.
-3. Install the secrets:
+## Editing values
 
-   ```bash
-   ai-trading/deploy/production/write-secrets.sh --host <host> --port <port> --user <user> \
-     --key ~/.ssh/<deploy-key> --bundle-dir ~/secure/ai-trading
-   ```
+```bash
+CLI=common/config/family_config.py
+$CLI keys ai-trading/tradingagents      # names only, no values printed
+printf '%s' "$NEW_VALUE" | $CLI set ai-trading/tradingagents ANTHROPIC_API_KEY
+$CLI get ai-trading/clerk PUBLISHABLE_KEY   # prints one value exactly
+```
 
-4. Release to `main` with ai-trading paths only (never merge all of `dev` into `main`). The push runs `ai-trading-ci`, then `ai-trading-deploy`, which builds images, pushes them to GHCR, and runs `deploy.sh` and `health-check.sh` on the host.
+LLM keys come from one Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a monthly spend limit (start at $10). If an OpenAI project budget only alerts, fund that project with prepaid credit and turn auto-recharge off.
+
+## Deploy
+
+Every push to `main` touching `ai-trading/**` (excluding `ai-trading/plans/**` and any `*.md` file), `.gitmodules`, this workflow file itself, or `common/config/**` runs `build` and `deploy` below unconditionally. A manual `workflow_dispatch` instead runs **only** the jobs whose boolean input the operator explicitly sets true on that dispatch; every input defaults to `false`, so a bare "Run workflow" click with no inputs changed runs nothing.
+
+| Input (`workflow_dispatch`) | Default | Effect |
+|---|---|---|
+| `deploy_app` | `false` | Runs `build` then `deploy` (manual redeploy/rollback). Ignored on a push — push always runs both. |
+| `activate_mirofish` | `false` | Adds `MIROFISH_ACTIVATE=1` to `deploy.sh`'s remote invocation. **Only takes effect when `deploy_app` is also `true`**; on a push, or a dispatch with `deploy_app=false`, this is always `0` regardless of its own value. |
+| `upload_hub_static` | `false` | Runs the independent `hub-static-upload` job: builds the frontend's Next.js static export with pnpm and uploads it to the hub bucket. Never builds/pushes images, never runs `deploy`, never touches MiroFish. |
+| `upload_mirofish_static` | `false` | Runs the independent `mirofish-static-upload` job: builds MiroFish's static Vue export and uploads it to its own bucket. Same isolation as `upload_hub_static`. |
+
+1. `build`: builds and smoke-tests the images with a fake Clerk key, then builds and pushes the real images to GHCR tagged with the commit SHA, using the publishable key from the repo-scoped GitHub Actions variable `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (see `ai-trading/AGENTS.md`). Before any image in this job is built or pushed (including the fake-keyed smoke build), `ai-trading/deploy/ci/check-clerk-publishable-key.sh` fails the job closed unless that variable is a `pk_live_` key decoding to this app's own Clerk Frontend API domain — the same guard `hub-static-upload` runs before its `pnpm build`.
+2. `deploy` (environment `ai-trading-production`): authenticates to GCP over Workload Identity Federation (no stored key), fetches only the live Cloudflare tunnel token (`ai-trading/deploy/ci/render-env.sh`, `ai-trading/cloudflare` profile) and the VPS deploy SSH key (`shared/vps` `VPS_DEPLOY_SSH_PRIVATE_KEY`), then copies the compose files, `deploy.sh`, `health-check.sh`, `common/config/family_config.py`, and the one CI-rendered file (`cloudflared.env`) to the host and runs `deploy.sh`.
+
+On the host, `deploy.sh` renders `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, and `ai-trading/gateway` (renamed `auth.env`) straight from Firestore with the `family-config-reader` key, validates every file (well-formed `KEY=value` lines, no empty value, no NUL or CR byte), backs up the current files to `.previous/`, installs all five files (the four just rendered, plus `cloudflared.env`, the one file CI itself staged) as `root:root 0600`, then pulls and restarts the stack. If the new tag fails to come up healthy, it restores `.previous/` and rolls back to `last-good-tag`.
+
+### MiroFish activation (`activate_mirofish`)
+
+`deploy.sh`'s `MIROFISH_ACTIVATE` opt-in (see `ai-trading/AGENTS.md`) is now wired to the `activate_mirofish` dispatch input instead of being unreachable from CI. The workflow always passes an explicit `MIROFISH_ACTIVATE=0` or `=1` to the remote `deploy.sh` invocation (never leaves it unset) so the value sent is never ambiguous:
+
+- A push to `main` always sends `0` — MiroFish is never activated by an automatic deploy.
+- A manual dispatch with `deploy_app=true` and `activate_mirofish=true` sends `1`.
+- Any other combination (including `activate_mirofish=true` with `deploy_app=false`, which runs no deploy at all) sends `0`.
+
+This only widens *how* the existing fail-safe opt-in is reached; it does not change `deploy.sh` itself. A malformed or absent `ai-trading/mirofish` Firestore profile still leaves MiroFish disabled and logs why, without failing the other three apps' deploy (`activate_mirofish()` in `deploy.sh`). **Rollback caveat**: redeploying with `activate_mirofish=false` (or a plain push) does not itself deactivate a previously-active MiroFish — `deploy.sh`'s opt-in only ever *adds* `mirofish.env`; to deactivate, an operator must use `deploy.sh`'s own rollback path (restoring `.previous/`, which removes `mirofish.env` if it didn't exist in the prior-good deploy) or remove the `ai-trading/mirofish` Firestore profile before redeploying.
+
+### Hub and MiroFish static uploads
+
+Both static-upload jobs are fully independent of `build`/`deploy` and of each other: neither builds/pushes a GHCR image, runs `deploy.sh`, or changes MiroFish's activation state. Each needs its own GitHub Actions repository variable pointing at its Terraform-provisioned bucket, and both authenticate through the **same existing** `ai-trading-deploy` Workload Identity Federation pool/provider as `build`/`deploy` above — no new WIF provider or role is created.
+
+| | Hub (`upload_hub_static`) | MiroFish (`upload_mirofish_static`) |
+|---|---|---|
+| Bucket repo variable | `HUB_STATIC_BUCKET` | `AI_TRADING_MIROFISH_BUCKET_NAME` |
+| Copy from Terraform output | `infrastructure/gcp/ai-trading` → `hub_bucket_name` | `infrastructure/gcp/ai-trading` → `mirofish_bucket_name` |
+| Upload identity (WIF service account) | `ai-trading-hub-upload@tobytran-portfolio.iam.gserviceaccount.com` | `ai-trading-mirofish-upload@tobytran-portfolio.iam.gserviceaccount.com` |
+| IAM scope | `roles/storage.objectAdmin` on its own bucket only (`hub-bucket.tf`) | `roles/storage.objectAdmin` on its own bucket only (`mirofish-bucket.tf`) |
+| GitHub Environment | `ai-trading-production` | `ai-trading-production` |
+| Clerk claim needed | Real `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` repo variable (build fails closed if unset; no fake key is ever used here) | none |
+| Build method | `pnpm install --frozen-lockfile` + `pnpm build` (Next.js static export, no Docker) | `docker buildx bake` (`mirofish-frontend` target) |
+
+**Why `environment: ai-trading-production` on both, not a per-job environment name**: `infrastructure/gcp/ai-trading/main.tf`'s WIF provider `attribute_condition` requires `assertion.environment == var.github_environment` (`ai-trading-production`) for *every* job on this pool — the job's own boolean dispatch input, not its GitHub Environment name, is what gates whether it runs. A GitHub Environment name other than `ai-trading-production` (the MiroFish job previously used `ai-trading-mirofish-upload`) makes Google's OIDC token exchange fail closed with an `invalid_target`-style error, regardless of the dispatch input. Set `HUB_STATIC_BUCKET` and `AI_TRADING_MIROFISH_BUCKET_NAME` as **repository**-scoped variables (or on the shared `ai-trading-production` environment) — either is fine, since all WIF jobs already share that one environment.
+
+**Operator caveat**: because both upload jobs and `deploy` now share one GitHub Environment, a required-reviewer protection rule added to `ai-trading-production` applies to all three. There is no way to require approval for a MiroFish/hub static publish without also requiring it for a normal app deploy, short of applying a separate narrower rule keyed off the job name (GitHub Environments do not support that natively).
 
 ## Acceptance checklist (Mac and iPad)
 
-1. Access login works on both hostnames.
+1. Clerk login on the hub grants a session cookie for both hostnames; without it both terminal routes and Vibe-Trading return 401 (including the direct origin hostname). Opening Vibe-Trading directly before signing in through the hub returns 401.
 2. The hub home page and navigation work.
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
@@ -59,17 +93,16 @@ On the host:
 ## Operations
 
 - Logs: `sudo docker compose -p ai-trading --env-file /opt/family-app/ai-trading/images.env -f /opt/family-app/ai-trading/docker-compose.yml logs -f <service>`
-- Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow; it logs in to GHCR for the run. For a manual run on the host instead: `docker login ghcr.io` with a read-only token, then `sudo env IMAGE_TAG=$(cat /opt/family-app/ai-trading/last-good-tag) /opt/family-app/ai-trading/deploy.sh`, then `docker logout ghcr.io` (`deploy.sh` always runs `docker compose pull`, so every redeploy needs registry access while the GHCR packages are private).
-- Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in the bundle, rerun `write-secrets.sh`, redeploy, and paste the new key in each browser.
+- Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow (`workflow_dispatch`, `deploy_app=true`); it re-renders the four core profiles from Firestore and redeploys `${{ github.sha }}` of the `main` branch tip. This dispatch only activates MiroFish if `activate_mirofish` is also set `true` — otherwise `MIROFISH_ACTIVATE=0` is sent even if MiroFish was active before (see "MiroFish activation" above). `deploy.sh` always requires a fresh `ENV_STAGING_DIR/cloudflared.env` and always re-renders the four core profiles on the host — there is no manual mode that reuses a stale staging directory — so a host-only, direct `deploy.sh` run needs a real `cloudflared.env` staged first; rerunning the workflow is simpler.
+- Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in `ai-trading/vibe-trading` (see "Editing values"), rerun the deploy workflow, and paste the new key in each browser.
 - Upstream updates arrive as one grouped Dependabot pull request per week. Merge it to `dev` when CI is green, then release to `main`.
 
 ## Moving to a new host
 
-1. Run `infrastructure/vps/bootstrap.sh --only firewall,ssh,docker` against the new host.
-2. Run `write-secrets.sh` against it.
-3. Point the `ai-trading-production` environment vars and SSH secrets at it.
-4. Rerun the deploy workflow.
-5. Stop the stack on the old host: `sudo docker compose -p ai-trading ... down`.
+1. Run `infrastructure/vps/bootstrap.sh --only firewall,ssh,docker` against the new host, then `infrastructure/gcp/family-config/install-reader-key.sh` to install `/etc/family-app/config-reader.json` there.
+2. Update `shared/vps`'s `VPS_HOST`, `VPS_PORT`, `VPS_USER`, and `VPS_SSH_KNOWN_HOSTS` (`ssh-keyscan -t ed25519 <new-host>`) — `ai-trading/deploy` references these by name, so it needs no separate update (see "Editing values").
+3. Rerun the deploy workflow.
+4. Stop the stack on the old host: `sudo docker compose -p ai-trading ... down`.
 
 App data in the Docker volumes is trial data and is not copied. Release 2 adds backups.
 

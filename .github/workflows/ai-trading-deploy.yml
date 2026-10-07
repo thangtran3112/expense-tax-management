@@ -1,10 +1,50 @@
 name: ai-trading-deploy
 
 on:
-  workflow_run:
-    workflows: [ai-trading-ci]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - "ai-trading/**"
+      - "!ai-trading/plans/**"
+      - "!ai-trading/**/*.md"
+      - ".gitmodules"
+      - ".github/workflows/ai-trading-deploy.yml"
+      - "common/config/**"
+  workflow_dispatch:
+    inputs:
+      deploy_app:
+        description: >-
+          Build, push, and deploy the four core apps (manual redeploy or
+          rollback trigger). A push to main always builds/deploys regardless
+          of this input; on a manual dispatch, leave false to run no
+          build/deploy job at all -- e.g. for a static-upload-only dispatch.
+        type: boolean
+        default: false
+      activate_mirofish:
+        description: >-
+          Opt in to MiroFish on this deploy by passing MIROFISH_ACTIVATE=1 to
+          deploy.sh's existing fail-safe opt-in (ai-trading/deploy/production/
+          deploy.sh). Only takes effect when deploy_app is also true; a push
+          to main or any dispatch without deploy_app=true never activates
+          MiroFish, matching deploy.sh's own fail-closed default.
+        type: boolean
+        default: false
+      upload_hub_static:
+        description: >-
+          Build the Trading Hub's static export and upload it to its
+          dedicated GCS bucket (01h/01e). Leave false for a normal manual
+          deploy dispatch; only an operator deliberately setting this true
+          runs that job. Never builds/pushes images, runs the deploy job, or
+          changes MiroFish's activation state.
+        type: boolean
+        default: false
+      upload_mirofish_static:
+        description: >-
+          Upload MiroFish's static Vue build (Task 3) to its dedicated GCS
+          bucket (Task 6). Leave false for a normal manual deploy dispatch;
+          only an operator deliberately setting this true runs that job.
+        type: boolean
+        default: false
 
 concurrency:
   group: ai-trading-production-deploy
@@ -13,13 +53,27 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  GCP_PROJECT_ID: tobytran-portfolio
+  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/807362265280/locations/global/workloadIdentityPools/ai-trading-deploy/providers/github
+  GCP_DEPLOY_SERVICE_ACCOUNT: ai-trading-deploy@tobytran-portfolio.iam.gserviceaccount.com
+  # Task 6's dedicated, bucket-scoped upload identity (infrastructure/gcp/ai-trading/mirofish-bucket.tf):
+  # roles/storage.objectAdmin on the MiroFish static bucket only -- never GCP_DEPLOY_SERVICE_ACCOUNT's
+  # broader access. Bound to the same existing deploy Workload Identity pool/provider above.
+  GCP_MIROFISH_UPLOAD_SERVICE_ACCOUNT: ai-trading-mirofish-upload@tobytran-portfolio.iam.gserviceaccount.com
+  # F1's dedicated, bucket-scoped upload identity (infrastructure/gcp/ai-trading/hub-bucket.tf):
+  # roles/storage.objectAdmin on the hub static bucket only -- never GCP_DEPLOY_SERVICE_ACCOUNT's
+  # broader access. Bound to the same existing deploy Workload Identity pool/provider above.
+  GCP_HUB_UPLOAD_SERVICE_ACCOUNT: ai-trading-hub-upload@tobytran-portfolio.iam.gserviceaccount.com
+
 jobs:
+  # F1: runs on every push to main, or a manual dispatch with deploy_app=true.
+  # A bare manual "Run workflow" click (every input left at its false
+  # default) runs neither build nor deploy -- e.g. for a static-upload-only
+  # dispatch (upload_hub_static / upload_mirofish_static below).
   build:
     name: Build and push images
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_app == true)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -28,72 +82,320 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           submodules: true
           persist-credentials: false
+      # F1 fix round 1: fail closed BEFORE any image is built or pushed in
+      # this job -- including the smoke build below, which never ships but
+      # runs in the same job as the real push. A nonempty fake pk_test_ or a
+      # valid pk_live_ key from the WRONG Clerk instance previously passed
+      # Bake's mere-nonempty check, and Buildx's concurrent per-target push
+      # could land sibling images (ta-terminal/vibe-trading/auth/...) in
+      # GHCR before the "web" target's own requireClerkPublishableKey()
+      # build-time throw ever surfaced. This shared validator (also used by
+      # hub-static-upload below) requires a pk_live_ key decoding to this
+      # app's own Clerk Frontend API domain, never prints the key/decoded
+      # value, and gates every later step in this job.
+      - name: Validate production Clerk publishable key
+        env:
+          CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        run: ai-trading/deploy/ci/check-clerk-publishable-key.sh
       - uses: docker/setup-buildx-action@v3
+      - name: Build images for smoke tests
+        uses: docker/bake-action@v7
+        env:
+          TAG: ci
+          # Syntactically valid but fake Clerk publishable key (decodes to
+          # "ci-fake.clerk.accounts.dev$"): this build never ships, so it
+          # must never see the real, repo-variable-sourced key below.
+          CLERK_PUBLISHABLE_KEY: pk_test_Y2ktZmFrZS5jbGVyay5hY2NvdW50cy5kZXYk
+        with:
+          files: |
+            ai-trading/deploy/docker-bake.hcl
+            ai-trading/deploy/docker-bake.ci.hcl
+          load: true
+      - name: Smoke tests
+        env:
+          TAG: ci
+        run: ai-trading/deploy/ci/smoke-test.sh all
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Build and push
+      - name: Build and push immutable images
         uses: docker/bake-action@v7
         env:
-          TAG: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ github.sha }}
+          # Public, non-secret Clerk publishable key copied from Firestore
+          # ai-trading/clerk PUBLISHABLE_KEY into this repo-scoped GitHub
+          # Actions variable by the operator (see common/config/README.md
+          # "GitHub copies"). Bake's CLERK_PUBLISHABLE_KEY variable defaults
+          # to "" when this is unset, which fails the frontend's own
+          # requireClerkPublishableKey() at build time -- the production
+          # build must never silently ship with a fake or missing key.
+          CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         with:
           files: |
             ai-trading/deploy/docker-bake.hcl
-            ai-trading/deploy/docker-bake.ci.hcl
           push: true
 
   deploy:
     name: Deploy to the VPS
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_app == true)
     needs: build
     runs-on: ubuntu-latest
     environment: ai-trading-production
     permissions:
       contents: read
       packages: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          sparse-checkout: ai-trading/deploy/production
+          sparse-checkout: |
+            ai-trading/deploy/production
+            ai-trading/deploy/ci
+            common/config
           persist-credentials: false
-      - name: Install pinned SSH identity
-        env:
-          VPS_DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
-          VPS_DEPLOY_KNOWN_HOSTS: ${{ secrets.VPS_DEPLOY_KNOWN_HOSTS }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Render production env files
+        run: ai-trading/deploy/ci/render-env.sh "$RUNNER_TEMP/ai-trading-env"
+
+      - name: Fetch VPS deploy SSH key
         run: |
-          set -euo pipefail
-          umask 077
-          printf '%s\n' "$VPS_DEPLOY_SSH_KEY" >"$RUNNER_TEMP/ai-trading-deploy-key"
-          printf '%s\n' "$VPS_DEPLOY_KNOWN_HOSTS" >"$RUNNER_TEMP/ai-trading-known-hosts"
+          common/config/family_config.py get shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY >"$RUNNER_TEMP/ssh-key"
+          chmod 600 "$RUNNER_TEMP/ssh-key"
+
       - name: Deploy over SSH
         env:
-          VPS_HOST: ${{ vars.VPS_HOST }}
-          VPS_PORT: ${{ vars.VPS_PORT }}
-          VPS_USER: ${{ vars.VPS_USER }}
           GHCR_USER: ${{ github.actor }}
           GITHUB_TOKEN: ${{ github.token }}
-          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+          IMAGE_TAG: ${{ github.sha }}
+          SSH_KEY_FILE: ${{ runner.temp }}/ssh-key
+          KNOWN_HOSTS_FILE: ${{ runner.temp }}/ai-trading-known-hosts
+          ENV_DIR: ${{ runner.temp }}/ai-trading-env
+          # F1: '1' only on a manual dispatch with BOTH deploy_app=true (this
+          # job's own run condition) AND activate_mirofish=true; a push to
+          # main always evaluates false here (inputs.activate_mirofish is
+          # unset on a push event). deploy.sh's activate_mirofish() treats
+          # any other value, including '0' or absent, as disabled and never
+          # fails the other three apps' deploy -- this only ever widens that
+          # existing fail-safe opt-in, never bypasses it.
+          MIROFISH_ACTIVATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.activate_mirofish == true) && '1' || '0' }}
         run: |
           set -euo pipefail
           echo "::add-mask::$GITHUB_TOKEN"
-          key="$RUNNER_TEMP/ai-trading-deploy-key"
-          known="$RUNNER_TEMP/ai-trading-known-hosts"
-          ssh_opts=(-i "$key" -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
-          scp_opts=(-i "$key" -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes -P "$VPS_PORT")
-          ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 0700 /tmp/ai-trading-deploy"
-           scp "${scp_opts[@]}" \
-             ai-trading/deploy/production/docker-compose.yml \
-             ai-trading/deploy/production/deploy.sh \
-             ai-trading/deploy/production/health-check.sh \
-             "$VPS_USER@$VPS_HOST:/tmp/ai-trading-deploy/"
-           # shellcheck disable=SC2029 # GHCR_USER and IMAGE_TAG expand on the runner on purpose
-           printf '%s\n' "$GITHUB_TOKEN" | ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" \
-            "read -r GH_TOKEN; set -Eeuo pipefail; DOCKER_CONFIG=/dev/shm/ai-trading-docker-config-\$\$; cleanup() { sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker logout ghcr.io >/dev/null 2>&1 || true; sudo rm -rf \"\$DOCKER_CONFIG\" /tmp/ai-trading-deploy; }; trap cleanup EXIT; sudo install -d -o root -g root -m 0700 \"\$DOCKER_CONFIG\"; printf '%s' \"\$GH_TOKEN\" | sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker login ghcr.io --username '$GHCR_USER' --password-stdin; sudo install -d -m 0755 /opt/family-app/ai-trading; sudo install -o root -g root -m 0644 /tmp/ai-trading-deploy/docker-compose.yml /opt/family-app/ai-trading/docker-compose.yml; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/deploy.sh /opt/family-app/ai-trading/deploy.sh; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/health-check.sh /opt/family-app/ai-trading/health-check.sh; sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" IMAGE_TAG='$IMAGE_TAG' /opt/family-app/ai-trading/deploy.sh"
-      - name: Remove runner SSH material
+          DEPLOY_SCRIPT="$RUNNER_TEMP/deploy-remote.sh"
+          cat >"$DEPLOY_SCRIPT" <<'SCRIPT_EOF'
+          set -Eeuo pipefail
+          umask 077
+          printf '%s\n' "$VPS_KNOWN_HOSTS" >"$KNOWN_HOSTS_FILE"
+          ssh_opts=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
+          scp_opts=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -P "$VPS_PORT")
+          ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 0700 /tmp/ai-trading-deploy /tmp/ai-trading-deploy/env"
+          scp "${scp_opts[@]}" \
+            ai-trading/deploy/production/docker-compose.yml \
+            ai-trading/deploy/production/docker-compose.mirofish.yml \
+            ai-trading/deploy/production/Caddyfile \
+            ai-trading/deploy/production/deploy.sh \
+            ai-trading/deploy/production/health-check.sh \
+            common/config/family_config.py \
+            "$VPS_USER@$VPS_HOST:/tmp/ai-trading-deploy/"
+          scp "${scp_opts[@]}" "$ENV_DIR"/*.env "$VPS_USER@$VPS_HOST:/tmp/ai-trading-deploy/env/"
+          # shellcheck disable=SC2029 # GHCR_USER and IMAGE_TAG expand on the runner on purpose
+          printf '%s\n' "$GITHUB_TOKEN" | ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" \
+            "read -r GH_TOKEN; set -Eeuo pipefail; DOCKER_CONFIG=/dev/shm/ai-trading-docker-config-\$\$; cleanup() { sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker logout ghcr.io >/dev/null 2>&1 || true; sudo rm -rf \"\$DOCKER_CONFIG\" /tmp/ai-trading-deploy; }; trap cleanup EXIT; sudo install -d -o root -g root -m 0700 \"\$DOCKER_CONFIG\"; printf '%s' \"\$GH_TOKEN\" | sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" docker login ghcr.io --username '$GHCR_USER' --password-stdin; sudo install -d -m 0755 /opt/family-app/ai-trading; sudo install -o root -g root -m 0644 /tmp/ai-trading-deploy/docker-compose.yml /opt/family-app/ai-trading/docker-compose.yml; sudo install -o root -g root -m 0644 /tmp/ai-trading-deploy/docker-compose.mirofish.yml /opt/family-app/ai-trading/docker-compose.mirofish.yml; sudo install -o root -g root -m 0644 /tmp/ai-trading-deploy/Caddyfile /opt/family-app/ai-trading/Caddyfile; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/family_config.py /opt/family-app/ai-trading/family_config.py; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/deploy.sh /opt/family-app/ai-trading/deploy.sh; sudo install -o root -g root -m 0755 /tmp/ai-trading-deploy/health-check.sh /opt/family-app/ai-trading/health-check.sh; sudo env DOCKER_CONFIG=\"\$DOCKER_CONFIG\" IMAGE_TAG='$IMAGE_TAG' MIROFISH_ACTIVATE='$MIROFISH_ACTIVATE' ENV_STAGING_DIR=/tmp/ai-trading-deploy/env /opt/family-app/ai-trading/deploy.sh"
+          SCRIPT_EOF
+          common/config/family_config.py run ai-trading/deploy -- bash "$DEPLOY_SCRIPT"
+
+      - name: Remove runner deploy material
         if: always()
-        run: rm -f "$RUNNER_TEMP/ai-trading-deploy-key" "$RUNNER_TEMP/ai-trading-known-hosts"
+        run: |
+          rm -rf "$RUNNER_TEMP/ssh-key" "$RUNNER_TEMP/ai-trading-known-hosts" \
+            "$RUNNER_TEMP/ai-trading-env" "$RUNNER_TEMP/deploy-remote.sh"
+
+  # F1: hub static staging upload (01h/01e). Fully additive and independent
+  # of `build`/`deploy` above -- it never builds or pushes a GHCR image, never
+  # runs `deploy.sh`, and never touches MiroFish's activation state. Two
+  # independent gates must BOTH hold:
+  #   1. `github.event_name == 'workflow_dispatch'` -- a push to main (the
+  #      other trigger on this workflow) can never satisfy this.
+  #   2. The typed boolean input `upload_hub_static` must be explicitly set
+  #      true on that manual dispatch (default false, so a bare manual
+  #      "Run workflow" click for a normal deploy still never uploads).
+  # `environment: ai-trading-production` below is REQUIRED, not cosmetic:
+  # infrastructure/gcp/ai-trading/main.tf's WIF provider attribute_condition
+  # checks `assertion.environment == var.github_environment`
+  # (`ai-trading-production`), so any other GitHub Environment name on a job
+  # that authenticates over this pool fails Google's OIDC exchange closed.
+  # The boolean gate above, not this environment name, is what prevents an
+  # unwanted upload; the environment only has to match Terraform's provider
+  # for the OIDC token to be accepted at all. It builds the hub's Next.js
+  # static export directly with pnpm (no Docker), authenticates as the
+  # dedicated, bucket-scoped ai-trading-hub-upload identity (hub-bucket.tf)
+  # -- never GCP_DEPLOY_SERVICE_ACCOUNT -- and uploads only to the hub bucket
+  # named by the operator-set repository variable HUB_STATIC_BUCKET (copied
+  # from Terraform's `hub_bucket_name` output, the same manual-copy pattern
+  # this workflow already uses for NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY).
+  hub-static-upload:
+    name: Upload hub static build (operator-gated)
+    if: github.event_name == 'workflow_dispatch' && inputs.upload_hub_static == true
+    environment: ai-trading-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ai-trading/frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            ai-trading/frontend
+            ai-trading/deploy/ci
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ai-trading/frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # F1 fix round 1: same shared, fail-closed validator as the `build`
+      # job above -- a manual hub-static publish must never ship a build
+      # keyed to an absent, test-mode, malformed, or other-instance Clerk
+      # key, and this runs BEFORE `pnpm build` (and therefore before the GCS
+      # upload step further below) ever starts. Never prints the key or its
+      # decoded value.
+      - name: Validate production Clerk publishable key
+        env:
+          CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        run: ../deploy/ci/check-clerk-publishable-key.sh
+
+      - name: Build static export
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        run: pnpm build
+
+      - name: Check static export
+        run: ../deploy/ci/check-static-export.sh out
+
+      - name: Authenticate to Google Cloud (hub static uploader)
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_HUB_UPLOAD_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload hub static build to GCS
+        run: |
+          set -euo pipefail
+          bucket="${{ vars.HUB_STATIC_BUCKET }}"
+          if [[ -z "$bucket" ]]; then
+            echo "HUB_STATIC_BUCKET is not set; refusing to upload" >&2
+            exit 1
+          fi
+          ../deploy/ci/upload-hub-static.sh out "$bucket"
+
+  # MiroFish static staging upload (Task 7). Fully additive and independent
+  # of `build`/`deploy` above: a repository *variable* existing is NOT
+  # sufficient to run this job (fix round 1 Critical finding -- a bucket
+  # name variable must not double as an enable switch). Two independent
+  # gates must BOTH hold:
+  #   1. `github.event_name == 'workflow_dispatch'` -- a push to main (the
+  #      other trigger on this workflow) can never satisfy this, no matter
+  #      what repository variables exist.
+  #   2. The typed boolean input `upload_mirofish_static` must be explicitly
+  #      set true on that manual dispatch (default false, so a bare manual
+  #      "Run workflow" click for a normal deploy still never uploads).
+  # `environment: ai-trading-production` below is REQUIRED, not cosmetic, for
+  # the same reason as hub-static-upload above: infrastructure/gcp/ai-trading
+  # /main.tf's WIF provider attribute_condition checks
+  # `assertion.environment == var.github_environment` (`ai-trading-
+  # production`); the previously used `ai-trading-mirofish-upload` GitHub
+  # Environment name does not match that condition, so Google's OIDC
+  # exchange was failing closed (F1 fix). An operator wanting a distinct
+  # approval gate for this job must add a required-reviewer rule to the
+  # shared `ai-trading-production` GitHub Environment, which also then
+  # applies to the `deploy` job above -- see the production README.
+  # It never runs on a pull_request build at all (this workflow has no
+  # pull_request trigger). It authenticates as the dedicated, bucket-scoped
+  # ai-trading-mirofish-upload identity (Task 6) -- never
+  # GCP_DEPLOY_SERVICE_ACCOUNT -- and uploads only to the MiroFish static
+  # bucket named by the operator-set repository variable
+  # AI_TRADING_MIROFISH_BUCKET_NAME (copied from Terraform's
+  # `mirofish_bucket_name` output, the same manual-copy pattern this
+  # workflow already uses for NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) -- that
+  # variable now configures WHERE to upload, never WHETHER to upload. This is
+  # the staging upload step only: it never applies Terraform, never touches
+  # Cloudflare, and never runs the `deploy` job's VPS/Firestore/Clerk steps.
+  mirofish-static-upload:
+    name: Upload MiroFish static build (operator-gated)
+    if: github.event_name == 'workflow_dispatch' && inputs.upload_mirofish_static == true
+    environment: ai-trading-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build MiroFish static frontend
+        uses: docker/bake-action@v7
+        with:
+          # Match PR CI: the local exporter must contain Vue assets only,
+          # not provenance.json (which the public uploader rejects).
+          provenance: false
+          files: |
+            ai-trading/deploy/docker-bake.hcl
+          targets: mirofish-frontend
+
+      - name: Authenticate to Google Cloud (MiroFish static uploader)
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_MIROFISH_UPLOAD_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload MiroFish static build to GCS
+        run: |
+          set -euo pipefail
+          bucket="${{ vars.AI_TRADING_MIROFISH_BUCKET_NAME }}"
+          if [[ -z "$bucket" ]]; then
+            echo "AI_TRADING_MIROFISH_BUCKET_NAME is not set; refusing to upload" >&2
+            exit 1
+          fi
+          ai-trading/deploy/ci/upload-mirofish-static.sh ai-trading/frontend-artifacts/mirofish "$bucket"

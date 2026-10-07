@@ -4,11 +4,10 @@ variable "cloudflare_account_id" {
   sensitive   = true
 }
 
-variable "cloudflare_api_token" {
+variable "state_bucket" {
   type        = string
-  description = "Cloudflare API token with Access, Tunnel, and DNS write permissions."
-  sensitive   = true
-  ephemeral   = true
+  description = "GCS bucket holding Terraform state, used to read the Zero Trust root's outputs."
+  default     = "tobytran-portfolio-tfstate"
 }
 
 variable "zone_name" {
@@ -31,7 +30,7 @@ variable "vibe_trading_hostname" {
 
 variable "access_allowed_emails" {
   type        = list(string)
-  description = "Emails allowed through Cloudflare Access. Supplied from a GitHub secret; never committed."
+  description = "Emails allowed through Cloudflare Access. Supplied as TF_VAR_access_allowed_emails from the ai-trading/cloudflare Firestore profile; never committed."
   sensitive   = true
 
   validation {

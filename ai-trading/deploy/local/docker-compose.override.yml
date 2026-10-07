@@ -11,5 +11,20 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8899:8899"
-    networks: [hub, ta, ahf, vibe]
-    depends_on: [web, ta-terminal, ahf-terminal, vibe-trading]
+    networks: [hub, ta, ahf, vibe, mirofish]
+    depends_on:
+      web:
+        condition: service_started
+      ta-terminal:
+        condition: service_started
+      ahf-terminal:
+        condition: service_started
+      vibe-trading:
+        condition: service_started
+      # MiroFish stays disabled (profile-gated) until its sibling compose
+      # file is also passed with `-f` and its keys render; `required: false`
+      # lets `router` start without it, same tolerance Task 5 proves for
+      # production (see docker-compose.mirofish.yml).
+      mirofish:
+        condition: service_started
+        required: false

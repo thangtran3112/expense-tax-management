@@ -1,0 +1,125 @@
+name: ai-trading-infra
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - "infrastructure/gcp/ai-trading/**"
+      - "infrastructure/cloudflare/zero-trust/**"
+      - "infrastructure/cloudflare/ai-trading/**"
+      - "common/config/**"
+      - "infrastructure/gcp/bootstrap-state.sh"
+      - ".github/workflows/ai-trading-infra.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infrastructure/gcp/ai-trading/**"
+      - "infrastructure/cloudflare/zero-trust/**"
+      - "infrastructure/cloudflare/ai-trading/**"
+      - "common/config/**"
+      - "infrastructure/gcp/bootstrap-state.sh"
+      - ".github/workflows/ai-trading-infra.yml"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Plan and apply to production (Zero Trust, then ai-trading)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ai-trading-infra-production
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  GCP_PROJECT: tobytran-portfolio
+  TF_STATE_BUCKET: tobytran-portfolio-tfstate
+  GCP_TERRAFORM_WORKLOAD_IDENTITY_PROVIDER: projects/807362265280/locations/global/workloadIdentityPools/ai-trading-terraform/providers/github
+  GCP_TERRAFORM_SERVICE_ACCOUNT: ai-trading-terraform@tobytran-portfolio.iam.gserviceaccount.com
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Terraform validate (${{ matrix.root }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - infrastructure/gcp/ai-trading
+          - infrastructure/cloudflare/zero-trust
+          - infrastructure/cloudflare/ai-trading
+    defaults:
+      run:
+        working-directory: ${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init -backend=false
+      - run: terraform fmt -check -recursive
+      - run: terraform validate
+
+  bundle-and-scripts:
+    name: Scripts and shellcheck
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: shellcheck infrastructure/gcp/bootstrap-state.sh
+
+  plan-or-apply:
+    name: Terraform plan/apply (zero-trust, then ai-trading)
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ai-trading-production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_TERRAFORM_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: "Zero Trust: init"
+        run: terraform -chdir=infrastructure/cloudflare/zero-trust init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
+      - name: "Zero Trust: plan"
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust plan -out=tfplan
+      - name: "Zero Trust: apply"
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/zero-trust apply -auto-approve tfplan
+      - name: "Zero Trust: remove plan file"
+        if: always()
+        run: rm -f infrastructure/cloudflare/zero-trust/tfplan
+
+      - name: "ai-trading: init"
+        run: terraform -chdir=infrastructure/cloudflare/ai-trading init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
+      - name: "ai-trading: plan"
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading plan -out=tfplan
+      - name: "ai-trading: apply"
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
+        run: python3 common/config/family_config.py run ai-trading/cloudflare -- terraform -chdir=infrastructure/cloudflare/ai-trading apply -auto-approve tfplan
+      - name: "ai-trading: remove plan file"
+        if: always()
+        run: rm -f infrastructure/cloudflare/ai-trading/tfplan
