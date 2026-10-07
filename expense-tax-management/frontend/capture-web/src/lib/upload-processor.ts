@@ -1,11 +1,19 @@
 import { uploadQueuedReceipt } from "./api";
-import { updateQueue, type QueueItem } from "./queue";
+import { getQueueItem, updateQueue, type QueueItem } from "./queue";
 import type { CaptureSession } from "./session";
 import type { ClerkGetToken } from "./clerk";
 
 function isOnline(): boolean {
   return typeof navigator === "undefined" || navigator.onLine;
 }
+
+// ponytail: three uncoordinated triggers (enqueue, queue page load,
+// QueueAutoUploader) can all try to process the same item from a stale
+// snapshot. This in-memory set is the per-tab guard against a concurrent
+// double-run; it does not coordinate across tabs/devices, which is fine
+// because the fresh-status re-read below also rejects an item that is no
+// longer `queued`.
+const inFlight = new Set<string>();
 
 /**
  * Web session wiring design (2026-10-06) -- the shared upload step
@@ -23,16 +31,24 @@ export async function processQueueItem(
   organizationId: string | null | undefined,
 ): Promise<void> {
   if (!isOnline()) return;
-  await updateQueue({ ...item, status: "uploading", progress: 35, error: null });
+  if (inFlight.has(item.id)) return;
+  inFlight.add(item.id);
   try {
-    const result = await uploadQueuedReceipt(session, item, getToken, organizationId);
-    await updateQueue({ ...item, ...result, status: "processing", progress: 78, error: null });
-  } catch (error) {
-    await updateQueue({
-      ...item,
-      status: "failed",
-      error: error instanceof Error ? error.message : "Upload failed",
-    });
+    const fresh = await getQueueItem(item.id);
+    if (!fresh || fresh.status !== "queued") return;
+    await updateQueue({ ...fresh, status: "uploading", progress: 35, error: null });
+    try {
+      const result = await uploadQueuedReceipt(session, fresh, getToken, organizationId);
+      await updateQueue({ ...fresh, ...result, status: "processing", progress: 78, error: null });
+    } catch (error) {
+      await updateQueue({
+        ...fresh,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Upload failed",
+      });
+    }
+  } finally {
+    inFlight.delete(item.id);
   }
 }
 

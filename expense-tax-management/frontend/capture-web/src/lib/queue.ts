@@ -51,6 +51,10 @@ export async function listQueue(): Promise<QueueItem[]> {
   return (await (await db()).getAllFromIndex("queue", "by-created")).reverse();
 }
 
+export async function getQueueItem(id: string): Promise<QueueItem | undefined> {
+  return (await db()).get("queue", id);
+}
+
 export async function updateQueue(item: QueueItem): Promise<void> {
   await (await db()).put("queue", item);
 }

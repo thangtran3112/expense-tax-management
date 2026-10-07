@@ -1,17 +1,21 @@
 import type { JobReferenceV1, OcrExtractionResultV1, OcrJobInputV1 } from "@expense-tax/contracts";
-import { isCancellation, proxyActivities } from "@temporalio/workflow";
+import { isCancellation, patched, proxyActivities } from "@temporalio/workflow";
 
 import { requireJobReference } from "./job-reference.js";
 
 interface OcrActivities {
   mark_running(input: { jobReference: JobReferenceV1; expectedJobVersion: number }): Promise<number>;
   ocr_get_input(input: { jobReference: JobReferenceV1 }): Promise<OcrJobInputV1>;
+  /** @deprecated kept only so histories started before "ocr-receipt-bytes-in-activity" still replay. */
   ocr_download_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<Uint8Array>;
+  ocr_verify_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<void>;
   ocr_resolve_route(input: { modeKey: OcrJobInputV1["modeKey"] }): Promise<{ aiModelId: string }>;
   ocr_reserve(input: { jobReference: JobReferenceV1; tenantId: string; aiModelId: string }): Promise<{ blocked: boolean; reservationId: string | null }>;
   ocr_submit_failed(input: { jobReference: JobReferenceV1; expectedJobVersion: number; error: string; message: string }): Promise<number>;
   ocr_mark_call_started(input: { reservationId: string }): Promise<number>;
+  /** @deprecated kept only so histories started before "ocr-receipt-bytes-in-activity" still replay. */
   ocr_run_extraction(input: { data: Uint8Array }): Promise<OcrExtractionResultV1>;
+  ocr_extract_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<OcrExtractionResultV1>;
   ocr_record_accepted(input: { reservationId: string }): Promise<void>;
   ocr_submit_extraction(input: { jobReference: JobReferenceV1; expectedJobVersion: number; extraction: OcrExtractionResultV1 }): Promise<number>;
   ocr_record_deduplication(input: { jobReference: JobReferenceV1; sourceFileId: string; expectedJobVersion: number; extraction: OcrExtractionResultV1 }): Promise<unknown>;
@@ -23,11 +27,11 @@ const http = proxyActivities<OcrActivities>({
   startToCloseTimeout: "30 seconds",
   retry: { maximumAttempts: 5 },
 });
-const slow = proxyActivities<Pick<OcrActivities, "ocr_download_receipt">>({
+const slow = proxyActivities<Pick<OcrActivities, "ocr_download_receipt" | "ocr_verify_receipt">>({
   startToCloseTimeout: "60 seconds",
   retry: { maximumAttempts: 5 },
 });
-const quick = proxyActivities<Pick<OcrActivities, "ocr_run_extraction">>({
+const quick = proxyActivities<Pick<OcrActivities, "ocr_run_extraction" | "ocr_extract_receipt">>({
   startToCloseTimeout: "60 seconds",
   retry: { maximumAttempts: 2 },
 });
@@ -38,6 +42,14 @@ const release = proxyActivities<Pick<OcrActivities, "ocr_release">>({
 
 export async function runOcr(jobReference: JobReferenceV1): Promise<void> {
   let version = await http.mark_running({ jobReference, expectedJobVersion: 2 });
+  // Bug fix (2026-10-07): receipt bytes used to travel through
+  // ocr_run_extraction's activity input/output, which Temporal records
+  // verbatim in workflow history -- an 84 KB JPEG became a ~960 KB
+  // history payload (JSON-encodes the Uint8Array as {"0":..,"1":..}),
+  // close to the 2 MB default limit. The patched activities keep the
+  // bytes inside the activity process instead; evaluated once so every
+  // branch below agrees on which path this execution takes.
+  const bytesStayOutOfHistory = patched("ocr-receipt-bytes-in-activity");
 
   async function fail(message: string): Promise<void> {
     try {
@@ -57,13 +69,23 @@ export async function runOcr(jobReference: JobReferenceV1): Promise<void> {
     return;
   }
 
-  let data: Uint8Array;
-  try {
-    data = await slow.ocr_download_receipt({ fileId: input.fileId, expectedSha256: input.expectedSha256 });
-  } catch (error) {
-    if (isCancellation(error)) throw error;
-    await fail("OCR_FAILED: could not download receipt bytes");
-    return;
+  let data: Uint8Array | undefined;
+  if (bytesStayOutOfHistory) {
+    try {
+      await slow.ocr_verify_receipt({ fileId: input.fileId, expectedSha256: input.expectedSha256 });
+    } catch (error) {
+      if (isCancellation(error)) throw error;
+      await fail("OCR_FAILED: could not download receipt bytes");
+      return;
+    }
+  } else {
+    try {
+      data = await slow.ocr_download_receipt({ fileId: input.fileId, expectedSha256: input.expectedSha256 });
+    } catch (error) {
+      if (isCancellation(error)) throw error;
+      await fail("OCR_FAILED: could not download receipt bytes");
+      return;
+    }
   }
 
   let route: { aiModelId: string };
@@ -103,7 +125,9 @@ export async function runOcr(jobReference: JobReferenceV1): Promise<void> {
   let resultVersion: number;
   try {
     await http.ocr_mark_call_started({ reservationId });
-    extraction = await quick.ocr_run_extraction({ data });
+    extraction = bytesStayOutOfHistory
+      ? await quick.ocr_extract_receipt({ fileId: input.fileId, expectedSha256: input.expectedSha256 })
+      : await quick.ocr_run_extraction({ data: data as Uint8Array });
     await http.ocr_record_accepted({ reservationId });
     resultVersion = await http.ocr_submit_extraction({ jobReference, expectedJobVersion: version, extraction });
     version = resultVersion;
