@@ -1,6 +1,6 @@
-# ai-trading Cloudflare (Tunnel + Access)
+# ai-trading Cloudflare (Tunnel + staging Workers)
 
-Terraform for the ai-trading tunnel, staging Workers/DNS, and a Cloudflare Access policy (not currently active). Caddy/Clerk, not Access, protects every VPS upstream route. State lives in `gs://tobytran-portfolio-tfstate` under prefix `cloudflare/ai-trading`. The expense tunnel is separate and untouched. The account-wide Zero Trust organization and one-time PIN login live in `infrastructure/cloudflare/zero-trust/`; this root reads the identity provider ID from there via `terraform_remote_state`.
+Terraform for the ai-trading tunnel, staging Workers, and DNS. Caddy/Clerk protects every VPS upstream route; Cloudflare Access is deferred for Release 1. This root does not read or apply `infrastructure/cloudflare/zero-trust/`, which remains for a separate future decision. State lives in `gs://tobytran-portfolio-tfstate` under prefix `cloudflare/ai-trading`. The expense tunnel is separate and untouched.
 
 | Hostname | Routes |
 |---|---|
@@ -15,19 +15,18 @@ The Cloudflare provider reads `CLOUDFLARE_API_TOKEN` from the environment; no Te
 
 ## Apply order
 
-1. `infrastructure/gcp/ai-trading` (GCP identities and the secret).
-2. `infrastructure/cloudflare/zero-trust` (Zero Trust organization, one-time PIN).
-3. `infrastructure/cloudflare/ai-trading` (this root) — reads `one_time_pin_idp_id` from step 2's state.
+1. `infrastructure/gcp/ai-trading` (identities and static buckets).
+2. `infrastructure/cloudflare/ai-trading` (this root). Do not apply `zero-trust` for Release 1.
 
 ## Workflow
 
-`.github/workflows/ai-trading-infra.yml` validates all three Terraform roots on pull requests to `dev`, and on push to `main` or manual dispatch plans (and, with `apply: true` on dispatch, applies) `cloudflare/zero-trust` then `cloudflare/ai-trading` in order, authenticated to GCP via the `ai-trading-terraform` workload identity pool.
+`.github/workflows/ai-trading-infra.yml` validates all three Terraform roots on pull requests to `dev`, but on push to `main` or manual dispatch plans (and, with `apply: true`, applies) **only** `cloudflare/ai-trading`, authenticated to GCP via the `ai-trading-terraform` workload identity pool.
 
 No plan artifact is uploaded, because plan files contain variable values and this repository is public.
 
 ## Local apply
 
-Install Terraform, or prefix each `terraform` command with `docker run --rm -it -v "$PWD":/w -w /w/infrastructure/cloudflare/ai-trading -v ~/.config/gcloud:/root/.config/gcloud hashicorp/terraform:latest`.
+Install Terraform, or run it in Docker with the repo mounted. For Docker, get `GOOGLE_OAUTH_ACCESS_TOKEN` from `CLOUDSDK_ACTIVE_CONFIG_NAME=personal gcloud auth print-access-token` and pass it with `-e`; pass the Cloudflare token and `TF_VAR_*` values from `family_config.py run` with `-e` as well. Never mount the default gcloud configuration (the work account).
 
 ```bash
 cd infrastructure/cloudflare/ai-trading
@@ -39,7 +38,7 @@ $CLI run ai-trading/cloudflare -- terraform apply -auto-approve tfplan
 rm -f tfplan
 ```
 
-`family_config.py run` adds `CLOUDFLARE_API_TOKEN`, `TF_VAR_cloudflare_account_id`, and `TF_VAR_access_allowed_emails` from the `ai-trading/cloudflare` Firestore profile to the environment. Apply `infrastructure/cloudflare/zero-trust` first; this root's `terraform_remote_state` data source reads its `one_time_pin_idp_id` output.
+`family_config.py run` adds `CLOUDFLARE_API_TOKEN`, `TF_VAR_cloudflare_account_id`, `TF_VAR_zone_name`, and `TF_VAR_mirofish_bucket_name` from the `ai-trading/cloudflare` Firestore profile. No Access IDP or allowed-email variable is required by this root.
 
 After the first apply, fetch the tunnel token for local/manual use from the Cloudflare API (the deploy workflow does this automatically in `render-env.sh`):
 

@@ -1,6 +1,6 @@
 # ai-trading Production Runbook
 
-Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel. Caddy and Clerk enforce the family session on every upstream route; Cloudflare Access is declared but is not a substitute for this gate. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`. Infrastructure as code: `ai-trading/plans/subplans/01c-release-1-infra-plan.md`.
+Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel. Caddy and Clerk enforce the family session on every upstream route; Cloudflare Access is deferred. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`. Infrastructure as code: `ai-trading/plans/subplans/01c-release-1-infra-plan.md`.
 
 | Service | Reached at | Notes |
 |---|---|---|
@@ -23,7 +23,7 @@ Every secret and environment value lives in one Firestore database, `family-conf
 1. State bucket: `CLOUDSDK_ACTIVE_CONFIG_NAME=personal infrastructure/gcp/bootstrap-state.sh --project tobytran-portfolio --bucket tobytran-portfolio-tfstate`.
 2. Apply `infrastructure/gcp/ai-trading` (creates the `ai-trading-deploy` and `ai-trading-terraform` workload identity pools, their service accounts, the static-hosting buckets, and grants both service accounts `roles/datastore.viewer` so CI can read Firestore — one root, one operator-reviewed `terraform plan`/`apply`, not a second apply). See that root's README for the access-token apply steps. Do this before any push to `main` that would run `ai-trading-deploy.yml`/`ai-trading-infra.yml`'s Firestore reads — they fail with a permission error until this root's `datastore.viewer` grants are applied.
 3. Create the `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, `ai-trading/gateway`, `ai-trading/clerk`, `ai-trading/cloudflare`, and `ai-trading/deploy` profiles in Firestore (see "Editing values" below); `ai-trading/cloudflare` must exist before any Terraform apply that reads Cloudflare values out of it, and before the first deploy.
-4. Apply `infrastructure/cloudflare/zero-trust`, then `infrastructure/cloudflare/ai-trading`, through `common/config/family_config.py run ai-trading/cloudflare -- terraform ...` (see those roots' READMEs).
+4. Apply only `infrastructure/cloudflare/ai-trading` through `common/config/family_config.py run ai-trading/cloudflare -- terraform ...` (see that root's README). Zero Trust/Access requires separate future approval and onboarding.
 5. Release to `main` with ai-trading paths only (never merge all of `dev` into `main`). The push runs `ai-trading-deploy`, which builds images, pushes them to GHCR, and deploys to the VPS, which renders its own env files from Firestore.
 
 ## Editing values
