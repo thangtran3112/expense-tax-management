@@ -26,8 +26,14 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Clerk user/org mappings and Foundry operator roles provisioned; signed webhook delivery/replay verified.
 - Authenticated production smoke passed 13/13.
 - Release 2026-10-05 (`main` `d7426e5`, expense only; ai-trading stays on `dev`) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert: `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B, and family-config runtime env (the VPS loads the production profile from Firestore at deploy time).
-- Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`). Dispatch routing advanced to generation 2 on 2026-10-06: new jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`); generation 1 had nothing to drain, and the Python `ai-worker` is idle. Remaining: Stage C Python removal (runbook Phase 3) after real jobs complete on the TypeScript worker.
-- Clerk production Google sign-in uses a custom OAuth client in GCP project `expense-tax-tobytran-2026` (Google Auth Platform app `Family Expense Tax`); its ID/secret live in Firestore `expense-tax-management/ops` (`CLERK_GOOGLE_OAUTH_CLIENT_*`).
+- Releases 2026-10-06 (#31) and 2026-10-07 (#33, `main` `0a8831b`) are deployed:
+  - web session wiring: Capture/Office sessions, scopes endpoint, CORS, auto-upload, public `/privacy`;
+  - first-upload fixes: App API 2s job-dispatch loop, Capture duplicate-upload guard, OCR bytes kept out of Temporal history, app-owned storage volumes.
+- Expense-only releases now cherry-pick the `dev` squash commits onto `main`, because `dev` carries ai-trading changes in shared paths.
+- Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`).
+- Dispatch routing advanced to generation 2 on 2026-10-06. New jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`); the Python `ai-worker` is idle.
+- Real Capture OCR jobs completed on the TypeScript worker on 2026-10-07. Remaining: Stage C Python removal (runbook Phase 3).
+- Clerk production Google sign-in uses a custom OAuth client in GCP project `expense-tax-tobytran-2026` (Google Auth Platform app `Family Expense Tax`, published "In production"). Its ID/secret live in Firestore `expense-tax-management/ops` (`CLERK_GOOGLE_OAUTH_CLIENT_*`).
 
 ## Boundaries
 
