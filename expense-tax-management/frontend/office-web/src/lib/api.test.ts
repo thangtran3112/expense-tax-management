@@ -14,6 +14,7 @@ import {
   fetchTenantMembership,
   fetchAuthorizedBusinesses,
   fetchOwnPersonalProfile,
+  fetchTenantScopes,
   fetchMailboxConnection,
   startMailboxConnection,
 } from "./api";
@@ -491,6 +492,34 @@ describe("fetchOwnPersonalProfile", () => {
     const result = await fetchOwnPersonalProfile(businessSession, getToken, "org_123", client as never);
 
     expect(result).toBeNull();
+  });
+});
+
+describe("fetchTenantScopes", () => {
+  it("returns the combined scopes body for the Settings scope picker", async () => {
+    const scopes = {
+      personalProfiles: [{ id: "profile-1", tenantId: "tenant-1", name: "Personal", version: 1, createdAt: "t", updatedAt: "t" }],
+      businesses: [{ id: "biz-1", name: "Tran Studio", status: "active" }],
+    };
+    const client = { GET: vi.fn().mockResolvedValue({ data: scopes }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+
+    const result = await fetchTenantScopes(businessSession, getToken, "org_123", client as never);
+
+    expect(client.GET).toHaveBeenCalledWith(
+      "/api/v1/tenants/{tenantId}/scopes",
+      expect.objectContaining({ params: { path: { tenantId: "tenant-1" } } }),
+    );
+    expect(result).toEqual(scopes);
+  });
+
+  it("throws when App API returns no body", async () => {
+    const client = { GET: vi.fn().mockResolvedValue({ data: undefined, response: { status: 500 } }) };
+    const getToken = vi.fn().mockResolvedValue("office-token");
+
+    await expect(fetchTenantScopes(businessSession, getToken, "org_123", client as never)).rejects.toThrow(
+      "Profile and business list unavailable",
+    );
   });
 });
 

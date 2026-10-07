@@ -386,7 +386,19 @@ export interface FilesDomain {
 export function createFilesDomain(
   database: Kysely<AppDatabase>,
   storage: StorageAdapter,
-  deps: { readonly mailboxScanner: MailboxStagingScanner },
+  deps: {
+    readonly mailboxScanner: MailboxStagingScanner;
+    /**
+     * Web session wiring design (2026-10-06) -- the worker must download
+     * files from inside the Docker network, an origin the browser-facing
+     * `storage` adapter's base URL (STORAGE_LOCAL_BASE_URL, the public API
+     * origin) may not be reachable from. When provided, issueWorkerReadUrl
+     * issues its read URL through this adapter instead (production:
+     * STORAGE_INTERNAL_BASE_URL, e.g. http://app-api:8100). Defaults to
+     * `storage` -- today's behavior -- when omitted.
+     */
+    readonly workerStorage?: StorageAdapter;
+  },
 ): FilesDomain {
   async function requireBoundExpense(
     transaction: Transaction<AppDatabase>,
@@ -1010,7 +1022,7 @@ export function createFilesDomain(
         if (!row || row.status === "DELETED") throw DomainError.notFound();
         if (row.status !== "READY") throw DomainError.conflict();
         const expiresAt = new Date(Date.now() + FILE_READ_URL_TTL_MS);
-        const issued = await storage.issueReadUrl({
+        const issued = await (deps?.workerStorage ?? storage).issueReadUrl({
           fileId: row.id,
           storageKey: row.storage_key,
           expiresAt,

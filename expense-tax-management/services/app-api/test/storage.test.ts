@@ -269,6 +269,71 @@ describe("local adapter base URL", () => {
   });
 });
 
+describe("browser-facing vs internal (worker) read URLs", () => {
+  // Web session wiring design (2026-10-06): production wires two adapter
+  // instances from the same local-storage backend, one for the browser
+  // (STORAGE_LOCAL_BASE_URL, the public API origin) and one for the
+  // worker's internal read URLs (STORAGE_INTERNAL_BASE_URL, e.g.
+  // http://app-api:8100) -- see src/app.ts's workerStorageAdapter and
+  // domain/files.ts's issueWorkerReadUrl. Same signing key, same
+  // fileId/storageKey, different origin.
+  it("issues a different-origin, still-valid read URL per adapter", async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const browserAdapter = createLocalStorageAdapter({
+      rootDir: "/tmp/x",
+      baseUrl: "https://expense-api.example",
+      signingKey: SIGNING_KEY,
+    });
+    const internalAdapter = createLocalStorageAdapter({
+      rootDir: "/tmp/x",
+      baseUrl: "http://app-api:8100",
+      signingKey: SIGNING_KEY,
+    });
+
+    const browserRead = await browserAdapter.issueReadUrl({
+      fileId: FILE_ID,
+      storageKey: "k",
+      expiresAt,
+    });
+    const internalRead = await internalAdapter.issueReadUrl({
+      fileId: FILE_ID,
+      storageKey: "k",
+      expiresAt,
+    });
+
+    const browserUrl = new URL(browserRead.url);
+    const internalUrl = new URL(internalRead.url);
+    expect(browserUrl.origin).toBe("https://expense-api.example");
+    expect(internalUrl.origin).toBe("http://app-api:8100");
+    expect(browserUrl.pathname).toBe(internalUrl.pathname);
+
+    for (const url of [browserUrl, internalUrl]) {
+      expect(
+        verifyContentSignature({
+          signingKey: SIGNING_KEY,
+          method: "GET",
+          fileId: FILE_ID,
+          expiresEpochSec: Number(url.searchParams.get("expires")),
+          signature: url.searchParams.get("signature") ?? "",
+          nowEpochSec: toEpochSec(new Date()),
+        }),
+      ).toBe("valid");
+    }
+  });
+
+  it("falls back to one adapter (today's behavior) when no internal base URL is configured", async () => {
+    const adapter = createLocalStorageAdapter({
+      rootDir: "/tmp/x",
+      baseUrl: "https://expense-api.example",
+      signingKey: SIGNING_KEY,
+    });
+    const expiresAt = new Date(Date.now() + 60_000);
+    const browserRead = await adapter.issueReadUrl({ fileId: FILE_ID, storageKey: "k", expiresAt });
+    const workerRead = await adapter.issueReadUrl({ fileId: FILE_ID, storageKey: "k", expiresAt });
+    expect(new URL(browserRead.url).origin).toBe(new URL(workerRead.url).origin);
+  });
+});
+
 describe("storage factory", () => {
   it("builds the local adapter and refuses GCS until the infrastructure gate", () => {
     const local = createStorageAdapter({

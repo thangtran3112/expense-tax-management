@@ -679,6 +679,28 @@ export async function fetchOwnPersonalProfile(
   return result.data.profile;
 }
 
+/**
+ * Web session wiring design (2026-10-06) -- the Settings scope picker's
+ * authorized choices in one call: the caller's own personal profile (0 or
+ * 1) and every active business they have a membership on.
+ */
+export async function fetchTenantScopes(
+  session: OfficeSession,
+  getToken: ClerkGetToken,
+  organizationId: string | null | undefined,
+  client?: AppApiClient,
+) {
+  const api = client ?? createAppApiClient(session.apiBaseUrl);
+  const result = await api.GET("/api/v1/tenants/{tenantId}/scopes", {
+    params: { path: { tenantId: session.tenantId } },
+    headers: await getAppAuthorization(getToken, organizationId),
+  });
+  if (!result.data) {
+    throw new MailboxConnectionError("Profile and business list unavailable", result.response?.status);
+  }
+  return result.data;
+}
+
 // ------------------------------------------------------------------ //
 // Mailbox scan history + manual trigger (Phase 3D-B Task 5)
 // ------------------------------------------------------------------ //
