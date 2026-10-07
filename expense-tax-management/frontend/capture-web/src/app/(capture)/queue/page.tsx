@@ -43,6 +43,7 @@ export default function QueuePage() {
     if (!session) {
       await updateQueue({ ...item, status: "failed", error: "Capture session unavailable" });
     } else {
+      await updateQueue({ ...item, status: "queued", error: null });
       await processQueueItem(session, item, getToken, organization?.id);
     }
     setBusy(null);

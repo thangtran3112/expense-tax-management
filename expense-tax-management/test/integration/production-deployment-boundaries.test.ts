@@ -643,6 +643,32 @@ esac
     expect(services).toContain("workflow-worker");
   });
 
+  it("creates and chowns every app-api volume destination before USER app (prevents root-owned named volumes)", () => {
+    const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+      services: Record<string, { volumes?: string[] }>;
+    };
+    const dockerfile = readFileSync(
+      path.join(repoRoot, "services/app-api/Dockerfile"),
+      "utf8",
+    );
+    const userAppIndex = dockerfile.lastIndexOf("\nUSER app");
+    expect(userAppIndex).toBeGreaterThan(-1);
+    const beforeUserApp = dockerfile.slice(0, userAppIndex);
+
+    const volumeDestinations = (compose.services["app-api"].volumes ?? []).map(
+      (mount) => mount.split(":")[1],
+    );
+    expect(volumeDestinations.length).toBeGreaterThan(0);
+    const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const destination of volumeDestinations) {
+      const escaped = escape(destination);
+      const mkdirLine = new RegExp(`mkdir -p[^\\n]*${escaped}(\\s|$)`, "m");
+      const chownLine = new RegExp(`chown app:app[^\\n]*${escaped}(\\s|$)`, "m");
+      expect(beforeUserApp).toMatch(mkdirLine);
+      expect(beforeUserApp).toMatch(chownLine);
+    }
+  });
+
   it("requires both workers running in health-check.sh via a configurable, both-by-default list", () => {
     const health = readProductionFile("health-check.sh");
     expect(health).toContain("HEALTH_CHECK_REQUIRED_WORKERS");

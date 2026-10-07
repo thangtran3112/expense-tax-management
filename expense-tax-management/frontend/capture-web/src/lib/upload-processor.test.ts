@@ -3,7 +3,7 @@ import "fake-indexeddb/auto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { enqueue, listQueue } from "./queue";
+import { enqueue, listQueue, updateQueue } from "./queue";
 import type { CaptureSession } from "./session";
 
 vi.mock("./api", () => ({ uploadQueuedReceipt: vi.fn() }));
@@ -55,6 +55,45 @@ describe("processQueueItem", () => {
     const [updated] = await listQueue();
     expect(updated).toMatchObject({ status: "queued" });
     spy.mockRestore();
+  });
+
+  it("concurrent processQueueItem calls for the same item upload only once", async () => {
+    let resolveUpload!: (value: { fileId: string; jobId: string }) => void;
+    vi.mocked(uploadQueuedReceipt).mockReturnValue(
+      new Promise((resolve) => {
+        resolveUpload = resolve;
+      }),
+    );
+    const item = await enqueue(new File(["x"], "r.jpg", { type: "image/jpeg" }), "ocr_mode_balanced");
+
+    const first = processQueueItem(session, item, getToken, "org_1");
+    const second = processQueueItem(session, item, getToken, "org_1");
+    resolveUpload({ fileId: "file-1", jobId: "job-1" });
+    await Promise.all([first, second]);
+
+    expect(uploadQueuedReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not upload when the stored item is already processing (stale snapshot)", async () => {
+    const item = await enqueue(new File(["x"], "r.jpg", { type: "image/jpeg" }), "ocr_mode_balanced");
+    await updateQueue({ ...item, status: "processing" });
+
+    await processQueueItem(session, item, getToken, "org_1");
+
+    expect(uploadQueuedReceipt).not.toHaveBeenCalled();
+  });
+
+  it("uploads a failed item once it has been reset to queued", async () => {
+    vi.mocked(uploadQueuedReceipt).mockResolvedValue({ fileId: "file-1", jobId: "job-1" });
+    const item = await enqueue(new File(["x"], "r.jpg", { type: "image/jpeg" }), "ocr_mode_balanced");
+    await updateQueue({ ...item, status: "failed", error: "network down" });
+    await updateQueue({ ...item, status: "queued", error: null });
+
+    await processQueueItem(session, item, getToken, "org_1");
+
+    expect(uploadQueuedReceipt).toHaveBeenCalledTimes(1);
+    const [updated] = await listQueue();
+    expect(updated).toMatchObject({ status: "processing", fileId: "file-1" });
   });
 });
 
