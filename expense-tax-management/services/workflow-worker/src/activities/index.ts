@@ -14,6 +14,35 @@ function permanentClientFailure(error: unknown): boolean {
     error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);
 }
 
+async function downloadAndVerifyReceipt(
+  appApi: AppApiClient,
+  input: { fileId: string; expectedSha256: string | null },
+): Promise<Uint8Array> {
+  const data = await appApi.downloadFile(input.fileId);
+  if (input.expectedSha256 !== null &&
+    createHash("sha256").update(data).digest("hex") !== input.expectedSha256) {
+    throw new Error("downloaded bytes do not match the confirmed file hash");
+  }
+  return data;
+}
+
+async function runExtraction(
+  extractReceipt: ActivityDependencies["extractReceipt"],
+  data: Uint8Array,
+): Promise<OcrExtractionResultV1> {
+  let extracted: OcrExtractionResultV1;
+  try {
+    extracted = await extractReceipt(data);
+  } catch {
+    throw ApplicationFailure.retryable("OCR extraction failed", "OcrExtractionTransient");
+  }
+  try {
+    return OcrExtractionResultV1Schema.parse(extracted);
+  } catch {
+    throw ApplicationFailure.nonRetryable("OCR extraction result invalid", "OcrExtractionMalformed");
+  }
+}
+
 export interface ActivityDependencies {
   readonly appApi: AppApiClient;
   readonly foundry: FoundryClient;
@@ -56,12 +85,14 @@ export function createActivities({ appApi, foundry, extractReceipt }: ActivityDe
       return appApi.getOcrInput(input.jobReference.jobId);
     },
     async ocr_download_receipt(input: { fileId: string; expectedSha256: string | null }) {
-      const data = await appApi.downloadFile(input.fileId);
-      if (input.expectedSha256 !== null &&
-        createHash("sha256").update(data).digest("hex") !== input.expectedSha256) {
-        throw new Error("downloaded bytes do not match the confirmed file hash");
-      }
-      return data;
+      return downloadAndVerifyReceipt(appApi, input);
+    },
+    // Bug fix (2026-10-07): verify-only counterpart to ocr_download_receipt
+    // used by the "ocr-receipt-bytes-in-activity" workflow path -- the
+    // bytes never leave this activity, so Temporal history only records
+    // the input (fileId/hash) and the void result.
+    async ocr_verify_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<void> {
+      await downloadAndVerifyReceipt(appApi, input);
     },
     async ocr_resolve_route(input: { modeKey: "ocr_mode_fast" | "ocr_mode_balanced" | "ocr_mode_accurate" }) {
       return foundry.getEffectiveRoute({ operation: "RECEIPT_OCR", modeKey: input.modeKey });
@@ -87,17 +118,15 @@ export function createActivities({ appApi, foundry, extractReceipt }: ActivityDe
       return 1;
     },
     async ocr_run_extraction(input: { data: Uint8Array }) {
-      let extracted: OcrExtractionResultV1;
-      try {
-        extracted = await extractReceipt(input.data);
-      } catch {
-        throw ApplicationFailure.retryable("OCR extraction failed", "OcrExtractionTransient");
-      }
-      try {
-        return OcrExtractionResultV1Schema.parse(extracted);
-      } catch {
-        throw ApplicationFailure.nonRetryable("OCR extraction result invalid", "OcrExtractionMalformed");
-      }
+      return runExtraction(extractReceipt, input.data);
+    },
+    // Bug fix (2026-10-07): downloads and extracts in one activity call so
+    // the receipt bytes stay in-process instead of round-tripping through
+    // the workflow (and its Temporal history) as ocr_run_extraction's
+    // input/output used to.
+    async ocr_extract_receipt(input: { fileId: string; expectedSha256: string | null }) {
+      const data = await downloadAndVerifyReceipt(appApi, input);
+      return runExtraction(extractReceipt, data);
     },
     async ocr_record_accepted(input: { reservationId: string }): Promise<void> {
       await foundry.recordOutcome(input.reservationId, 1, { outcome: "accepted" });
