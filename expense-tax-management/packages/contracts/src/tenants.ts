@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SmallBusinessSchema } from "./businesses.js";
 import {
   PersonalMembershipSchema,
   TenantMembershipSchema,
@@ -75,3 +76,18 @@ export const TenantListSchema = z.strictObject({
 });
 
 export type TenantList = z.infer<typeof TenantListSchema>;
+
+/**
+ * Web session wiring design (2026-10-06) -- the caller's authorized scope
+ * choices in one tenant: personal profiles the caller has an active
+ * personal-membership on (0 or 1 -- personal_profiles_tenant_unique), and
+ * businesses the caller has an active business-membership on. Tenant role
+ * alone never grants either (repository rule); a non-member gets the same
+ * denial as GET /api/v1/tenants/{tenantId}, not an empty scopes body.
+ */
+export const TenantScopesSchema = z.strictObject({
+  personalProfiles: z.array(PersonalProfileSchema),
+  businesses: z.array(SmallBusinessSchema),
+});
+
+export type TenantScopes = z.infer<typeof TenantScopesSchema>;

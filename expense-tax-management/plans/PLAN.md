@@ -1,6 +1,6 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Runtime TypeScript Temporal migration Tasks 1-6 and Task 7 Stage A merged, Task 7 Stage B source merged (TypeScript worker idle in production Compose); operator cutover (shared Temporal activation, release, advance, drain) and Stage C Python removal remain. Phase 3C implemented on `dev`, not deployed. Phase 3D-A, 3D-B, and 3D-C merged; none deployed, operator activation pending. VPS backup/restore tooling merged, operator activation pending. Env and secrets for all family-app apps live in Firestore `family-config` (`common/config/family_config.py`); the production deploy path that reads it ships with the next release.
+> **Status:** Production foundation complete. Release 2026-10-05 (`main` `d7426e5`, expense only) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert, `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B with shared Temporal active, and family-config runtime env (Firestore `family-config`, `common/config/family_config.py`). Runtime migration Phase 2 is done (2026-10-06): generation 2 routes new jobs to the TypeScript worker; generation 1 had nothing to drain. Remaining: Stage C Python removal, 3D operator activation, and VPS backup tooling activation.
 > **Last updated:** 2026-10-04
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 

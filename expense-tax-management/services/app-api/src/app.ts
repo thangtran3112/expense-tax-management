@@ -52,6 +52,7 @@ import {
   registerDatabasePlugin,
   type DatabaseReadinessProbe,
 } from "./plugins/database.js";
+import { registerCors } from "./plugins/cors.js";
 import { registerGatewayHardening } from "./plugins/gateway-hardening.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerBusinessRoutes } from "./routes/businesses.js";
@@ -357,6 +358,21 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       baseUrl: options.config.storage.baseUrl,
       urlSigningKey: options.config.storage.urlSigningKey,
     });
+  // Web session wiring design (2026-10-06) -- a second adapter, same
+  // backend/signing key, differing only in base URL, for the worker's
+  // internal read URLs (STORAGE_INTERNAL_BASE_URL). Falls back to the
+  // same browser-facing base URL (today's behavior) when unset. Built
+  // only when the default adapter is in play: a caller supplying its own
+  // `storageAdapter` test double also controls `filesDomain` directly if
+  // it needs worker-read coverage.
+  const workerStorageAdapter =
+    options.storageAdapter ??
+    createStorageAdapter({
+      backend: options.config.storage.backend,
+      localDir: options.config.storage.localDir,
+      baseUrl: options.config.storage.internalBaseUrl ?? options.config.storage.baseUrl,
+      urlSigningKey: options.config.storage.urlSigningKey,
+    });
   const filesDomain =
     options.filesDomain ??
     createFilesDomain(database, storageAdapter, {
@@ -364,6 +380,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         storageAdapter,
         options.malwareScanner ?? PatternMalwareScanner,
       ),
+      workerStorage: workerStorageAdapter,
     });
 
   app.setValidatorCompiler(validatorCompiler);
@@ -396,6 +413,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
 
   registerErrorHandlers(app);
+  // Before gateway hardening: an allowed-origin OPTIONS preflight must
+  // short-circuit here (never rate-limited, never a 404 for a path with
+  // no registered OPTIONS route).
+  registerCors(app, {
+    allowedOrigins: options.config.corsAllowedOrigins ?? [],
+  });
   registerGatewayHardening(app);
   registerAuthPlugin(app, {
     authVerifiers:
@@ -426,6 +449,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.register(registerTenantRoutes, {
     identityResolver: identityDomain,
     tenantDomain,
+    businessDomain,
   });
   app.register(registerMembershipRoutes, {
     identityResolver: identityDomain,

@@ -157,6 +157,7 @@ step below that needs the production profile:
 ```bash
 etm_compose() {
   sudo env FAMILY_CONFIG_CREDENTIALS=/etc/family-app/config-reader.json \
+    IMAGE_TAG="$(cat /opt/expense-tax-management/app/deployed-image-tag)" \
     /opt/expense-tax-management/app/family_config.py run expense-tax-management/production --env-file-var PRODUCTION_ENV_FILE -- \
     sh -c 'docker compose --project-name expense-tax-production --env-file "$PRODUCTION_ENV_FILE" -f /opt/expense-tax-management/app/docker-compose.yml "$@"' sh "$@"
 }

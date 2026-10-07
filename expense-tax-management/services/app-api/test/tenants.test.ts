@@ -1,8 +1,10 @@
 import {
   TenantBootstrapSchema,
   TenantListSchema,
+  TenantScopesSchema,
   TenantSchema,
   type AuthenticatedUser,
+  type SmallBusiness,
   type Tenant,
   type TenantBootstrap,
 } from "@expense-tax/contracts";
@@ -37,6 +39,7 @@ const USER_IDS = {
 } as const;
 const TENANT_ID = "44444444-4444-4444-8444-444444444444";
 const PROFILE_ID = "55555555-5555-4555-8555-555555555555";
+const BUSINESS_ID = "77777777-7777-4777-8777-777777777777";
 const TIMESTAMP = "2026-09-08T00:00:00.000Z";
 
 const TENANT: Tenant = {
@@ -77,6 +80,18 @@ const BOOTSTRAP: TenantBootstrap = {
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
   },
+};
+const BUSINESS: SmallBusiness = {
+  id: BUSINESS_ID,
+  tenantId: TENANT_ID,
+  name: "Corner Cafe",
+  industryCode: "restaurant",
+  timezone: "America/New_York",
+  baseCurrency: "USD",
+  status: "active",
+  version: 1,
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
 };
 
 function authenticatedUser(subject: string): AuthenticatedUser | null {
@@ -143,6 +158,15 @@ describe("App API tenant routes", () => {
         version: input.request.expectedVersion + 1,
       };
     });
+    const listOwnPersonalProfiles = vi.fn(async (actorUserId: string, tenantId: string) => {
+      if (tenantId !== TENANT_ID) throw DomainError.notFound();
+      if (actorUserId === USER_IDS.member) return [];
+      return [BOOTSTRAP.personalProfile];
+    });
+    const businessList = vi.fn(async (_actorUserId: string, tenantId: string) => {
+      if (tenantId !== TENANT_ID) return [];
+      return [BUSINESS];
+    });
     const resolve = vi.fn(async (_issuer: string, subject: string) =>
       authenticatedUser(subject),
     );
@@ -159,10 +183,18 @@ describe("App API tenant routes", () => {
       logger: false,
       authVerifiers: { tenant: tenantVerifier, service: serviceVerifier },
       identityDomain: { provision: vi.fn(), resolve },
-      tenantDomain: { create, list, get, update },
+      tenantDomain: { create, list, get, update, listOwnPersonalProfiles },
+      businessDomain: {
+        archive: vi.fn(),
+        create: vi.fn(),
+        get: vi.fn(),
+        list: businessList,
+        listIndustries: vi.fn(),
+        update: vi.fn(),
+      },
     });
     apps.add(app);
-    return { app, create, get, list, resolve, update };
+    return { app, create, get, list, listOwnPersonalProfiles, businessList, resolve, update };
   }
 
   function auth(token: string): Record<string, string> {
@@ -289,5 +321,63 @@ describe("App API tenant routes", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  describe("GET /api/v1/tenants/:tenantId/scopes", () => {
+    it("returns the caller's own personal profile and member businesses", async () => {
+      const { app, listOwnPersonalProfiles, businessList } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${TENANT_ID}/scopes`,
+        headers: auth("owner"),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(TenantScopesSchema.parse(response.json())).toEqual({
+        personalProfiles: [BOOTSTRAP.personalProfile],
+        businesses: [BUSINESS],
+      });
+      expect(listOwnPersonalProfiles).toHaveBeenCalledWith(USER_IDS.owner, TENANT_ID);
+      expect(businessList).toHaveBeenCalledWith(USER_IDS.owner, TENANT_ID);
+    });
+
+    it("omits the personal profile for a tenant member without a personal membership", async () => {
+      const { app } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${TENANT_ID}/scopes`,
+        headers: auth("member"),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(TenantScopesSchema.parse(response.json())).toEqual({
+        personalProfiles: [],
+        businesses: [BUSINESS],
+      });
+    });
+
+    it("denies a non-member the same way GET /api/v1/tenants/:tenantId does", async () => {
+      const { app } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/66666666-6666-4666-8666-666666666666/scopes`,
+        headers: auth("owner"),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it("rejects an unprovisioned/service identity, same as every other tenant route", async () => {
+      const { app, listOwnPersonalProfiles, businessList } = createTestApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/tenants/${TENANT_ID}/scopes`,
+        headers: auth("unknown"),
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(listOwnPersonalProfiles).not.toHaveBeenCalled();
+      expect(businessList).not.toHaveBeenCalled();
+    });
   });
 });
