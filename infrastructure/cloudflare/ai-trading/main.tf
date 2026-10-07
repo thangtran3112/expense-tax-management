@@ -88,8 +88,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "ai_trading" {
         service  = "http://web:3000"
       },
       {
+        # Vibe's whole hostname goes through the same Clerk-verified Caddy
+        # gateway. Its own API key remains an additional upstream check.
         hostname = var.vibe_trading_hostname
-        service  = "http://vibe-trading:8899"
+        service  = "http://gateway:8080"
       },
       {
         # hub-static-variables.tf's hub_origin_hostname: unrouted BY THE

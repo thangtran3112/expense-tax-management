@@ -193,6 +193,9 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   expired_cookie="$(sign_smoke_cookie "$key" smoke@example.test -10)"
 
   expect_status 401 http://127.0.0.1:18080/u/tradingagents/
+  # Vibe's dedicated hostname must cross this same Clerk/Caddy gate, not
+  # reach its upstream API directly through the tunnel.
+  expect_status 401 http://127.0.0.1:18080/live -H 'Host: vibe-trading.tobytran.dev'
   expect_status 403 http://127.0.0.1:18080/__auth/session \
     -X POST -H 'Origin: https://evil.example.test' -H 'Content-Type: application/json' -d '{}'
   expect_status 401 http://127.0.0.1:18080/u/tradingagents/ --cookie "$expired_cookie"
@@ -221,6 +224,23 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
     http://127.0.0.1:18080/u/tradingagents/)"
   [[ "$ws_status" == "101" ]] || fail "expected 101 Switching Protocols through Caddy to a real ttyd, got $ws_status"
   echo "ok   WebSocket handshake reaches a real ttyd through Caddy with a valid cookie"
+
+  docker run -d --name smoke-vibe-gateway --network "$net" --network-alias vibe-trading \
+    -e API_AUTH_KEY=smoke-key -e 'FORWARDED_ALLOW_IPS=*' \
+    --read-only --tmpfs /tmp --tmpfs /home/vibe/.cache --tmpfs /home/vibe/.config \
+    -v /app/agent/runs -v /app/agent/sessions -v /app/agent/uploads -v /app/agent/.swarm/runs -v /home/vibe/.vibe-trading \
+    --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true \
+    "$(image vibe-trading)" >/dev/null
+  containers+=(smoke-vibe-gateway)
+  local vibe_host=(-H 'Host: vibe-trading.tobytran.dev')
+  WAIT_SECONDS=240 expect_status 200 http://127.0.0.1:18080/live "${vibe_host[@]}" --cookie "$cookie"
+  expect_status 401 http://127.0.0.1:18080/live "${vibe_host[@]}" --cookie "$expired_cookie"
+  expect_status 401 http://127.0.0.1:18080/live "${vibe_host[@]}" -H 'Cf-Access-Authenticated-User-Email: forged'
+  expect_status 200 http://127.0.0.1:18080/api/connections "${vibe_host[@]}" --cookie "$cookie" \
+    -H 'Authorization: Bearer smoke-key'
+  expect_status 200 http://127.0.0.1:18080/auth/sse-ticket "${vibe_host[@]}" --cookie "$cookie" \
+    -X POST -H 'Origin: https://vibe-trading.tobytran.dev' -H 'Authorization: Bearer smoke-key'
+  docker rm -f smoke-vibe-gateway >/dev/null
 
   docker network rm "$net" >/dev/null 2>&1 || true
 }

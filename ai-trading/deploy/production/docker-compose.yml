@@ -97,7 +97,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-    networks: [gateway, ta, ahf, mirofish]
+    networks: [gateway, ta, ahf, vibe, mirofish]
     mem_limit: 64m
     security_opt: ["no-new-privileges:true"]
     healthcheck:
@@ -129,7 +129,7 @@ services:
     command: ["tunnel", "--metrics", "0.0.0.0:2000", "run"]
     env_file:
       - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/cloudflared.env
-    networks: [hub, ta, ahf, vibe, gateway]
+    networks: [hub, gateway]
     mem_limit: 128m
     security_opt: ["no-new-privileges:true"]
 

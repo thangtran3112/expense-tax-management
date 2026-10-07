@@ -1,11 +1,11 @@
 # ai-trading Cloudflare (Tunnel + Access)
 
-Terraform for the ai-trading tunnel, its two DNS records, and the Cloudflare Access application that admits only the family's emails. State lives in `gs://tobytran-portfolio-tfstate` under prefix `cloudflare/ai-trading`. The expense tunnel is separate and untouched. The account-wide Zero Trust organization and one-time PIN login live in `infrastructure/cloudflare/zero-trust/`; this root reads the identity provider ID from there via `terraform_remote_state`.
+Terraform for the ai-trading tunnel, staging Workers/DNS, and a Cloudflare Access policy (not currently active). Caddy/Clerk, not Access, protects every VPS upstream route. State lives in `gs://tobytran-portfolio-tfstate` under prefix `cloudflare/ai-trading`. The expense tunnel is separate and untouched. The account-wide Zero Trust organization and one-time PIN login live in `infrastructure/cloudflare/zero-trust/`; this root reads the identity provider ID from there via `terraform_remote_state`.
 
 | Hostname | Routes |
 |---|---|
-| `trading.tobytran.dev` | `^/u/tradingagents(/.*)?$` to `ta-terminal:7681`; `^/u/ai-hedge-fund(/.*)?$` to `ahf-terminal:7681`; everything else to `web:3000` |
-| `vibe-trading.tobytran.dev` | `vibe-trading:8899` |
+| `trading.tobytran.dev` | `/u/*` and `/__auth/*` to Caddy `gateway:8080`; static hub paths to `web:3000` until the separately approved Worker cutover |
+| `vibe-trading.tobytran.dev` | Caddy `gateway:8080` checks the Clerk-backed cookie, then proxies all paths to `vibe-trading:8899`; Vibe's own API key remains required. |
 
 ## Token policy
 

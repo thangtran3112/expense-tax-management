@@ -360,12 +360,19 @@ CASE_COUNT=$((CASE_COUNT + 1))
 if ! docker compose version >/dev/null 2>&1; then
   echo "    SKIP: docker compose not available in this environment"
 else
-  compose_out="$TEST_ROOT/case7-config.yml"
+  compose_out="$TEST_ROOT/case7-config.json"
   if AI_TRADING_IMAGE_TAG=0000000000000000000000000000000000000000 \
      AI_TRADING_SECRETS_DIR="$s1/secrets" \
-     docker compose --project-name ai-trading -f "$COMPOSE_FILE" -f "$MIROFISH_COMPOSE_FILE" config \
-       >"$compose_out" 2>"$TEST_ROOT/case7-config.err"; then
+      docker compose --project-name ai-trading -f "$COMPOSE_FILE" -f "$MIROFISH_COMPOSE_FILE" config --format json \
+        >"$compose_out" 2>"$TEST_ROOT/case7-config.err"; then
     grep -q '0000000000000000000000000000000000000000' "$compose_out" || fail "case7: compose config output missing the fake image tag"
+    python3 - "$compose_out" <<'PY' || fail 'case7: cloudflared must reach upstream networks through Caddy only'
+import json, sys
+services = json.load(open(sys.argv[1]))['services']
+upstream_networks = {'ta', 'ahf', 'vibe', 'mirofish'}
+assert upstream_networks <= set(services['gateway']['networks'])
+assert not upstream_networks & set(services['cloudflared']['networks'])
+PY
   else
     fail "case7: docker compose config failed: $(cat "$TEST_ROOT/case7-config.err")"
   fi

@@ -1,13 +1,13 @@
 # ai-trading Production Runbook
 
-Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel and Cloudflare Access application. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`. Infrastructure as code: `ai-trading/plans/subplans/01c-release-1-infra-plan.md`.
+Release 1 runs the Trading Hub and three unmodified upstream apps on one host behind a dedicated Cloudflare Tunnel. Caddy and Clerk enforce the family session on every upstream route; Cloudflare Access is declared but is not a substitute for this gate. Design: `ai-trading/plans/subplans/01-release-1-hub-design.md`. Infrastructure as code: `ai-trading/plans/subplans/01c-release-1-infra-plan.md`.
 
 | Service | Reached at | Notes |
 |---|---|---|
 | `web` | `https://trading.tobytran.dev/` | Hub |
 | `ta-terminal` | `https://trading.tobytran.dev/u/tradingagents/` | TradingAgents in ttyd + tmux |
 | `ahf-terminal` | `https://trading.tobytran.dev/u/ai-hedge-fund/` | ai-hedge-fund in ttyd + tmux |
-| `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Upstream image with upstream hardening |
+| `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Caddy-verified hub session, then upstream API key and hardening |
 | `cloudflared` | outbound only | Tunnel connector |
 
 On the host:
@@ -83,7 +83,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 
 ## Acceptance checklist (Mac and iPad)
 
-1. Access login works on both hostnames.
+1. Clerk login on the hub grants a session cookie for both hostnames; without it both terminal routes and Vibe-Trading return 401 (including the direct origin hostname). Opening Vibe-Trading directly before signing in through the hub returns 401.
 2. The hub home page and navigation work.
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.

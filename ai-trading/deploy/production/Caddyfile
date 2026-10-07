@@ -8,6 +8,23 @@
 	auto_https off
 }
 
+# Vibe's own hostname is not allowed around the Clerk gateway. Use a
+# host-specific HTTP site before the catch-all routes so /api/* also reaches
+# Vibe rather than the separate MiroFish backend.
+http://vibe-trading.tobytran.dev:8080 {
+	route {
+		request_header -Cf-Access-Authenticated-User-Email
+		forward_auth auth:8181 {
+			uri /__auth/check
+			copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+		}
+		reverse_proxy vibe-trading:8899 {
+			# TLS ends at Cloudflare; Vibe's same-site API check needs https.
+			header_up X-Forwarded-Proto https
+		}
+	}
+}
+
 :8080 {
 	# Exact root + slash-descendant matchers, not a bare `/u/tradingagents*`
 	# prefix wildcard: a prefix wildcard also matches an unrelated sibling
