@@ -69,6 +69,22 @@ function fakeStorageAdapter(url: string): StorageAdapter {
 }
 
 describe("createFilesDomain issueWorkerReadUrl storage selection", () => {
+  it("constructs without deps, like the 2-argument integration callers", async () => {
+    const browserStorage = fakeStorageAdapter("https://expense-api.example/api/v1/file-content/x");
+    const create = createFilesDomain as unknown as (
+      database: Kysely<AppDatabase>,
+      storage: StorageAdapter,
+    ) => ReturnType<typeof createFilesDomain>;
+    const filesDomain = create(fakeDatabase(), browserStorage);
+
+    const result = await filesDomain.issueWorkerReadUrl({
+      fileId: FILE_ROW.id,
+      actorServicePrincipal: "ai-worker",
+      requestId: "req-1",
+    });
+    expect(result.url).toBe("https://expense-api.example/api/v1/file-content/x");
+  });
+
   it("issues through workerStorage when provided, never through the browser-facing adapter", async () => {
     const browserStorage = fakeStorageAdapter("https://expense-api.example/api/v1/file-content/x");
     const workerStorage = fakeStorageAdapter("http://app-api:8100/api/v1/file-content/x");

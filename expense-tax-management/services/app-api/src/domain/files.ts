@@ -400,7 +400,6 @@ export function createFilesDomain(
     readonly workerStorage?: StorageAdapter;
   },
 ): FilesDomain {
-  const workerStorage = deps.workerStorage ?? storage;
   async function requireBoundExpense(
     transaction: Transaction<AppDatabase>,
     input: { tenantId: string; scope: FileScope; expenseId: string },
@@ -1023,7 +1022,7 @@ export function createFilesDomain(
         if (!row || row.status === "DELETED") throw DomainError.notFound();
         if (row.status !== "READY") throw DomainError.conflict();
         const expiresAt = new Date(Date.now() + FILE_READ_URL_TTL_MS);
-        const issued = await workerStorage.issueReadUrl({
+        const issued = await (deps?.workerStorage ?? storage).issueReadUrl({
           fileId: row.id,
           storageKey: row.storage_key,
           expiresAt,
