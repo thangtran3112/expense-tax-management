@@ -95,6 +95,9 @@ services:
     # and using that exact value here.
     image: caddy:2-alpine
     restart: unless-stopped
+    env_file:
+      # Only VIBE_API_AUTH_KEY (derived by deploy.sh), injected for Vibe after the Clerk check.
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/vibe-gateway.env
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     networks: [gateway, ta, ahf, vibe, mirofish]
