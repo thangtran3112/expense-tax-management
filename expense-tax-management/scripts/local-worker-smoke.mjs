@@ -5,10 +5,18 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Local Clerk Development Bootstrap, Item 4: a reproducible local smoke
- * exercising both Temporal-dispatch generations end to end against the
- * real local Compose stack (real Postgres, real Temporal, real ai-worker
- * / workflow-worker containers using real Development Clerk M2M
- * credentials for their own callback into App API).
+ * exercising the TypeScript workflow-worker end to end against the real
+ * local Compose stack (real Postgres, real Temporal, real app-api /
+ * foundry-service / workflow-worker containers using real Development
+ * Clerk M2M credentials for their own callback into App API).
+ *
+ * Task 7 Stage C: the Python ai-worker is removed. A fresh (or `down
+ * -v`'d) local stack still seeds app.temporal_dispatch_routing at its
+ * legacy generation 1 (namespace "default" / queue
+ * "expense-tax-ai-worker", migration 017_temporal_dispatch_routing.ts) --
+ * now dead, since nothing polls that queue -- so this smoke always
+ * advances routing to the TypeScript target once before dispatching any
+ * job.
  *
  * Ruling: job creation calls App API's own domain layer
  * (createProcessingJobsDomain.createJob/dispatchPendingJobs, the exact
@@ -164,25 +172,19 @@ export function assertLocalDockerEndpoint(
 }
 
 /**
- * Refuses to proceed unless dispatch routing is still at its legacy
- * generation 1 (namespace "default" / queue "expense-tax-ai-worker").
- * Without this, a rerun after a prior smoke already advanced routing
- * would create "generation 1"'s job at generation 2+, so it would never
- * actually exercise the Python ai-worker's legacy-routing path, and the
- * second `advance` call would also fail the CLI's own stale-generation
- * guard. `status`'s fields carry no secrets (generation/namespace/queue
- * only), so this is safe to assert on the host.
+ * Refuses to proceed if dispatch routing is already at the TypeScript
+ * worker's target (namespace "expense-tax" / queue
+ * "expense-tax-processing"). Without this, a rerun after a prior smoke
+ * already advanced routing would fail the CLI's own stale-generation
+ * guard on the second `advance` call. `status`'s fields carry no secrets
+ * (generation/namespace/queue only), so this is safe to assert on the
+ * host.
  */
-export function assertGeneration1Routing(status) {
-  if (
-    status.generation !== 1 ||
-    status.namespace !== "default" ||
-    status.taskQueue !== "expense-tax-ai-worker"
-  ) {
+export function assertRoutingNotAtTarget(status) {
+  if (status.namespace === TARGET_NAMESPACE && status.taskQueue === TARGET_TASK_QUEUE) {
     throw new Error(
-      `refusing to run: dispatch routing is already at generation ${status.generation} ` +
-        `(namespace ${status.namespace} / queue ${status.taskQueue}), not the expected ` +
-        `legacy generation 1 (namespace default / queue expense-tax-ai-worker). Reset the ` +
+      `refusing to run: dispatch routing is already at the TypeScript target ` +
+        `(namespace ${status.namespace} / queue ${status.taskQueue}). Reset the ` +
         `disposable local stack first: ./scripts/compose.sh down -v`,
     );
   }
@@ -200,26 +202,25 @@ export function buildSmokePlan() {
     "guard:migration-database-host-local",
     "guard:runtime-database-host-local",
     "guard:clerk-credentials-present",
-    "compose:start-generation-1-services",
+    "compose:start-services",
     "database:run-app-api-migrations",
     "temporal:bootstrap-expense-tax-namespace",
-    "dispatch-routing:assert-generation-1",
-    "job:create-generation-1",
-    "job:await-python-worker-callback",
-    "dispatch-routing:advance-to-generation-2",
-    "compose:start-workflow-worker",
-    "job:create-generation-2",
+    "dispatch-routing:assert-not-at-target",
+    "dispatch-routing:advance-to-target",
+    "job:create-job",
     "job:await-typescript-worker-callback",
     "teardown:stop-started-services",
   ];
 }
 
-const GENERATION_1_SERVICES = [
+const TARGET_NAMESPACE = "expense-tax";
+const TARGET_TASK_QUEUE = "expense-tax-processing";
+const LOCAL_SERVICES = [
   "postgres",
   "temporal",
   "app-api",
   "foundry-service",
-  "ai-worker",
+  "workflow-worker",
 ];
 const WORKFLOW_WORKER_SERVICE = "workflow-worker";
 const familyRoot = path.resolve(repoRoot, "..");
@@ -254,10 +255,6 @@ function bootstrapExpenseTaxNamespace() {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-}
-
-function composeArgs(extra, { profiles = [] } = {}) {
-  return [...profiles.flatMap((profile) => ["--profile", profile]), ...extra];
 }
 
 function runCompose(args, options = {}) {
@@ -316,11 +313,10 @@ console.log(JSON.stringify(missing));
 }
 
 /**
- * Runs inside workflow-worker's own image: it is the only compose
- * service that already declares all four CLERK_*_MACHINE_SECRET_KEY /
- * issuer / jwks vars this smoke needs to check (ai-worker declares the
- * same four but is a Python image with no Node; app-api/foundry-service
- * only hold audience/subject, not the machine secret keys).
+ * Runs inside workflow-worker's own image: it is the compose service
+ * that declares all four CLERK_*_MACHINE_SECRET_KEY / issuer / jwks vars
+ * this smoke needs to check (app-api/foundry-service only hold
+ * audience/subject, not the machine secret keys).
  */
 function checkClerkCredentials() {
   return JSON.parse(
@@ -353,8 +349,8 @@ function runAppApiMigrations() {
  * Inline script, executed with real migration credentials inside the
  * Compose network (never on the host), that creates one disposable
  * foundation-echo job through App API's own domain layer, dispatches it,
- * and polls until the responsible worker (Python on generation 1,
- * TypeScript after `advance`) reaches a terminal status.
+ * and polls until the TypeScript workflow-worker reaches a terminal
+ * status.
  */
 function createJobScriptSource() {
   return `
@@ -526,12 +522,12 @@ export async function runLocalWorkerSmoke() {
   const startedServices = [];
 
   try {
-    const toStart = servicesToStart(baseline, GENERATION_1_SERVICES);
+    const toStart = servicesToStart(baseline, LOCAL_SERVICES);
     if (toStart.length > 0) {
-      runCompose(["up", "-d", "--wait", ...GENERATION_1_SERVICES]);
+      runCompose(["up", "-d", "--wait", ...LOCAL_SERVICES]);
       startedServices.push(...toStart);
     }
-    log(`PASS compose up (generation 1): ${GENERATION_1_SERVICES.join(", ")}`);
+    log(`PASS compose up: ${LOCAL_SERVICES.join(", ")}`);
 
     runAppApiMigrations();
     log("PASS App API migrations applied");
@@ -540,48 +536,27 @@ export async function runLocalWorkerSmoke() {
     log('PASS Temporal namespace "expense-tax" bootstrapped (idempotent)');
 
     const initialStatus = dispatchRoutingCommand("status");
-    assertGeneration1Routing(initialStatus);
-    log("PASS dispatch routing confirmed at generation 1 (namespace default / queue expense-tax-ai-worker)");
-
-    const runKey1 = randomUUID().slice(0, 8);
-    const generation1 = createJobAndAwaitCompletion(runKey1);
-    if (generation1.status !== "SUCCEEDED") {
-      throw new Error(`generation 1 job did not succeed: ${JSON.stringify(generation1)}`);
-    }
-    log(`PASS generation 1 job ${generation1.jobId} SUCCEEDED (Python ai-worker callback)`);
+    assertRoutingNotAtTarget(initialStatus);
+    log(
+      `PASS dispatch routing confirmed below target (namespace ${initialStatus.namespace} / queue ${initialStatus.taskQueue})`,
+    );
 
     dispatchRoutingCommand("advance", "--from-generation", String(initialStatus.generation));
     log(`PASS dispatch-routing advance --from-generation ${initialStatus.generation}`);
 
-    const workflowWorkerAlreadyRunning = runningServices().includes(
-      WORKFLOW_WORKER_SERVICE,
-    );
-    runCompose(
-      composeArgs(["up", "-d", "--wait", WORKFLOW_WORKER_SERVICE], {
-        profiles: [WORKFLOW_WORKER_SERVICE],
-      }),
-    );
-    if (!workflowWorkerAlreadyRunning) startedServices.push(WORKFLOW_WORKER_SERVICE);
-    log("PASS compose up (workflow-worker, profile-gated)");
-
-    const runKey2 = randomUUID().slice(0, 8);
-    const generation2 = createJobAndAwaitCompletion(runKey2);
-    if (generation2.status !== "SUCCEEDED") {
-      throw new Error(`generation 2 job did not succeed: ${JSON.stringify(generation2)}`);
+    const runKey = randomUUID().slice(0, 8);
+    const job = createJobAndAwaitCompletion(runKey);
+    if (job.status !== "SUCCEEDED") {
+      throw new Error(`job did not succeed: ${JSON.stringify(job)}`);
     }
-    if (
-      generation2.dispatchNamespace !== "expense-tax" ||
-      generation2.taskQueue !== "expense-tax-processing"
-    ) {
-      throw new Error(
-        `generation 2 job did not route to the TypeScript worker: ${JSON.stringify(generation2)}`,
-      );
+    if (job.dispatchNamespace !== TARGET_NAMESPACE || job.taskQueue !== TARGET_TASK_QUEUE) {
+      throw new Error(`job did not route to the TypeScript worker: ${JSON.stringify(job)}`);
     }
     log(
-      `PASS generation 2 job ${generation2.jobId} SUCCEEDED on namespace expense-tax / queue expense-tax-processing (TypeScript workflow-worker callback)`,
+      `PASS job ${job.jobId} SUCCEEDED on namespace ${TARGET_NAMESPACE} / queue ${TARGET_TASK_QUEUE} (TypeScript workflow-worker callback)`,
     );
 
-    return { generation1, generation2 };
+    return { job };
   } finally {
     if (startedServices.length > 0) {
       runCompose(["stop", ...startedServices]);
