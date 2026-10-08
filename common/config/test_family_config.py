@@ -397,9 +397,10 @@ class FamilyConfigTest(unittest.TestCase):
         code, out, err = self.cli("get", "shared/vps", "VPS_KEY", env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(code, 0, err)
         self.assertNotIn("--configuration", self.gcloud_calls()[-1][0])
-        masks = [line for line in out.splitlines() if line.startswith("::add-mask::")]
+        # stdout must be exactly the value so `get ... > file` stays a valid key file.
+        self.assertEqual(out, KEY_TEXT)
+        masks = [line for line in err.splitlines() if line.startswith("::add-mask::")]
         self.assertEqual(masks, [f"::add-mask::{line}" for line in KEY_TEXT.splitlines()])
-        self.assertTrue(out.endswith(KEY_TEXT))
 
     def test_gcloud_failure_is_reported(self):
         code, _, err = self.cli("keys", "demo/prod", env={"FAKE_GCLOUD_FAIL": "1"})
