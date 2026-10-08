@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # ai-trading upstream apps (git submodules under ai-trading/packages/), bundled
+  # into one weekly pull request to dev.
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: "chore(ai-trading)"
+    groups:
+      ai-trading-upstream:
+        patterns:
+          - "*"
