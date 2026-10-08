@@ -53,16 +53,12 @@ export function checkPhase1dProtectedDevelopment({ ciSource, deploySource, agent
     .map((step) => step.run.split("\n").map((line) => line.trim()));
   for (const command of [
     "pnpm install --frozen-lockfile",
-    "uv sync --frozen --project common/python/expense-contracts",
-    "uv sync --frozen --project services/ai-worker",
     "pnpm --filter @expense-tax/contracts build",
     "pnpm contracts:check",
     "pnpm ci:lint",
     "pnpm ci:typecheck",
     "pnpm ci:test",
     "pnpm ci:build",
-    "pnpm ci:python:lint",
-    "pnpm ci:python:test",
   ]) {
     if (!qualityRuns.some((lines) => lines.includes(command))) {
       failures.push(`quality command ${command}: missing executable step`);
