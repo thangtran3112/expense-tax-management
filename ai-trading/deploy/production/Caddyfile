@@ -21,6 +21,9 @@ http://vibe-trading.tobytran.dev:8080 {
 		reverse_proxy vibe-trading:8899 {
 			# TLS ends at Cloudflare; Vibe's same-site API check needs https.
 			header_up X-Forwarded-Proto https
+			# Clerk already verified this user, so supply Vibe's API key here
+			# (replacing any browser value); unset key -> "Bearer " -> Vibe 401s.
+			header_up Authorization "Bearer {env.VIBE_API_AUTH_KEY}"
 		}
 	}
 }

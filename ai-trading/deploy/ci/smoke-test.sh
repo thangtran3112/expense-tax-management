@@ -184,6 +184,7 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   containers+=(smoke-echo-upstream)
 
   docker run -d --name smoke-caddy --network "$net" -p 127.0.0.1:18080:8080 \
+    -e VIBE_API_AUTH_KEY=smoke-key \
     -v "$PWD/ai-trading/deploy/production/Caddyfile:/etc/caddy/Caddyfile:ro" \
     caddy:2-alpine >/dev/null
   containers+=(smoke-caddy)
@@ -236,10 +237,15 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   WAIT_SECONDS=240 expect_status 200 http://127.0.0.1:18080/live "${vibe_host[@]}" --cookie "$cookie"
   expect_status 401 http://127.0.0.1:18080/live "${vibe_host[@]}" --cookie "$expired_cookie"
   expect_status 401 http://127.0.0.1:18080/live "${vibe_host[@]}" -H 'Cf-Access-Authenticated-User-Email: forged'
+  # Caddy supplies Vibe's API key after the Clerk check: no browser key needed,
+  # and a wrong browser-sent key is replaced rather than forwarded.
+  expect_status 200 http://127.0.0.1:18080/api/connections "${vibe_host[@]}" --cookie "$cookie"
   expect_status 200 http://127.0.0.1:18080/api/connections "${vibe_host[@]}" --cookie "$cookie" \
-    -H 'Authorization: Bearer smoke-key'
+    -H 'Authorization: Bearer wrong-key'
   expect_status 200 http://127.0.0.1:18080/auth/sse-ticket "${vibe_host[@]}" --cookie "$cookie" \
-    -X POST -H 'Origin: https://vibe-trading.tobytran.dev' -H 'Authorization: Bearer smoke-key'
+    -X POST -H 'Origin: https://vibe-trading.tobytran.dev'
+  expect_status 401 http://127.0.0.1:18080/api/connections "${vibe_host[@]}" \
+    -H 'Authorization: Bearer smoke-key'
   docker rm -f smoke-vibe-gateway >/dev/null
 
   docker network rm "$net" >/dev/null 2>&1 || true
