@@ -200,3 +200,52 @@ test("dynamic path forwarding preserves WebSocket Upgrade headers", async () => 
     },
   );
 });
+
+// ttyd runs with --check-origin (Origin host must equal Host). Through the
+// Worker, Host is the origin hostname, so a same-origin upgrade must carry the
+// origin hostname as Origin; any other Origin must still reach ttyd unchanged.
+const wsRequest = (origin) =>
+  new Request("https://trading-static.tobytran.dev/u/tradingagents/ws", {
+    headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", "sec-websocket-version": "13", origin },
+  });
+
+test("same-origin WebSocket upgrade reaches origin with the origin hostname as Origin", async () => {
+  await withStubFetch(
+    () => new Response("not a real socket", { status: 200 }),
+    async (calls) => {
+      await worker.fetch(wsRequest("https://trading-static.tobytran.dev"), ENV);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, "https://trading-origin.tobytran.dev/u/tradingagents/ws");
+      const headers = new Headers(calls[0].init.headers);
+      assert.equal(headers.get("origin"), "https://trading-origin.tobytran.dev");
+      assert.equal(headers.get("upgrade"), "websocket");
+      assert.equal(headers.get("sec-websocket-key"), "dGhlIHNhbXBsZSBub25jZQ==");
+      assert.equal(calls[0].init.method ?? "GET", "GET");
+    },
+  );
+});
+
+test("cross-site WebSocket upgrade keeps its Origin so ttyd still refuses it", async () => {
+  await withStubFetch(
+    () => new Response("not a real socket", { status: 200 }),
+    async (calls) => {
+      await worker.fetch(wsRequest("https://evil.example"), ENV);
+      assert.equal(new Headers(calls[0].init.headers).get("origin"), "https://evil.example");
+    },
+  );
+});
+
+test("non-upgrade dynamic request keeps its Origin for the auth allowlist", async () => {
+  await withStubFetch(
+    () => new Response(null, { status: 204 }),
+    async (calls) => {
+      const req = new Request("https://trading-static.tobytran.dev/__auth/session", {
+        method: "POST",
+        headers: { origin: "https://trading-static.tobytran.dev", authorization: "Bearer t" },
+      });
+      await worker.fetch(req, ENV);
+      assert.equal(calls[0].init, req);
+      assert.equal(calls[0].init.headers.get("origin"), "https://trading-static.tobytran.dev");
+    },
+  );
+});
