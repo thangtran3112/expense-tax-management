@@ -33,8 +33,8 @@ export interface StartWorkflowResult {
 
 /**
  * Narrow, injectable interface over the Temporal TS client. App API only
- * ever *starts* workflows -- the Python worker owns execution (design doc
- * section 4.3) -- so this deliberately does not expose the full
+ * ever *starts* workflows -- the workflow-worker service owns execution
+ * (design doc section 4.3) -- so this deliberately does not expose the full
  * @temporalio/client surface. Tests inject a fake implementation instead of
  * needing a real Temporal server, the same DI convention `buildApp` already
  * uses for `database`/`authVerifiers`.

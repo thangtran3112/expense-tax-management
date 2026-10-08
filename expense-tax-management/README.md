@@ -4,10 +4,10 @@ Self-hosted expense management for households, freelancers, and small businesses
 
 ## Architecture
 
-- `packages/contracts`: canonical Zod contracts, OpenAPI/JSON Schema, generated clients, and generated Python DTOs.
+- `packages/contracts`: canonical Zod contracts, OpenAPI/JSON Schema, and generated TypeScript clients.
 - `services/app-api`: Fastify/Kysely customer API and sole customer-domain database owner.
 - `services/foundry-service`: Fastify/Kysely provider catalog, routing, quota, reservation, and telemetry owner.
-- `services/ai-worker`: Python Temporal workflows and data processing; no direct App/Foundry database access.
+- `services/workflow-worker`: TypeScript Temporal workflows and data processing; no direct App/Foundry database access.
 - `frontend/capture-web`: receipt capture and invitation flow.
 - `frontend/office-web`: expense, duplicate, tax, tagging, and mailbox review.
 - `frontend/foundry-web`: platform operations.
@@ -24,16 +24,12 @@ Self-hosted expense management for households, freelancers, and small businesses
 
 - Node.js 22 or newer
 - pnpm 11.9
-- Python 3.13 or newer
-- uv
 - Docker with Compose
 
 ## Setup
 
 ```bash
 pnpm install --frozen-lockfile
-uv --directory common/python/expense-contracts sync --frozen
-uv --directory services/ai-worker sync --frozen
 pnpm compose:up
 ```
 
@@ -45,8 +41,6 @@ Local values belong in `.env`; `.env.example` documents required keys.
 pnpm ci:lint
 pnpm ci:typecheck
 pnpm ci:test
-pnpm ci:python:lint
-pnpm ci:python:test
 pnpm ci:build
 pnpm contracts:check
 ```

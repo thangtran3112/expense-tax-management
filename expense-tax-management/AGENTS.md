@@ -3,7 +3,7 @@
 ## Architecture
 
 - App API + Foundry: Fastify/Zod/Kysely; separate PostgreSQL ownership.
-- Python: Temporal worker only; no direct App/Foundry DB access.
+- Temporal workers: TypeScript only (`services/workflow-worker`); no direct App/Foundry DB access.
 - Zod contracts canonical; generated files read-only.
 - Customer resources require explicit Personal/business scope authorization; tenant role alone never grants profile access.
 - Foundry rejects tenant tokens; platform authorization remains PostgreSQL-owned.
