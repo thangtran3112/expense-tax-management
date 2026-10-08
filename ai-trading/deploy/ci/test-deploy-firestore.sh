@@ -148,6 +148,8 @@ for target in "${targets[@]}"; do
     # names (A9b's activate_mirofish() contract) -- fake values only, never
     # real Zep/LLM credentials.
     printf 'ZEP_API_KEY=fake-zep-not-real\nLLM_API_KEY=fake-llm-not-real\n' >"$tmp"
+  elif [[ "$profile" == vibe-trading && "${FAKE_FC_VIBE_NO_API_KEY:-}" != 1 ]]; then
+    printf 'ANTHROPIC_API_KEY=fake-provider-not-real\nAPI_AUTH_KEY=fake-vibe-key-not-real\nFAKE_VALUE=fake-not-real-vibe-trading\n' >"$tmp"
   else
     printf 'FAKE_VALUE=fake-not-real-%s\n' "$profile" >"$tmp"
   fi
@@ -247,7 +249,7 @@ if [[ "$status" != 0 ]]; then
   fail "case1: expected exit 0, got $status"
 else
   # GNU stat -f prints filesystem data before failing; try -c first, then BSD -f.
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     f="$s1/secrets/$name"
     [[ -f "$f" ]] || { fail "case1: missing $f"; continue; }
     [[ "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)" == 600 ]] || fail "case1: $f not mode 600"
@@ -255,6 +257,8 @@ else
   grep -q 'fake-not-real-gateway' "$s1/secrets/auth.env" 2>/dev/null || fail "case1: auth.env missing renamed gateway content"
   [[ -f "$s1/secrets/gateway.env" ]] && fail "case1: gateway.env should have been renamed to auth.env, not left behind"
   grep -q 'fake-tunnel-token' "$s1/secrets/cloudflared.env" 2>/dev/null || fail "case1: cloudflared.env content mismatch"
+  # The gateway (Caddy) gets only Vibe's API key, never Vibe's provider keys.
+  [[ "$(cat "$s1/secrets/vibe-gateway.env" 2>/dev/null)" == 'VIBE_API_AUTH_KEY=fake-vibe-key-not-real' ]] || fail "case1: vibe-gateway.env must hold exactly VIBE_API_AUTH_KEY"
   shopt -s nullglob
   leftover=("$s1/secrets"/.render-*)
   shopt -u nullglob
@@ -266,7 +270,7 @@ echo "=== Case 2 (GREEN): redeploy over existing secrets -- new content wins, ol
 CASE_COUNT=$((CASE_COUNT + 1))
 s2="$(new_scratch case2)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token-v2\n' >"$s2/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s2/secrets/$name"
   chmod 0600 "$s2/secrets/$name"
 done
@@ -318,7 +322,7 @@ echo "=== Case 5 (RED->rollback): mid-stage install failure on a pre-existing de
 CASE_COUNT=$((CASE_COUNT + 1))
 s5="$(new_scratch case5)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s5/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s5/secrets/$name"
   chmod 0600 "$s5/secrets/$name"
 done
@@ -328,7 +332,7 @@ unset DEPLOY_SH_FAIL_AFTER
 if [[ "$status" == 0 ]]; then
   fail "case5: expected non-zero exit for a forced mid-stage failure, got 0"
 fi
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s5/secrets/$name" 2>/dev/null || fail "case5: $name not restored to its prior content after rollback"
 done
 shopt -s nullglob
@@ -476,7 +480,7 @@ else
   # appears contiguously in the logged command line.
   grep -q 'pull$' "$s9/app/docker.log" 2>/dev/null || fail "case9: fake docker never saw a 'compose ... pull' call"
   grep -q 'up -d' "$s9/app/docker.log" 2>/dev/null || fail "case9: fake docker never saw a 'compose ... up' call"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     f="$s9/secrets/$name"
     [[ -f "$f" ]] || { fail "case9: missing $f"; continue; }
     real_mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)"
@@ -496,7 +500,7 @@ if [[ "$status" != 0 ]]; then
 else
   [[ "$(cat "$s10/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case10: COMPOSE_PROFILES should stay unset when MIROFISH_ACTIVATE is unset"
   [[ -e "$s10/runtime/mirofish.env" ]] && fail "case10: mirofish.env should not be created when MIROFISH_ACTIVATE is unset"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s10/secrets/$name" ]] || fail "case10: missing $name -- default-disabled MiroFish path broke an unrelated app"
   done
 fi
@@ -522,7 +526,7 @@ else
   leftover=("$s11/runtime"/.mirofish-render-*)
   shopt -u nullglob
   [[ ${#leftover[@]} -eq 0 ]] || fail "case11: root-only mirofish render scratch not cleaned: ${leftover[*]}"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s11/secrets/$name" ]] || fail "case11: missing $name"
   done
 fi
@@ -545,7 +549,7 @@ else
   leftover=("$s12/runtime"/.mirofish-render-*)
   shopt -u nullglob
   [[ ${#leftover[@]} -eq 0 ]] || fail "case12: root-only mirofish render scratch not cleaned after a render failure: ${leftover[*]}"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s12/secrets/$name" ]] || fail "case12: missing $name -- a MiroFish activation failure broke an unrelated app's deploy"
   done
 fi
@@ -679,7 +683,7 @@ if [[ "$status" != 0 ]]; then
 else
   [[ "$(cat "$s18/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case18: an inherited COMPOSE_PROFILES=mirofish must not survive when MIROFISH_ACTIVATE is unset"
   grep -q 'STALE_VALUE=from-a-prior-run' "$s18/runtime/mirofish.env" 2>/dev/null || fail "case18: stale mirofish.env must stay untouched when MIROFISH_ACTIVATE is unset"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s18/secrets/$name" ]] || fail "case18: missing $name"
   done
 fi
@@ -698,7 +702,7 @@ if [[ "$status" != 0 ]]; then
 else
   [[ "$(cat "$s19/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case19: COMPOSE_PROFILES should stay unset after an install failure"
   [[ -f "$s19/runtime" ]] || fail "case19: the pre-existing plain file at the runtime path should be left untouched, not replaced"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s19/secrets/$name" ]] || fail "case19: missing $name -- an install failure broke an unrelated app's deploy"
   done
 fi
@@ -708,7 +712,7 @@ echo "=== Case 20 (RED->rollback): first-time MiroFish activation + a later stag
 CASE_COUNT=$((CASE_COUNT + 1))
 s20="$(new_scratch case20)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s20/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s20/secrets/$name"
   chmod 0600 "$s20/secrets/$name"
 done
@@ -720,7 +724,7 @@ if [[ "$status" == 0 ]]; then
   fail "case20: expected non-zero exit for a forced mid-stage failure, got 0"
 fi
 [[ -e "$s20/runtime/mirofish.env" ]] && fail "case20: mirofish.env had no prior version -- rollback should have removed it, not left it behind"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s20/secrets/$name" 2>/dev/null || fail "case20: $name not restored to its prior content after rollback"
 done
 echo "    exit=$status"
@@ -729,7 +733,7 @@ echo "=== Case 21 (RED->rollback): MiroFish already active with PRIOR content; t
 CASE_COUNT=$((CASE_COUNT + 1))
 s21="$(new_scratch case21)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s21/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s21/secrets/$name"
   chmod 0600 "$s21/secrets/$name"
 done
@@ -747,7 +751,7 @@ grep -q 'ZEP_API_KEY=prior-zep' "$s21/runtime/mirofish.env" 2>/dev/null || fail 
 grep -q 'LLM_API_KEY=prior-llm' "$s21/runtime/mirofish.env" 2>/dev/null || fail "case21: mirofish.env not restored to its PRIOR content after rollback"
 grep -q 'fake-zep-not-real' "$s21/runtime/mirofish.env" 2>/dev/null && fail "case21: mirofish.env still holds this run's NEW (fake) render after rollback"
 [[ "$(stat -c '%a' "$s21/runtime/mirofish.env" 2>/dev/null || stat -f '%Lp' "$s21/runtime/mirofish.env" 2>/dev/null)" == "600" ]] || fail "case21: restored mirofish.env is not mode 600"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s21/secrets/$name" 2>/dev/null || fail "case21: $name not restored to its prior content after rollback"
 done
 echo "    exit=$status"
@@ -772,7 +776,7 @@ if [[ "$status22b" != 0 ]]; then
 else
   [[ "$(cat "$s22/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case22: second (disabled) redeploy must not carry over COMPOSE_PROFILES=mirofish"
   [[ "$(cat "$s22/runtime/mirofish.env" 2>/dev/null)" == "$first_content" ]] || fail "case22: a disabled redeploy must not touch the stale mirofish.env from the earlier activation"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s22/secrets/$name" ]] || fail "case22: missing $name on the disabled redeploy"
   done
 fi
@@ -782,7 +786,7 @@ echo "=== Case 23 (RED->rollback, review P2 injected failure): restore_or_remove
 CASE_COUNT=$((CASE_COUNT + 1))
 s23="$(new_scratch case23)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s23/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s23/secrets/$name"
   chmod 0600 "$s23/secrets/$name"
 done
@@ -805,7 +809,7 @@ fi
 grep -q 'failed to restore .*mirofish.env' "$stderr23" 2>/dev/null || fail "case23: rollback must report the restore failure, not stay silent: $(cat "$stderr23" 2>/dev/null)"
 grep -qE 'prior-(zep|llm)' "$stderr23" 2>/dev/null && fail "case23: rollback error output must never contain a key's value"
 grep -q 'fake-zep-not-real' "$s23/runtime/mirofish.env" 2>/dev/null || fail "case23: a genuinely failed restore must leave the file exactly as activate_mirofish wrote it, not partially modified"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s23/secrets/$name" 2>/dev/null || fail "case23: $name not restored to its prior content after rollback"
 done
 echo "    exit=$status"
@@ -814,7 +818,7 @@ echo "=== Case 24 (RED->rollback, review P2 injected failure): restore_or_remove
 CASE_COUNT=$((CASE_COUNT + 1))
 s24="$(new_scratch case24)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s24/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s24/secrets/$name"
   chmod 0600 "$s24/secrets/$name"
 done
@@ -832,7 +836,7 @@ if [[ "$status" == 0 ]]; then
 fi
 grep -q 'failed to remove .*mirofish.env' "$stderr24" 2>/dev/null || fail "case24: rollback must report the remove failure, not stay silent: $(cat "$stderr24" 2>/dev/null)"
 [[ -f "$s24/runtime/mirofish.env" ]] || fail "case24: the file should still exist -- rm genuinely failed, it must not have vanished some other way"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s24/secrets/$name" 2>/dev/null || fail "case24: $name not restored to its prior content after rollback"
 done
 echo "    exit=$status"
@@ -890,7 +894,7 @@ else
   leftover_scratch=("$s26/runtime"/.mirofish-render-*)
   shopt -u nullglob
   [[ ${#leftover_scratch[@]} -gt 0 ]] || fail "case26: expected the render scratch directory to still be present on disk (sanity check that cleanup genuinely failed, not skipped)"
-  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+  for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
     [[ -f "$s26/secrets/$name" ]] || fail "case26: missing $name -- a MiroFish cleanup failure broke an unrelated app's deploy"
   done
 fi
@@ -900,7 +904,7 @@ echo "=== Case 27 (RED->rollback, review P2 round 3, process-level, fake Docker)
 CASE_COUNT=$((CASE_COUNT + 1))
 s27="$(new_scratch case27)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s27/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s27/secrets/$name"
   chmod 0600 "$s27/secrets/$name"
 done
@@ -965,7 +969,7 @@ grep -q 'ai-trading/mirofish profile rendered' "$s27/stderr.log" 2>/dev/null || 
 grep -q 'rollback: failed to remove' "$s27/stderr.log" 2>/dev/null || fail "case27: expected rollback's own mirofish.env removal to fail and be reported"
 grep -q 'rm -s -f mirofish' "$s27/app/docker.log" 2>/dev/null || fail "case27: expected the best-effort stop_remove_mirofish_container call ('compose rm -s -f mirofish') to have actually run: $(cat "$s27/app/docker.log" 2>/dev/null)"
 grep -qE 'ZEP_API_KEY=|LLM_API_KEY=|fake-zep-not-real|fake-llm-not-real' "$s27/stderr.log" 2>/dev/null && fail "case27: rollback error output must never contain a key or its value"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s27/secrets/$name" 2>/dev/null || fail "case27: $name not restored to its prior content after rollback -- a MiroFish-specific rollback failure must not break the other three apps"
 done
 echo "    exit=$status27"
@@ -1063,7 +1067,7 @@ echo "=== Case 30 (RED, process-level, whole-branch review reopen): a genuine st
 CASE_COUNT=$((CASE_COUNT + 1))
 s30="$(new_scratch case30)"
 printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s30/ci-staging/cloudflared.env"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   printf 'OLD_VALUE=old-%s\n' "$name" >"$s30/secrets/$name"
   chmod 0600 "$s30/secrets/$name"
 done
@@ -1109,7 +1113,7 @@ fi
 grep -q 'failed to stop/remove an existing mirofish container; aborting this deploy' "$s30/stderr.log" 2>/dev/null || fail "case30: expected the specific abort message: $(cat "$s30/stderr.log" 2>/dev/null)"
 grep -q 'rm -s -f mirofish' "$s30/app/docker.log" 2>/dev/null || fail "case30: expected the stop attempt to have actually run before failing: $(cat "$s30/app/docker.log" 2>/dev/null)"
 grep -qE ' pull$| up -d' "$s30/app/docker.log" 2>/dev/null && fail "case30: deploy_tag must never run -- found a pull/up call: $(cat "$s30/app/docker.log")"
-for name in tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env; do
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
   grep -q "old-$name" "$s30/secrets/$name" 2>/dev/null || fail "case30: $name must stay completely untouched -- stage_secrets must never have run"
 done
 [[ -f "$s30/app/last-good-tag" ]] && fail "case30: last-good-tag must never be written -- this deploy must abort before completing"
@@ -1192,6 +1196,22 @@ EOF
   docker rm -f "${proj31}-web-1" "${proj31}-mirofish-1" >/dev/null 2>&1 || true
   docker network rm "${proj31}_default" >/dev/null 2>&1 || true
 fi
+
+echo "=== Case 32 (RED): vibe-trading profile without API_AUTH_KEY fails before any install (gateway could not authenticate to Vibe) ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s32="$(new_scratch case32)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s32/ci-staging/cloudflared.env"
+export FAKE_FC_VIBE_NO_API_KEY=1
+status="$(run_scenario "$s32" 2>/dev/null)"
+unset FAKE_FC_VIBE_NO_API_KEY
+[[ "$status" != 0 ]] || fail "case32: expected non-zero exit when API_AUTH_KEY is missing, got 0"
+shopt -s nullglob
+installed=("$s32/secrets"/*.env)
+leftover=("$s32/secrets"/.render-*)
+shopt -u nullglob
+[[ ${#installed[@]} -eq 0 ]] || fail "case32: files installed despite a missing API_AUTH_KEY: ${installed[*]}"
+[[ ${#leftover[@]} -eq 0 ]] || fail "case32: render scratch not cleaned: ${leftover[*]}"
+echo "    exit=$status"
 
 echo
 cleanup

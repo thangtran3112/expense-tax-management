@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           secrets="$RUNNER_TEMP/ai-trading-secrets"
           mkdir -p "$secrets"
-          for name in tradingagents ai-hedge-fund vibe-trading cloudflared auth; do : >"$secrets/$name.env"; done
+          for name in tradingagents ai-hedge-fund vibe-trading vibe-gateway cloudflared auth; do : >"$secrets/$name.env"; done
           export AI_TRADING_SECRETS_DIR="$secrets"
           export AI_TRADING_IMAGE_TAG=0123456789abcdef0123456789abcdef01234567
           docker compose -f ai-trading/deploy/production/docker-compose.yml \
