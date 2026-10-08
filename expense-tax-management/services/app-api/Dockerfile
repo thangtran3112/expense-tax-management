@@ -32,6 +32,9 @@ COPY --from=build --chown=app:app /workspace/services/app-api/package.json ./ser
 COPY --from=build --chown=app:app /workspace/services/app-api/node_modules ./services/app-api/node_modules
 COPY --from=build --chown=app:app /workspace/services/app-api/dist ./services/app-api/dist
 
+RUN mkdir -p /tmp/expense_tax_storage /tmp/expense_tax_inbound_challenges && \
+    chown app:app /tmp/expense_tax_storage /tmp/expense_tax_inbound_challenges
+
 WORKDIR /workspace/services/app-api
 USER app
 EXPOSE 8100
