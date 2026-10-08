@@ -30,15 +30,15 @@
   | Path | What |
   |---|---|
   | `infrastructure/gcp/ai-trading/` | Terraform: workload identity pools, service accounts, static-hosting buckets (operator-applied); still declares the retired `ai-trading-env-bundle` Secret Manager resource and its IAM bindings, kept until an operator approves cleanup |
-  | `infrastructure/cloudflare/zero-trust/` | Terraform: account-wide Zero Trust organization and one-time PIN login |
-  | `infrastructure/cloudflare/ai-trading/` | Terraform: tunnel, DNS, Access application |
+  | `infrastructure/cloudflare/zero-trust/` | Terraform: account-wide Zero Trust organization and one-time PIN login (retained, not applied for Release 1) |
+  | `infrastructure/cloudflare/ai-trading/` | Terraform: tunnel, DNS, staging Workers; no Access dependency in Release 1 |
   | `common/config/family_config.py` | Shared Firestore `family-config` CLI (all apps; not ai-trading-specific) |
   | `infrastructure/gcp/family-config/` | Firestore bootstrap and VPS reader-key install/rotation (operator-applied) |
   | `infrastructure/gcp/bootstrap-state.sh` | Terraform state bucket bootstrap |
   | `infrastructure/vps/bootstrap.sh` | Host bootstrap |
 
 - Application deployment artifacts (compose file, deploy and health scripts) live in `ai-trading/deploy/`.
-- The only manual steps are those with no API: Anthropic and OpenAI spend limits, interactive logins, and owner-approved broadening of the shared Cloudflare token's own permission scope in the dashboard ("Cloudflare API Token" above — the token's permissions only, never its DNS/Tunnel/Access resources, which stay Terraform-managed in `infrastructure/cloudflare/`).
+- The only manual steps are those with no API: Anthropic and OpenAI spend limits, interactive logins, and owner-approved broadening of the shared Cloudflare token's own permission scope in the dashboard ("Cloudflare API Token" above — the token's permissions only, never DNS/Tunnel/Worker settings). Cloudflare Access onboarding requires a separate owner-approved exception and is not part of Release 1.
 - GCP commands from the operator machine must use the personal gcloud configuration: prefix them with `CLOUDSDK_ACTIVE_CONFIG_NAME=personal`. The default active configuration (`chartflow`) is a work account; never touch it.
 
 ## Upstream Apps

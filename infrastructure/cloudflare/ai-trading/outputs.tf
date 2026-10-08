@@ -7,11 +7,6 @@ output "tunnel_name" {
   value = cloudflare_zero_trust_tunnel_cloudflared.ai_trading.name
 }
 
-output "access_application_aud" {
-  description = "Cloudflare Access audience tag. Release 2's API verifies it."
-  value       = cloudflare_zero_trust_access_application.ai_trading.aud
-}
-
 output "hub_url" {
   value = "https://${var.hub_hostname}"
 }

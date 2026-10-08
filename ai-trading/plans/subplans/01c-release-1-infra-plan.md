@@ -1,5 +1,10 @@
 # Release 1 Infrastructure as Code: Secret Manager, GCP Identity, Zero Trust
 
+> **Historical plan, do not re-execute.** The current Release 1 uses Firestore
+> `family-config` (not the bundle below), keeps the old Secret Manager resource
+> untouched, and defers Cloudflare Access/Zero Trust. See `ai-trading/AGENTS.md`,
+> `ai-trading/deploy/production/README.md`, and `plans/STATUS.md` for current gates.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Tasks 9, 10, and 11 run in parallel, one subagent each; Task 12 (apply) runs with the user. Read `ai-trading/AGENTS.md` first; it binds every task.
 
 **Goal:** Replace every manual operator step of release 1 with code. One Secret Manager bundle in `tobytran-portfolio` holds all ai-trading values. Terraform creates the GCP identities, the Zero Trust organization, the tunnel, DNS, and Access. The deploy workflow renders env files from the bundle.

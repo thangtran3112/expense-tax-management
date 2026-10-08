@@ -82,10 +82,9 @@ values are references to already-shared groups, not new literals — e.g.
 `common/config/family_config.py link ai-trading/cloudflare
 CLOUDFLARE_API_TOKEN shared/cloudflare` points at the one shared token
 instead of copying it. Reserve `set <target> <NAME>` (reading the value from
-stdin) for values that really are app-specific literals, such as
-`ai-trading/cloudflare`'s `TF_VAR_access_allowed_emails`. Do this before
-applying `infrastructure/cloudflare/zero-trust` and
-`infrastructure/cloudflare/ai-trading`, which read `CLOUDFLARE_API_TOKEN`
+stdin) for app-specific literals such as `ai-trading/cloudflare`'s
+`TF_VAR_mirofish_bucket_name`. Do this before applying
+`infrastructure/cloudflare/ai-trading`, which reads `CLOUDFLARE_API_TOKEN`
 through `common/config/family_config.py run ai-trading/cloudflare --`.
 `roles/datastore.viewer` for `ai-trading-deploy` and `ai-trading-terraform`
 (the additive resources in the table above) is granted by the "First apply"
