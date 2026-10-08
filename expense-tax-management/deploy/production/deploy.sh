@@ -188,7 +188,7 @@ require_shared_temporal() {
   docker exec family-temporal temporal operator namespace describe --address temporal:7233 --namespace expense-tax >/dev/null 2>&1 || die "expense-tax Temporal namespace is unavailable"
 }
 
-APPLICATION_SERVICES=(app-api foundry-service ai-worker workflow-worker capture-web office-web foundry-web)
+APPLICATION_SERVICES=(app-api foundry-service workflow-worker capture-web office-web foundry-web)
 verify_running_images() {
   local expected_tag=$1
   shift
@@ -208,10 +208,10 @@ verify_running_images() {
 # currently-recorded previous_tag can predate the Task 7 Stage B commit
 # that first built its image (main had no workflow-worker image before
 # then), so a straight rollback would `compose pull`/`up` a nonexistent
-# image and fail, stranding production on the broken release. Routing
-# still targets generation 1 (Python, ai-worker) until an operator runs
-# `advance`, so a rollback that omits workflow-worker entirely is safe --
-# every other service stays mandatory exactly as before.
+# image and fail, stranding production on the broken release. Since Stage
+# C removed the Python ai-worker, workflow-worker is the only worker at
+# all -- a rollback that omits it leaves zero workers running, but every
+# other service stays mandatory exactly as before.
 #
 # Treated as available if EITHER the image already exists locally (the
 # previous release's image normally remains on the VPS after a deploy) OR
@@ -285,7 +285,7 @@ rollback() {
     IMAGE_TAG="$previous_tag"
     export IMAGE_TAG
 
-    local rollback_services=("${APPLICATION_SERVICES[@]}") required_workers="ai-worker workflow-worker"
+    local rollback_services=("${APPLICATION_SERVICES[@]}") required_workers="workflow-worker"
     if ! workflow_worker_image_exists "$previous_tag"; then
       printf 'workflow-worker has no image for tag %s; rolling back without it\n' "$previous_tag" >&2
       rollback_services=()
@@ -293,7 +293,7 @@ rollback() {
       for service in "${APPLICATION_SERVICES[@]}"; do
         [[ "$service" == "workflow-worker" ]] || rollback_services+=("$service")
       done
-      required_workers="ai-worker"
+      required_workers=""
       compose rm --force --stop workflow-worker || true
     fi
 
