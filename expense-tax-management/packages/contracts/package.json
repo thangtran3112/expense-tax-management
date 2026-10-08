@@ -30,7 +30,6 @@
     "lint": "eslint src test",
     "generate:json-schema": "tsx scripts/generate-json-schema.ts",
     "generate:typescript-clients": "tsx scripts/generate-typescript-clients.ts",
-    "generate:python": "bash scripts/generate-python.sh",
     "check-generated": "node scripts/check-generated.mjs"
   },
   "dependencies": {
