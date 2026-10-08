@@ -55,6 +55,13 @@ export default {
     const url = new URL(request.url);
     if (isDynamicPath(url.pathname)) {
       const originUrl = `https://${env.ORIGIN_HOSTNAME}${url.pathname}${url.search}`;
+      // ttyd's --check-origin needs Origin == Host (the origin hostname here).
+      // Vouch only for upgrades from this Worker's own origin; others pass unchanged.
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket" && request.headers.get("origin") === url.origin) {
+        const headers = new Headers(request.headers);
+        headers.set("origin", `https://${env.ORIGIN_HOSTNAME}`);
+        return fetch(originUrl, { headers });
+      }
       return fetch(originUrl, request);
     }
     if (request.method !== "GET" && request.method !== "HEAD") {
