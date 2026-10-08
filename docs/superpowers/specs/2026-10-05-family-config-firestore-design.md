@@ -237,8 +237,9 @@ Tokens and values never appear in process arguments.
 
 ### Safety
 
-- Under GitHub Actions, the CLI prints `::add-mask::<line>` to stdout for every
-  non-empty line of every value it uses, before any other output.
+- Under GitHub Actions, the CLI prints `::add-mask::<line>` to stderr for every
+  non-empty line of every value it uses, before any other output, so stdout stays
+  byte-exact (e.g. `get ... > key-file`).
 - Temporary directories are created under `/dev/shm` when it is a writable directory,
   otherwise under the system temporary directory.
 - Error messages name targets and keys, never values.

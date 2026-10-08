@@ -185,11 +185,15 @@ jobs:
 
       - name: Fetch VPS deploy SSH key and known hosts
         run: |
+          set -euo pipefail
           umask 077
-          common/config/family_config.py get shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY >"$RUNNER_TEMP/ssh-key"
+          # Older family_config.py prints ::add-mask:: lines on stdout; move them to
+          # stderr (still processed by the runner) so the files hold only the value.
+          get_file() { common/config/family_config.py get "$1" "$2" | awk '/^::add-mask::/ { print > "/dev/stderr"; next } { print }' >"$3"; }
+          get_file shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY "$RUNNER_TEMP/ssh-key"
           chmod 600 "$RUNNER_TEMP/ssh-key"
           # Multi-line, so read from the shared group (profile values must be single-line).
-          common/config/family_config.py get shared/vps VPS_SSH_KNOWN_HOSTS >"$RUNNER_TEMP/ai-trading-known-hosts"
+          get_file shared/vps VPS_SSH_KNOWN_HOSTS "$RUNNER_TEMP/ai-trading-known-hosts"
 
       - name: Deploy over SSH
         env:

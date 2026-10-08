@@ -386,14 +386,18 @@ def write(store: Store, label: str, path: str, changes: dict, description: str |
 
 
 def mask(values) -> None:
-    """Registers every non-empty value line with GitHub Actions log redaction."""
+    """Registers every non-empty value line with GitHub Actions log redaction.
+
+    Written to stderr (the runner reads commands from both streams) so stdout
+    carries only the value and `get ... > file` stays byte-exact.
+    """
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
     for value in values:
         for line in value.splitlines():
             if line.strip():
-                print(f"::add-mask::{line}")
-    sys.stdout.flush()
+                print(f"::add-mask::{line}", file=sys.stderr)
+    sys.stderr.flush()
 
 
 def dotenv(values: dict[str, str]) -> str:
