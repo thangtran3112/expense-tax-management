@@ -56,15 +56,8 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: expense-tax-management/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
       - name: Frozen Node install
         run: pnpm install --frozen-lockfile
-      - name: Frozen Python installs
-        run: |
-          uv sync --frozen --project common/python/expense-contracts
-          uv sync --frozen --project services/ai-worker
       - name: Build contract runtime
         run: pnpm --filter @expense-tax/contracts build
       - name: Generated contract drift
@@ -77,10 +70,6 @@ jobs:
         run: pnpm ci:test
       - name: Production builds
         run: pnpm ci:build
-      - name: Python lint and format
-        run: pnpm ci:python:lint
-      - name: Python tests
-        run: pnpm ci:python:test
 
   integration:
     name: Postgres, Temporal, cross-language, Docker
@@ -100,14 +89,8 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: expense-tax-management/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
       - name: Install toolchains
-        run: |
-          pnpm install --frozen-lockfile
-          uv sync --frozen --project common/python/expense-contracts
-          uv sync --frozen --project services/ai-worker
+        run: pnpm install --frozen-lockfile
       - name: Start Docker-local PostgreSQL
         run: ./scripts/compose.sh up -d --wait postgres
       - name: Initialize service schemas
@@ -125,10 +108,8 @@ jobs:
           PHASE_0K_WAVE_A_INTEGRATION: "1"
           PHASE_0K_WAVE_B_INTEGRATION: "1"
           PHASE_0L_INTEGRATION: "1"
-          PHASE_0L_WORKER_LOOP: "1"
           PHASE_0D_INTEGRATION: "1"
           PHASE_0C_INTEGRATION: "1"
-          PHASE_0C_OCR_LOOP: "1"
           PHASE_0E_INTEGRATION: "1"
           PHASE_0P_INTEGRATION: "1"
           PHASE_0N_INTEGRATION: "1"

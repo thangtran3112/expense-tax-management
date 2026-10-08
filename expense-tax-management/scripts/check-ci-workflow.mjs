@@ -28,14 +28,11 @@ for (const required of [
   "pnpm ci:typecheck",
   "pnpm ci:test",
   "pnpm ci:build",
-  "pnpm ci:python:lint",
-  "pnpm ci:python:test",
   "pnpm verify:phase-0n",
   "./scripts/compose.sh up -d --wait postgres",
   "./scripts/compose.sh run --rm app-api-migrate",
   "./scripts/compose.sh run --rm foundry-service-migrate",
   "PHASE_0N_INTEGRATION",
-  "uv sync --frozen",
   "permissions:\n  contents: read",
 ]) {
   if (!raw.includes(required)) throw new Error(`Missing CI requirement: ${required}`);

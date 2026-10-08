@@ -21,7 +21,7 @@ test("workflow-worker image builds pinned dependencies and runs without root", (
   assert.doesNotMatch(dockerfile, /COPY .*\.env/);
 });
 
-test("worker joins immutable main-only image builds while Python stays available", () => {
+test("worker joins immutable main-only image builds", () => {
   const deploy = YAML.parse(readRepo(".github/workflows/expense-tax-deploy.yml"));
   assert.deepEqual(deploy.on.workflow_run.branches, ["main"]);
   for (const job of [deploy.jobs.build, deploy.jobs.deploy]) {
@@ -32,7 +32,6 @@ test("worker joins immutable main-only image builds while Python stays available
     image: "expense-tax-workflow-worker",
     dockerfile: "expense-tax-management/services/workflow-worker/Dockerfile",
   });
-  assert.ok(images.some(({ image }) => image === "expense-tax-ai-worker"));
 });
 
 test("Phase 3D-A Task 5: mailbox broker joins the immutable main-only image matrix", () => {
@@ -44,7 +43,7 @@ test("Phase 3D-A Task 5: mailbox broker joins the immutable main-only image matr
   });
 });
 
-test("Task 7 Stage B: production Compose starts workflow-worker idle on expense-tax/expense-tax-processing", () => {
+test("production Compose runs workflow-worker on expense-tax/expense-tax-processing", () => {
   const compose = YAML.parse(readPackage("deploy/production/docker-compose.yml"));
   const worker = compose.services["workflow-worker"];
   assert.ok(worker, "production Compose must define a workflow-worker service");
@@ -55,12 +54,7 @@ test("Task 7 Stage B: production Compose starts workflow-worker idle on expense-
   assert.equal(worker.environment.TEMPORAL_NAMESPACE, "expense-tax");
   assert.equal(worker.environment.AI_WORKER_TASK_QUEUE, "expense-tax-processing");
   assert.deepEqual(worker.networks, ["default", "shared"]);
-
-  // Stage A's generation-1 seed (namespace default / queue
-  // expense-tax-ai-worker) is unchanged -- ai-worker must still receive it.
-  const pythonWorker = compose.services["ai-worker"];
-  assert.equal(pythonWorker.environment.TEMPORAL_NAMESPACE, "default");
-  assert.equal(pythonWorker.environment.AI_WORKER_TASK_QUEUE, "expense-tax-ai-worker");
+  assert.equal(compose.services["ai-worker"], undefined);
 });
 
 test("required quality commands include worker checks and image boundary", () => {

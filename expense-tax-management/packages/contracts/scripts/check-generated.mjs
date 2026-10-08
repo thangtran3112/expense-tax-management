@@ -8,7 +8,6 @@ const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDirectory, "../../..");
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "expense-tax-generated-"));
 const temporaryContractsRoot = path.join(tempRoot, "contracts-generated");
-const temporaryPythonRoot = path.join(tempRoot, "python-generated");
 
 function run(command, args, environment = {}) {
   execFileSync(command, args, {
@@ -42,10 +41,6 @@ try {
     ["--filter", "@expense-tax/contracts", "run", "generate:typescript-clients"],
     { CONTRACTS_GENERATED_ROOT: temporaryContractsRoot },
   );
-  run("bash", [path.join(repoRoot, "packages/contracts/scripts/generate-python.sh")], {
-    CONTRACTS_GENERATED_ROOT: temporaryContractsRoot,
-    CONTRACTS_PYTHON_GENERATED_ROOT: temporaryPythonRoot,
-  });
 
   const comparisons = [
     [
@@ -91,34 +86,6 @@ try {
     [
       "packages/contracts/generated/typescript/foundry-service.paths.ts",
       path.join(temporaryContractsRoot, "typescript", "foundry-service.paths.ts"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/internal_messages.py",
-      path.join(temporaryPythonRoot, "internal_messages.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/job_status_update_v1.py",
-      path.join(temporaryPythonRoot, "job_status_update_v1.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/job_result_submit_v1.py",
-      path.join(temporaryPythonRoot, "job_result_submit_v1.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/ocr_extraction_result_v1.py",
-      path.join(temporaryPythonRoot, "ocr_extraction_result_v1.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/ocr_job_input_v1.py",
-      path.join(temporaryPythonRoot, "ocr_job_input_v1.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/expense_enrichment_input_v1.py",
-      path.join(temporaryPythonRoot, "expense_enrichment_input_v1.py"),
-    ],
-    [
-      "common/python/expense-contracts/src/expense_contracts/generated/expense_enrichment_result_v1.py",
-      path.join(temporaryPythonRoot, "expense_enrichment_result_v1.py"),
     ],
   ];
 
