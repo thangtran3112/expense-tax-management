@@ -243,7 +243,7 @@ case "\$1" in
         if [[ "\${1:-}" == "-q" ]]; then
           printf 'fake-container-%s\\n' "\$2"
         else
-          printf '%s\\n' app-api foundry-service ai-worker workflow-worker mailbox-broker capture-web office-web foundry-web
+          printf '%s\\n' app-api foundry-service workflow-worker mailbox-broker capture-web office-web foundry-web
         fi
         exit 0 ;;
       rm) printf '%s\\n' "\${*: -1}" >> "${rmLog}"; exit 0 ;;

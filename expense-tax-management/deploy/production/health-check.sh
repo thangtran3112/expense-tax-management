@@ -38,10 +38,12 @@ for endpoint in "${endpoints[@]}"; do
   fi
 done
 
-# Configurable so a rollback to a pre-Stage-B image tag (no workflow-worker
-# image available) can require only ai-worker, without weakening the
-# default (both workers required) for every normal deploy/health check.
-read -r -a required_workers <<<"${HEALTH_CHECK_REQUIRED_WORKERS:-ai-worker workflow-worker}"
+# Configurable so a rollback to a prior tag with no workflow-worker image
+# available can require zero workers (HEALTH_CHECK_REQUIRED_WORKERS=""),
+# without weakening the default (workflow-worker required) for every
+# normal deploy/health check. Uses `-` (not `:-`) so an explicit empty
+# string is honored instead of falling back to the default.
+read -r -a required_workers <<<"${HEALTH_CHECK_REQUIRED_WORKERS-workflow-worker}"
 for worker in "${required_workers[@]}"; do
   worker_ready=0
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do

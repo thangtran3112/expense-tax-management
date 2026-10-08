@@ -38,8 +38,6 @@ jobs:
             dockerfile: expense-tax-management/services/app-api/Dockerfile
           - image: expense-tax-foundry-service
             dockerfile: expense-tax-management/services/foundry-service/Dockerfile
-          - image: expense-tax-ai-worker
-            dockerfile: expense-tax-management/services/ai-worker/Dockerfile
           - image: expense-tax-workflow-worker
             dockerfile: expense-tax-management/services/workflow-worker/Dockerfile
           - image: expense-tax-mailbox-broker

@@ -4,8 +4,6 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeScript = path.join(repoRoot, "scripts", "compose.sh");
-const aiWorkerRoot = path.join(repoRoot, "services", "ai-worker");
-const expenseContractsRoot = path.join(repoRoot, "common", "python", "expense-contracts");
 
 function runGate({ label, command, args, env = process.env, cwd = repoRoot }) {
   console.log(`\n=== ${label} ===`);
@@ -22,21 +20,6 @@ function runGate({ label, command, args, env = process.env, cwd = repoRoot }) {
     process.exit(result.status ?? 1);
   }
   console.log(`PASS ${label}`);
-}
-
-function waitForLogText(label, containerName, text, timeoutMs) {
-  console.log(`\n=== ${label} ===`);
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = spawnSync("docker", ["logs", containerName], { encoding: "utf8" });
-    if (result.status === 0 && (result.stdout + result.stderr).includes(text)) {
-      console.log(`PASS ${label}`);
-      return;
-    }
-    spawnSync("sleep", ["1"]);
-  }
-  console.error(`FAIL ${label}: "${text}" did not appear in ${containerName} logs within ${timeoutMs}ms`);
-  process.exit(1);
 }
 
 runGate({
@@ -67,24 +50,6 @@ for (const gate of [
     command: "pnpm",
     args: ["--filter", "@expense-tax/app-api", "test"],
   },
-  {
-    label: "expense-contracts Python tests",
-    command: "uv",
-    args: ["run", "pytest"],
-    cwd: expenseContractsRoot,
-  },
-  {
-    label: "ai-worker Python tests",
-    command: "uv",
-    args: ["run", "pytest"],
-    cwd: aiWorkerRoot,
-  },
-  {
-    label: "ai-worker ruff lint",
-    command: "uv",
-    args: ["run", "ruff", "check", "src", "tests"],
-    cwd: aiWorkerRoot,
-  },
 ]) {
   runGate(gate);
 }
@@ -113,44 +78,15 @@ if (process.env.PHASE_0L_INTEGRATION === "1") {
   console.error("\nSKIP Phase 0L PostgreSQL + real-Temporal-dispatch integration: PHASE_0L_INTEGRATION must be 1");
 }
 
-if (process.env.PHASE_0L_WORKER_LOOP === "1") {
-  runGate({
-    label: "Phase 0L real Python worker loop (Fastify + spawned worker process + real Temporal)",
-    command: "pnpm",
-    args: ["exec", "vitest", "run", "test/integration/app-domain-0l-worker-loop.test.ts"],
-    env: { ...process.env, PHASE_0L_WORKER_LOOP: "1" },
-  });
-} else {
-  skippedRequiredGates = true;
-  console.error("\nSKIP Phase 0L real Python worker loop: PHASE_0L_WORKER_LOOP must be 1");
-}
-
 for (const gate of [
   {
     label: "Generated contract drift",
     command: "pnpm",
     args: ["contracts:check"],
   },
-  {
-    label: "ai-worker Docker build",
-    command: composeScript,
-    args: ["build", "ai-worker"],
-  },
-  {
-    label: "ai-worker local readiness",
-    command: composeScript,
-    args: ["up", "-d", "ai-worker"],
-  },
 ]) {
   runGate(gate);
 }
-
-waitForLogText(
-  "ai-worker task-queue polling readiness",
-  "expense-tax-ai-worker",
-  "polling task queue",
-  15_000,
-);
 
 if (skippedRequiredGates) {
   console.error("FAIL Phase 0L completion: required checks were skipped");

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeScript = path.join(repoRoot, "scripts", "compose.sh");
-const aiWorkerRoot = path.join(repoRoot, "services", "ai-worker");
 
 function runGate({ label, command, args, env = process.env, cwd = repoRoot }) {
   console.log(`\n=== ${label} ===`);
@@ -57,7 +56,6 @@ runGate({
     PHASE_0K_WAVE_A_INTEGRATION: "1",
     PHASE_0K_WAVE_B_INTEGRATION: "1",
     PHASE_0L_INTEGRATION: "1",
-    PHASE_0L_WORKER_LOOP: "1",
     PHASE_0D_INTEGRATION: "1",
   },
 });
@@ -77,18 +75,6 @@ for (const gate of [
     label: "Foundry tests (effective-route, quotas)",
     command: "pnpm",
     args: ["--filter", "@expense-tax/foundry-service", "test"],
-  },
-  {
-    label: "ai-worker Python tests (OCR workflow, fake provider)",
-    command: "uv",
-    args: ["run", "pytest"],
-    cwd: aiWorkerRoot,
-  },
-  {
-    label: "ai-worker ruff lint",
-    command: "uv",
-    args: ["run", "ruff", "check", "src", "tests"],
-    cwd: aiWorkerRoot,
   },
 ]) {
   runGate(gate);
@@ -129,18 +115,6 @@ if (process.env.PHASE_0C_INTEGRATION === "1") {
   console.error("\nSKIP Phase 0C integration: PHASE_0C_INTEGRATION must be 1");
 }
 
-if (process.env.PHASE_0C_OCR_LOOP === "1") {
-  runGate({
-    label: "Phase 0C fake-provider end-to-end (App API + Foundry + worker + Temporal + storage)",
-    command: "pnpm",
-    args: ["exec", "vitest", "run", "test/integration/app-domain-0c-ocr-loop.test.ts"],
-    env: { ...process.env, PHASE_0C_OCR_LOOP: "1" },
-  });
-} else {
-  skippedRequiredGates = true;
-  console.error("\nSKIP Phase 0C OCR loop: PHASE_0C_OCR_LOOP must be 1");
-}
-
 for (const gate of [
   {
     label: "Generated contract drift",
@@ -158,11 +132,6 @@ for (const gate of [
     args: ["build", "foundry-service"],
   },
   {
-    label: "ai-worker Docker build",
-    command: composeScript,
-    args: ["build", "ai-worker"],
-  },
-  {
     label: "App API local readiness",
     command: composeScript,
     args: ["up", "-d", "app-api"],
@@ -171,11 +140,6 @@ for (const gate of [
     label: "Foundry local readiness",
     command: composeScript,
     args: ["up", "-d", "foundry-service"],
-  },
-  {
-    label: "ai-worker local readiness",
-    command: composeScript,
-    args: ["up", "-d", "ai-worker"],
   },
 ]) {
   runGate(gate);

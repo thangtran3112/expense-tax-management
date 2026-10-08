@@ -27,6 +27,12 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Expense } from "@expense-tax/contracts";
+// Relative import into the contracts package's own source (not the bare
+// "@expense-tax/contracts" specifier): this test file lives at the repo
+// root's test/integration/, outside any workspace package, so it has no
+// node_modules/@expense-tax symlink of its own for a VALUE export (see
+// app-domain-3d-c-mailbox.test.ts for the same pattern/reasoning).
+import { AI_WORKER_TASK_QUEUE } from "../../packages/contracts/src/internal/task-queues.js";
 import type { Kysely } from "kysely";
 
 import { createAppDatabase } from "../../services/app-api/src/database/client.js";
@@ -1228,7 +1234,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
          VALUES
            ('${ocrJobId}', '${PHASE_3C_TENANT_A_ID}',
             '${PHASE_3C_PROFILE_A_ID}', NULL,
-            'OcrReceiptWorkflow', 'job-${ocrJobId}', 'expense-tax-ai-worker', 'RUNNING',
+            'OcrReceiptWorkflow', 'job-${ocrJobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
             '${ocrFileId}', '${PHASE_3C_USER_ID}',
             '{"modeKey":"ocr_mode_balanced"}', 'ocr-extraction-v1', 'expense',
             now())
@@ -1325,7 +1331,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
          VALUES
            ('${fwdJobId}', '${PHASE_3C_TENANT_A_ID}',
             '${PHASE_3C_PROFILE_A_ID}', NULL,
-            'ForwardedReceiptWorkflow', 'job-${fwdJobId}', 'expense-tax-ai-worker', 'RUNNING',
+            'ForwardedReceiptWorkflow', 'job-${fwdJobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
             '${fwdFileId}', '${PHASE_3C_USER_ID}',
             '{"modeKey":"ocr_mode_balanced"}', 'ocr-extraction-v1', 'expense',
             now())
@@ -1404,7 +1410,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${jobId}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${jobId}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${jobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${expId}', 1,
            now())
         ON CONFLICT DO NOTHING;
@@ -1471,7 +1477,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
           VALUES
            ('${jobId}', '${PHASE_3C_TENANT_A_ID}',
             '${PHASE_3C_PROFILE_A_ID}', NULL,
-            'ExpenseEnrichmentWorkflow', 'job-${jobId}', 'expense-tax-ai-worker', 'DISPATCHED',
+            'ExpenseEnrichmentWorkflow', 'job-${jobId}', '${AI_WORKER_TASK_QUEUE}', 'DISPATCHED',
             '{}', 'expense-enrichment-v1', 'expense', '${expId}', 1,
             now())
           ON CONFLICT DO NOTHING;
@@ -1518,7 +1524,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${jobId}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${jobId}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${jobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${expId}', 1,
            now())
         ON CONFLICT DO NOTHING;
@@ -1667,7 +1673,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId}', '${PHASE_3C_TENANT_A_ID}', '${PHASE_3C_PROFILE_A_ID}', NULL,
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
 
@@ -1841,7 +1847,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId}', '${PHASE_3C_TENANT_A_ID}', '${PHASE_3C_PROFILE_A_ID}', NULL,
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
 
@@ -1973,7 +1979,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId}', '${PHASE_3C_TENANT_A_ID}', '${PHASE_3C_PROFILE_A_ID}', NULL,
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
       `);
@@ -2038,7 +2044,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId2}', '${PHASE_3C_TENANT_A_ID}', '${PHASE_3C_PROFILE_A_ID}', NULL,
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId2}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId2}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId2}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
 
@@ -2189,7 +2195,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId}', '${PHASE_3C_TENANT_A_ID}', '${PHASE_3C_PROFILE_A_ID}', NULL,
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
 
@@ -2797,7 +2803,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
            target_aggregate_type, target_aggregate_id, expected_aggregate_version,
            input_params, allowed_result_schema_version, dispatched_at, completed_at)
         VALUES ('${fakeJobId}', '${PHASE_3C_TENANT_A_ID}', NULL, '${PHASE_3C_BUSINESS_A_ID}',
-          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', 'expense-tax-ai-worker', 'SUCCEEDED',
+          'ExpenseEnrichmentWorkflow', 'job-${fakeJobId}', '${AI_WORKER_TASK_QUEUE}', 'SUCCEEDED',
           'expense', '${expId}', 1, '{}', 'expense-enrichment-v1', now(), now())
         ON CONFLICT DO NOTHING;
 
@@ -3143,7 +3149,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${probeJobA}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${probeJobA}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${probeJobA}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${probeExpA}', 1,
            now())
         ON CONFLICT DO NOTHING;
@@ -3239,7 +3245,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${probeJobB}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${probeJobB}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${probeJobB}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${probeExpB}', 1,
            now())
         ON CONFLICT DO NOTHING;
@@ -3304,7 +3310,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${jobId}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${jobId}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${jobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${expId}', 1,
            now())
         ON CONFLICT DO NOTHING;
@@ -3469,7 +3475,7 @@ describe.skipIf(!integrationEnabled)("Phase 3C auto-tagging enrichment PostgreSQ
         VALUES
           ('${jobId}', '${PHASE_3C_TENANT_A_ID}',
            '${PHASE_3C_PROFILE_A_ID}', NULL,
-           'ExpenseEnrichmentWorkflow', 'job-${jobId}', 'expense-tax-ai-worker', 'RUNNING',
+           'ExpenseEnrichmentWorkflow', 'job-${jobId}', '${AI_WORKER_TASK_QUEUE}', 'RUNNING',
            '{}', 'expense-enrichment-v1', 'expense', '${expId}', 1,
            now())
         ON CONFLICT DO NOTHING;

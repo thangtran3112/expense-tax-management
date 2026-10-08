@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeScript = path.join(repoRoot, "scripts", "compose.sh");
-const workerRoot = path.join(repoRoot, "services", "ai-worker");
 
 function run(label, command, args, env = process.env, cwd = repoRoot) {
   console.log(`\n=== ${label} ===`);
@@ -31,17 +30,13 @@ run(
     PHASE_0K_WAVE_A_INTEGRATION: "1",
     PHASE_0K_WAVE_B_INTEGRATION: "1",
     PHASE_0L_INTEGRATION: "1",
-    PHASE_0L_WORKER_LOOP: "1",
     PHASE_0D_INTEGRATION: "1",
     PHASE_0C_INTEGRATION: "1",
-    PHASE_0C_OCR_LOOP: "1",
     PHASE_0E_INTEGRATION: "1",
   },
 );
 run("Contracts", "pnpm", ["--filter", "@expense-tax/contracts", "test"]);
 run("App API", "pnpm", ["--filter", "@expense-tax/app-api", "test"]);
-run("Python worker", "uv", ["run", "pytest"], process.env, workerRoot);
-run("Python lint", "uv", ["run", "ruff", "check", "src", "tests"], process.env, workerRoot);
 
 if (process.env.PHASE_0P_INTEGRATION !== "1") {
   console.error("SKIP Phase 0P integration: PHASE_0P_INTEGRATION must be 1");
@@ -57,7 +52,6 @@ run(
 );
 run("Generated drift", "pnpm", ["contracts:check"]);
 run("App Docker build", composeScript, ["build", "app-api"]);
-run("Worker Docker build", composeScript, ["build", "ai-worker"]);
 run("App readiness", composeScript, ["up", "-d", "app-api"]);
 
 const ready = spawnSync(
