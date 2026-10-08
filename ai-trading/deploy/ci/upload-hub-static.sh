@@ -72,7 +72,8 @@ if ! remote_listing="$(gcloud storage ls --recursive "gs://$BUCKET" 2>&1)"; then
   fail "could not list remote objects before upload: $remote_listing"
 fi
 while IFS= read -r url; do
-  [[ -z "$url" ]] && continue
+  # `ls --recursive` also prints "gs://<bucket>/<dir>/:" headers, even for an empty bucket.
+  [[ -z "$url" || "$url" == */: ]] && continue
   prefix="gs://$BUCKET/"; [[ "$url" == "$prefix"* ]] || fail "unexpected object listing entry: $url"
   REMOTE["${url#"$prefix"}"]=1
 done <<<"$remote_listing"
