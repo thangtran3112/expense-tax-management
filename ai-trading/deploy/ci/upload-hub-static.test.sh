@@ -37,9 +37,14 @@ case "$1" in
   ls)
     url="${*: -1}"; b="${url#gs://}"; b="${b%%/*}"
     [[ "${FAIL_LIST:-}" != 1 ]] || { echo 'HTTPError 403: Forbidden' >&2; exit 1; }
+    # Like real `gcloud storage ls --recursive`: "gs://b/:" header lines (also
+    # for an empty bucket) and per-directory headers, not just object URLs.
+    printf 'gs://%s/:\n' "$b"
     if [[ -d "$root/$b" ]]; then
       while IFS= read -r -d '' live; do
-        [[ -s "$live" ]] || continue; obj="${live#$root/$b/}"; obj="${obj%/live}"; printf 'gs://%s/%s\n' "$b" "$obj"
+        [[ -s "$live" ]] || continue; obj="${live#$root/$b/}"; obj="${obj%/live}"
+        [[ "$obj" == */* ]] && printf '\ngs://%s/%s/:\n' "$b" "${obj%/*}"
+        printf 'gs://%s/%s\n' "$b" "$obj"
       done < <(find "$root/$b" -name live -print0)
     fi
     ;;
