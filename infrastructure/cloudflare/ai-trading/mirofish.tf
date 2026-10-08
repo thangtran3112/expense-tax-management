@@ -62,7 +62,7 @@ resource "cloudflare_dns_record" "mirofish_origin" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.ai_trading.id}.cfargotunnel.com"
   ttl     = 1
   proxied = true
-  comment = "ai-trading mirofish (unrouted by Worker but public/authenticated; no static Worker route; Caddy gateway enforces auth, not network privacy)"
+  comment = "ai-trading mirofish origin (public; Caddy gateway enforces auth)"
 }
 
 resource "cloudflare_workers_script" "mirofish_static" {

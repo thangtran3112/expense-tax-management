@@ -38,7 +38,7 @@ resource "cloudflare_dns_record" "hub_origin" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.ai_trading.id}.cfargotunnel.com"
   ttl     = 1
   proxied = true
-  comment = "ai-trading hub (unrouted by Worker but public/authenticated; no static Worker route; Caddy gateway enforces auth, not network privacy)"
+  comment = "ai-trading hub origin (public; Caddy gateway enforces auth)"
 }
 
 resource "cloudflare_workers_script" "hub_router" {
