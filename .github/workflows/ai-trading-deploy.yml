@@ -172,10 +172,13 @@ jobs:
       - name: Render production env files
         run: ai-trading/deploy/ci/render-env.sh "$RUNNER_TEMP/ai-trading-env"
 
-      - name: Fetch VPS deploy SSH key
+      - name: Fetch VPS deploy SSH key and known hosts
         run: |
+          umask 077
           common/config/family_config.py get shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY >"$RUNNER_TEMP/ssh-key"
           chmod 600 "$RUNNER_TEMP/ssh-key"
+          # Multi-line, so read from the shared group (profile values must be single-line).
+          common/config/family_config.py get shared/vps VPS_SSH_KNOWN_HOSTS >"$RUNNER_TEMP/ai-trading-known-hosts"
 
       - name: Deploy over SSH
         env:
@@ -200,7 +203,6 @@ jobs:
           cat >"$DEPLOY_SCRIPT" <<'SCRIPT_EOF'
           set -Eeuo pipefail
           umask 077
-          printf '%s\n' "$VPS_KNOWN_HOSTS" >"$KNOWN_HOSTS_FILE"
           ssh_opts=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -p "$VPS_PORT")
           scp_opts=(-i "$SSH_KEY_FILE" -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes -P "$VPS_PORT")
           ssh "${ssh_opts[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 0700 /tmp/ai-trading-deploy /tmp/ai-trading-deploy/env"
