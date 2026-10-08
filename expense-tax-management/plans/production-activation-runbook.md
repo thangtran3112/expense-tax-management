@@ -85,7 +85,7 @@ STOP: owner approval required before R.2/R.3 (production traffic path).
 `temporal`/`temporal_visibility` once they exist under the shared server) and
 the receipt volume exists before Phase 1 touches Temporal.
 
-**Prerequisites:** VPS SSH access; shared Postgres running (`family-app-postgres`,
+**Prerequisites:** VPS SSH access; shared Postgres running (`expense-tax-postgres`,
 confirmed container name per `infrastructure/vps/steps/30-postgres.sh:81`,
 network `postgres_default`).
 
@@ -218,6 +218,8 @@ drains its own backlog, with no container restart.
 ---
 
 ## 5. Phase 3 — Stage C Python Removal
+
+**Status:** Done 2026-10-07 — #35/#36 (`main` `f20c451`); `ai-worker` container and images removed from the VPS; post-deploy OCR smoke succeeded.
 
 **Purpose:** Delete the Python worker once drain is proven zero.
 
