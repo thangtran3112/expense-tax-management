@@ -35,7 +35,7 @@ printf '%s' "$NEW_VALUE" | $CLI set ai-trading/tradingagents ANTHROPIC_API_KEY
 $CLI get ai-trading/clerk PUBLISHABLE_KEY   # prints one value exactly
 ```
 
-LLM keys come from one Anthropic workspace and one OpenAI project per app (`ai-trading-tradingagents`, `ai-trading-ai-hedge-fund`, `ai-trading-vibe-trading`), each with a monthly spend limit (start at $10). If an OpenAI project budget only alerts, fund that project with prepaid credit and turn auto-recharge off.
+LLM keys are shared: every app profile links `ANTHROPIC_API_KEY` and an `OPENAI_API_KEY_*` from `shared/llm`. No provider spend limit is set (owner decision, 2026-10-08).
 
 ## Deploy
 
@@ -51,7 +51,7 @@ Every push to `main` touching `ai-trading/**` (excluding `ai-trading/plans/**` a
 1. `build`: builds and smoke-tests the images with a fake Clerk key, then builds and pushes the real images to GHCR tagged with the commit SHA, using the publishable key from the repo-scoped GitHub Actions variable `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (see `ai-trading/AGENTS.md`). Before any image in this job is built or pushed (including the fake-keyed smoke build), `ai-trading/deploy/ci/check-clerk-publishable-key.sh` fails the job closed unless that variable is a `pk_live_` key decoding to this app's own Clerk Frontend API domain — the same guard `hub-static-upload` runs before its `pnpm build`.
 2. `deploy` (environment `ai-trading-production`): authenticates to GCP over Workload Identity Federation (no stored key), fetches only the live Cloudflare tunnel token (`ai-trading/deploy/ci/render-env.sh`, `ai-trading/cloudflare` profile) and the VPS deploy SSH key (`shared/vps` `VPS_DEPLOY_SSH_PRIVATE_KEY`), then copies the compose files, `deploy.sh`, `health-check.sh`, `common/config/family_config.py`, and the one CI-rendered file (`cloudflared.env`) to the host and runs `deploy.sh`.
 
-On the host, `deploy.sh` renders `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, and `ai-trading/gateway` (renamed `auth.env`) straight from Firestore with the `family-config-reader` key, validates every file (well-formed `KEY=value` lines, no empty value, no NUL or CR byte), backs up the current files to `.previous/`, installs all five files (the four just rendered, plus `cloudflared.env`, the one file CI itself staged) as `root:root 0600`, then pulls and restarts the stack. If the new tag fails to come up healthy, it restores `.previous/` and rolls back to `last-good-tag`.
+On the host, `deploy.sh` renders `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, and `ai-trading/gateway` (renamed `auth.env`) straight from Firestore with the `family-config-reader` key, validates every file (well-formed `KEY=value` lines, no empty value, no NUL or CR byte), backs up the current files to `.previous/`, derives `vibe-gateway.env` (only `VIBE_API_AUTH_KEY`, copied from `vibe-trading.env`'s `API_AUTH_KEY`, for the Caddy gateway), installs all six files (the five above, plus `cloudflared.env`, the one file CI itself staged) as `root:root 0600`, then pulls and restarts the stack. If the new tag fails to come up healthy, it restores `.previous/` and rolls back to `last-good-tag`.
 
 ### MiroFish activation (`activate_mirofish`)
 
@@ -61,7 +61,7 @@ On the host, `deploy.sh` renders `ai-trading/tradingagents`, `ai-trading/ai-hedg
 - A manual dispatch with `deploy_app=true` and `activate_mirofish=true` sends `1`.
 - Any other combination (including `activate_mirofish=true` with `deploy_app=false`, which runs no deploy at all) sends `0`.
 
-This only widens *how* the existing fail-safe opt-in is reached; it does not change `deploy.sh` itself. A malformed or absent `ai-trading/mirofish` Firestore profile still leaves MiroFish disabled and logs why, without failing the other three apps' deploy (`activate_mirofish()` in `deploy.sh`). **Rollback caveat**: redeploying with `activate_mirofish=false` (or a plain push) does not itself deactivate a previously-active MiroFish — `deploy.sh`'s opt-in only ever *adds* `mirofish.env`; to deactivate, an operator must use `deploy.sh`'s own rollback path (restoring `.previous/`, which removes `mirofish.env` if it didn't exist in the prior-good deploy) or remove the `ai-trading/mirofish` Firestore profile before redeploying.
+This only widens *how* the existing fail-safe opt-in is reached; it does not change `deploy.sh` itself. A malformed or absent `ai-trading/mirofish` Firestore profile still leaves MiroFish disabled and logs why, without failing the other three apps' deploy (`activate_mirofish()` in `deploy.sh`). **Deactivation**: any deploy that does not activate MiroFish (a plain push, or a dispatch without `activate_mirofish=true`) stops and removes a running MiroFish container (`ensure_mirofish_stopped()` in `deploy.sh`), so re-dispatch with `activate_mirofish=true` after such a deploy to keep it on.
 
 ### Hub and MiroFish static uploads
 
@@ -88,13 +88,13 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
 5. ai-hedge-fund opens its terminal UI and reaches a backtest screen (with a data key) or its missing-key prompt.
-6. Vibe-Trading opens, the access key is saved in Settings > Local API access > Server API key, and it answers one chat request.
+6. Vibe-Trading opens with no key to paste (the gateway supplies `API_AUTH_KEY` after the Clerk check) and answers one chat request.
 
 ## Operations
 
 - Logs: `sudo docker compose -p ai-trading --env-file /opt/family-app/ai-trading/images.env -f /opt/family-app/ai-trading/docker-compose.yml logs -f <service>`
 - Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow (`workflow_dispatch`, `deploy_app=true`); it re-renders the four core profiles from Firestore and redeploys `${{ github.sha }}` of the `main` branch tip. This dispatch only activates MiroFish if `activate_mirofish` is also set `true` — otherwise `MIROFISH_ACTIVATE=0` is sent even if MiroFish was active before (see "MiroFish activation" above). `deploy.sh` always requires a fresh `ENV_STAGING_DIR/cloudflared.env` and always re-renders the four core profiles on the host — there is no manual mode that reuses a stale staging directory — so a host-only, direct `deploy.sh` run needs a real `cloudflared.env` staged first; rerunning the workflow is simpler.
-- Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in `ai-trading/vibe-trading` (see "Editing values"), rerun the deploy workflow, and paste the new key in each browser.
+- Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in `ai-trading/vibe-trading` (see "Editing values"), and rerun the deploy workflow; the gateway picks up the new key, so browsers need nothing.
 - Upstream updates arrive as one grouped Dependabot pull request per week. Merge it to `dev` when CI is green, then release to `main`.
 
 ## Moving to a new host

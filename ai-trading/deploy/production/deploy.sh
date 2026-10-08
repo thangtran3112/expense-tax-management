@@ -57,7 +57,7 @@ MIROFISH_PRIOR_EXISTED=0
 MIROFISH_INSTALLED_THIS_RUN=0
 STATE_FILE="$APP_DIR/last-good-tag"
 IMAGES_ENV="$APP_DIR/images.env"
-SECRET_FILES=(tradingagents.env ai-hedge-fund.env vibe-trading.env auth.env cloudflared.env)
+SECRET_FILES=(tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env)
 # Tracks, per secret file, whether it existed before this run's staging so
 # rollback can tell "restore the backup" from "delete what we just created".
 declare -A PRIOR_EXISTED=()
@@ -160,6 +160,12 @@ render_profiles() {
     "$family_config" render ai-trading/tradingagents ai-trading/ai-hedge-fund ai-trading/vibe-trading ai-trading/gateway \
       --out-dir "$RENDER_SRC_DIR"
   mv -f "$RENDER_SRC_DIR/gateway.env" "$RENDER_SRC_DIR/auth.env"
+  # Caddy injects Vibe's API key after the Clerk check, so browsers never hold
+  # it; the gateway gets only this one value, never Vibe's provider keys.
+  local vibe_key
+  vibe_key="$(sed -n 's/^API_AUTH_KEY=//p' "$RENDER_SRC_DIR/vibe-trading.env")"
+  [[ -n "$vibe_key" ]] || die "ai-trading/vibe-trading has no API_AUTH_KEY; the gateway could not authenticate to Vibe-Trading"
+  (umask 077 && printf 'VIBE_API_AUTH_KEY=%s\n' "$vibe_key" >"$RENDER_SRC_DIR/vibe-gateway.env")
 }
 
 # secret_source_dir NAME: the directory holding one SECRET_FILES entry before

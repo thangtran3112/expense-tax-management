@@ -20,7 +20,11 @@ This stack's own `deploy/local/Caddyfile` (loaded by the `router` service in ste
 
    ```bash
    sed -i.bak 's/^API_AUTH_KEY=.*/API_AUTH_KEY=local-dev-key/' "$AI_TRADING_SECRETS_DIR/vibe-trading.env" && rm -f "$AI_TRADING_SECRETS_DIR/vibe-trading.env.bak"
+   printf 'VIBE_API_AUTH_KEY=local-dev-key\n' >"$AI_TRADING_SECRETS_DIR/vibe-gateway.env"
+   chmod 0600 "$AI_TRADING_SECRETS_DIR/vibe-gateway.env"
    ```
+
+   `vibe-gateway.env` is what production's `deploy.sh` derives for the Caddy gateway, which supplies Vibe's key after the Clerk check. The local `router` does not use it, so step 4's pasted key still applies locally.
 
 2. Build the images. The frontend build needs the public Clerk key as a build arg (`CLERK_PUBLISHABLE_KEY`, baked in as `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`); an empty value fails the build on purpose:
 

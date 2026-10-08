@@ -65,7 +65,7 @@ export const hubApps: readonly HubApp[] = [
     device: "keyboard",
     summary: "A team of AI analysts debates one ticker and returns Buy, Hold, or Sell with a written report.",
     goodFor: "A deep second opinion on one stock before a trade.",
-    costNote: "Each analysis makes dozens of LLM calls; the app's own provider spend limit caps the month.",
+    costNote: "Each analysis makes dozens of LLM calls; every call is billed to the family provider keys (no spend limit set).",
   },
   {
     slug: "ai-hedge-fund",
@@ -80,7 +80,7 @@ export const hubApps: readonly HubApp[] = [
     summary:
       "Investor personas (Buffett, Munger, Graham, Lynch, Druckenmiller) and quant models run a simulated fund with backtests and a paper book.",
     goodFor: "Testing value and growth ideas against history.",
-    costNote: "Needs a paid Financial Datasets key for market data, plus LLM usage under the app's spend limit.",
+    costNote: "Needs a paid Financial Datasets key for market data, plus LLM usage billed to the family provider keys.",
   },
   {
     slug: "vibe-trading",
@@ -94,13 +94,8 @@ export const hubApps: readonly HubApp[] = [
     device: "touch",
     summary: "A research agent you talk to in plain English, with charts, strategy backtests, and a large skill library.",
     goodFor: "Exploring an idea or backtesting a strategy described in words.",
-    costNote: "LLM usage under the app's spend limit; market data from free sources.",
-    firstVisitNote: [
-      "Open Settings.",
-      "Find Local API access.",
-      "Paste the Vibe-Trading access key into Server API key.",
-      "Save it; the key is stored with the other ai-trading secrets.",
-    ],
+    costNote: "LLM usage billed to the family provider keys; market data from free sources.",
+    firstVisitNote: ["Nothing to set up: your hub sign-in also signs you in to Vibe-Trading."],
   },
   {
     slug: "mirofish",
