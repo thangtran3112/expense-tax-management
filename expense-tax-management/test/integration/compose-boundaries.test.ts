@@ -116,13 +116,13 @@ describe("Phase 0I Compose boundaries", () => {
       "utf8",
     );
     // Two matches per service (key and interpolation) across app-api,
-    // foundry-service, ai-worker, and workflow-worker.
+    // foundry-service, and workflow-worker.
     expect(
       productionCompose.match(/CLERK_APP_SERVICE_SUBJECT:/g),
-    ).toHaveLength(8);
+    ).toHaveLength(6);
     expect(
       productionCompose.match(/CLERK_FOUNDRY_SERVICE_SUBJECT:/g),
-    ).toHaveLength(8);
+    ).toHaveLength(6);
 
     expect(databaseEnvironmentKeys(legacy?.environment)).toEqual(["DATABASE_URL"]);
     expect(Object.keys(legacy?.environment ?? {})).not.toContain(
@@ -142,7 +142,7 @@ describe("Phase 0I Compose boundaries", () => {
   });
 
   it("passes every Clerk startup variable to local and production workers", () => {
-    const local = composeConfig(repoRoot).services["ai-worker"]?.environment ?? {};
+    const local = composeConfig(repoRoot).services["workflow-worker"]?.environment ?? {};
     const productionText = readFileSync(
       path.join(repoRoot, "deploy/production/docker-compose.yml"),
       "utf8",
@@ -150,8 +150,6 @@ describe("Phase 0I Compose boundaries", () => {
     for (const key of [
       "CLERK_ISSUER_URL",
       "CLERK_JWKS_URL",
-      "CLERK_TENANT_AUDIENCE",
-      "CLERK_PLATFORM_AUDIENCE",
       "CLERK_APP_SERVICE_AUDIENCE",
       "CLERK_FOUNDRY_SERVICE_AUDIENCE",
       "CLERK_APP_MACHINE_SECRET_KEY",
@@ -160,7 +158,7 @@ describe("Phase 0I Compose boundaries", () => {
       "CLERK_FOUNDRY_SERVICE_SUBJECT",
     ]) {
       expect(local).toHaveProperty(key);
-      expect(productionText).toMatch(new RegExp(`ai-worker:[\\s\\S]*${key}:`));
+      expect(productionText).toMatch(new RegExp(`workflow-worker:[\\s\\S]*${key}:`));
     }
   });
 

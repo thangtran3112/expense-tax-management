@@ -28,7 +28,7 @@ function readProductionFile(name: string): string {
 }
 
 describe("Phase 1B production deployment boundaries", () => {
-  it("defines exactly seven immutable GHCR application images and no legacy database", () => {
+  it("defines exactly six immutable GHCR application images and no legacy database", () => {
     const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
       services: Record<string, Record<string, unknown>>;
       networks: Record<string, { external?: boolean; name?: string }>;
@@ -36,7 +36,6 @@ describe("Phase 1B production deployment boundaries", () => {
     const applicationServices = [
       "app-api",
       "foundry-service",
-      "ai-worker",
       "workflow-worker",
       "capture-web",
       "office-web",
@@ -178,7 +177,7 @@ describe("Phase 1B production deployment boundaries", () => {
       "${CLERK_WEBHOOK_SIGNING_SECRET:?CLERK_WEBHOOK_SIGNING_SECRET is required}",
     );
 
-    for (const serviceName of ["foundry-service", "ai-worker", "workflow-worker", "capture-web", "office-web", "foundry-web"]) {
+    for (const serviceName of ["foundry-service", "workflow-worker", "capture-web", "office-web", "foundry-web"]) {
       expect(compose.services[serviceName].environment).not.toHaveProperty(
         "CLERK_WEBHOOK_SIGNING_SECRET",
       );
@@ -430,19 +429,6 @@ esac
     );
   });
 
-  it("pins uv builder and requires frozen lockfile sync", () => {
-    const dockerfile = readFileSync(
-      path.join(repoRoot, "services/ai-worker/Dockerfile"),
-      "utf8",
-    );
-    expect(dockerfile).toContain(
-      "ghcr.io/astral-sh/uv@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4",
-    );
-    expect(dockerfile).toContain("RUN uv sync --frozen --no-dev");
-    expect(dockerfile).not.toContain("uv:latest");
-    expect(dockerfile).not.toContain("|| uv sync");
-  });
-
   it("bootstraps only the GCP project and pool: no deploy identity or repository key files", () => {
     const bootstrap = readFileSync(
       path.join(repoRoot, "infrastructure/gcp/expense-tax/bootstrap.sh"),
@@ -515,7 +501,7 @@ esac
     expect(health).toContain("docker exec family-temporal temporal operator cluster health");
     expect(health).toContain("docker exec family-temporal temporal operator namespace describe");
     expect(health).toContain("temporal operator cluster health");
-    expect(health).toContain("ai-worker");
+    expect(health).toContain("workflow-worker");
     expect(health).toContain("--status running --services");
     for (const name of ["deploy.sh", "health-check.sh", "bootstrap-temporal-db.sh"]) {
       expect(readProductionFile(name)).toMatch(/^set -Eeuo pipefail/m);
@@ -524,14 +510,12 @@ esac
     expect(composePath).toContain("deploy/production/docker-compose.yml");
   });
 
-  it("keeps ai-worker and workflow-worker liveness explicit and rollback-gated", () => {
+  it("keeps workflow-worker liveness explicit and rollback-gated", () => {
     const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
       services: Record<string, { healthcheck?: { test?: string[] } }>;
     };
-    for (const serviceName of ["ai-worker", "workflow-worker"]) {
-      const workerHealthcheck = compose.services[serviceName].healthcheck;
-      expect(workerHealthcheck?.test?.join(" ") ?? "").toContain("kill -0 1");
-    }
+    const workerHealthcheck = compose.services["workflow-worker"].healthcheck;
+    expect(workerHealthcheck?.test?.join(" ") ?? "").toContain("kill -0 1");
 
     const deploy = readProductionFile("deploy.sh");
     expect(deploy).toContain("health-check.sh");
@@ -601,10 +585,6 @@ esac
     );
     expect(worker.deploy?.resources?.limits).toEqual({ cpus: "0.5", memory: "512M" });
 
-    // Idle by construction: generation 1 (Task 7 Stage A seed) routes new
-    // jobs to namespace default / queue expense-tax-ai-worker (ai-worker).
-    // This worker polls expense-tax / expense-tax-processing and receives
-    // no work until an operator runs `advance`.
     expect(worker.environment?.TEMPORAL_HOST).toBe("temporal:7233");
     expect(worker.environment?.TEMPORAL_NAMESPACE).toBe("expense-tax");
     expect(worker.environment?.AI_WORKER_TASK_QUEUE).toBe("expense-tax-processing");
@@ -627,12 +607,7 @@ esac
     expect(worker.networks).toEqual(["default", "shared"]);
     expect(worker.depends_on?.["app-api"]?.condition).toBe("service_healthy");
     expect(worker.depends_on?.["foundry-service"]?.condition).toBe("service_healthy");
-
-    // ai-worker (namespace default / queue expense-tax-ai-worker) must stay
-    // exactly as Stage A left it -- Stage B never changes the Python side.
-    const pythonWorker = compose.services["ai-worker"];
-    expect(pythonWorker.environment?.TEMPORAL_NAMESPACE).toBe("default");
-    expect(pythonWorker.environment?.AI_WORKER_TASK_QUEUE).toBe("expense-tax-ai-worker");
+    expect(compose.services["ai-worker"]).toBeUndefined();
   });
 
   it("includes workflow-worker in deploy.sh's image-tag verification and rollback set", () => {
@@ -669,12 +644,11 @@ esac
     }
   });
 
-  it("requires both workers running in health-check.sh via a configurable, both-by-default list", () => {
+  it("requires workflow-worker running in health-check.sh via a configurable, defaulted list", () => {
     const health = readProductionFile("health-check.sh");
     expect(health).toContain("HEALTH_CHECK_REQUIRED_WORKERS");
-    expect(health).toMatch(/HEALTH_CHECK_REQUIRED_WORKERS:-ai-worker workflow-worker/);
+    expect(health).toMatch(/HEALTH_CHECK_REQUIRED_WORKERS-workflow-worker/);
     expect(health).toMatch(/\$1 == worker \{ found=1 \}/);
-    expect(health).not.toContain('$1 == "ai-worker"');
     expect(health).not.toContain('$1 == "workflow-worker"');
   });
 });

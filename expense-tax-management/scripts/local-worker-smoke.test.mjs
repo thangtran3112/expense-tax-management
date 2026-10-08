@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   SMOKE_CONFIRMATION,
-  assertGeneration1Routing,
   assertLocalDatabaseHost,
   assertLocalDockerEndpoint,
+  assertRoutingNotAtTarget,
   buildSmokePlan,
   isExecutionConfirmed,
   missingClerkCredentials,
@@ -145,9 +145,9 @@ describe("local worker smoke safety guards", () => {
     );
   });
 
-  it("confirms generation 1 / legacy namespace and queue before the first job", () => {
+  it("confirms routing is below the TypeScript target before advancing", () => {
     assert.doesNotThrow(() =>
-      assertGeneration1Routing({
+      assertRoutingNotAtTarget({
         generation: 1,
         namespace: "default",
         taskQueue: "expense-tax-ai-worker",
@@ -158,7 +158,7 @@ describe("local worker smoke safety guards", () => {
   it("refuses to run when a prior smoke already advanced dispatch routing", () => {
     assert.throws(
       () =>
-        assertGeneration1Routing({
+        assertRoutingNotAtTarget({
           generation: 2,
           namespace: "expense-tax",
           taskQueue: "expense-tax-processing",
@@ -167,7 +167,7 @@ describe("local worker smoke safety guards", () => {
     );
   });
 
-  it("orders the smoke plan: guards, generation 1, advance, generation 2, teardown", () => {
+  it("orders the smoke plan: guards, compose up, advance, job, teardown", () => {
     assert.deepEqual(buildSmokePlan(), [
       "guard:execution-confirmed",
       "guard:docker-endpoint-local",
@@ -175,15 +175,12 @@ describe("local worker smoke safety guards", () => {
       "guard:migration-database-host-local",
       "guard:runtime-database-host-local",
       "guard:clerk-credentials-present",
-      "compose:start-generation-1-services",
+      "compose:start-services",
       "database:run-app-api-migrations",
       "temporal:bootstrap-expense-tax-namespace",
-      "dispatch-routing:assert-generation-1",
-      "job:create-generation-1",
-      "job:await-python-worker-callback",
-      "dispatch-routing:advance-to-generation-2",
-      "compose:start-workflow-worker",
-      "job:create-generation-2",
+      "dispatch-routing:assert-not-at-target",
+      "dispatch-routing:advance-to-target",
+      "job:create-job",
       "job:await-typescript-worker-callback",
       "teardown:stop-started-services",
     ]);

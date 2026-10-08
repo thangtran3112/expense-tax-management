@@ -3,24 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pythonContractsRoot = path.join(
-  repoRoot,
-  "common",
-  "python",
-  "expense-contracts",
-);
 
 const gates = [
   {
     label: "Frozen pnpm install",
     command: "pnpm",
     args: ["install", "--frozen-lockfile"],
-  },
-  {
-    label: "Frozen Python contracts sync",
-    command: "uv",
-    args: ["sync", "--frozen"],
-    cwd: pythonContractsRoot,
   },
   {
     label: "Contract runtime build",
@@ -51,31 +39,6 @@ const gates = [
     label: "Phase 0I builds",
     command: "pnpm",
     args: ["build"],
-  },
-  {
-    label: "Python contracts lint",
-    command: "uv",
-    args: ["run", "ruff", "check", "src", "tests"],
-    cwd: pythonContractsRoot,
-  },
-  {
-    label: "Python contracts format",
-    command: "uv",
-    args: ["run", "ruff", "format", "--check", "src", "tests"],
-    cwd: pythonContractsRoot,
-  },
-  {
-    label: "Cross-language contract fixture",
-    command: "uv",
-    args: [
-      "run",
-      "python",
-      "-m",
-      "pytest",
-      "tests/test_expense_contracts.py",
-      "-q",
-    ],
-    cwd: pythonContractsRoot,
   },
   {
     label: "Credential boundary audit",
