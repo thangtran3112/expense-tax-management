@@ -1,0 +1,150 @@
+# ai-trading production stack (release 1: Trading Hub MVP).
+# Deployed by .github/workflows/ai-trading-deploy.yml through deploy.sh.
+name: ai-trading
+
+services:
+  web:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-web:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    networks: [hub]
+    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  ta-terminal:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-ta-terminal:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/tradingagents.env
+    volumes:
+      - ta-data:/home/appuser/.tradingagents
+    networks: [ta]
+    mem_limit: 1g
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:7681/u/tradingagents/', headers={'Cf-Access-Authenticated-User-Email': 'healthcheck'}), timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  ahf-terminal:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-ahf-terminal:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/ai-hedge-fund.env
+    volumes:
+      - ahf-data:/home/app/.hedge-fund
+    networks: [ahf]
+    mem_limit: 1g
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:7681/u/ai-hedge-fund/', headers={'Cf-Access-Authenticated-User-Email': 'healthcheck'}), timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  vibe-trading:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-vibe-trading:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/vibe-trading.env
+    environment:
+      # Trust X-Forwarded-Proto from the tunnel so the same-site check sees https.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - vibe-runs:/app/agent/runs
+      - vibe-sessions:/app/agent/sessions
+      - vibe-uploads:/app/agent/uploads
+      - vibe-swarm-runs:/app/agent/.swarm/runs
+      - vibe-home:/home/vibe/.vibe-trading
+    networks: [vibe]
+    # Upstream hardening (Vibe-Trading docker-compose.yml, VT-007), memory lowered for the shared VPS.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/vibe/.cache
+      - /home/vibe/.config
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8899/live', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+  gateway:
+    # Not digest-pinned yet, unlike this file's other images: `caddy:2-alpine`
+    # matches the tag already used unpinned in
+    # ai-trading/deploy/local/docker-compose.override.yml. Pin it before the
+    # real production deploy (Task 9) by running
+    # `docker pull caddy:2-alpine && docker inspect --format '{{index .RepoDigests 0}}' caddy:2-alpine`
+    # and using that exact value here.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [gateway, ta, ahf, vibe, mirofish]
+    mem_limit: 64m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/__healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  auth:
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-auth:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/auth.env
+    networks: [gateway]
+    mem_limit: 128m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8181/__auth/check').then((r) => process.exit(r.status === 401 ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+    restart: unless-stopped
+    command: ["tunnel", "--metrics", "0.0.0.0:2000", "run"]
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/cloudflared.env
+    networks: [hub, gateway]
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  hub: {}
+  ta: {}
+  ahf: {}
+  vibe: {}
+  gateway: {}
+
+volumes:
+  ta-data: {}
+  ahf-data: {}
+  vibe-runs: {}
+  vibe-sessions: {}
+  vibe-uploads: {}
+  vibe-swarm-runs: {}
+  vibe-home: {}

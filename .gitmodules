@@ -1,0 +1,12 @@
+[submodule "ai-trading/packages/trading-agents"]
+	path = ai-trading/packages/trading-agents
+	url = https://github.com/TauricResearch/TradingAgents.git
+[submodule "ai-trading/packages/ai-hedge-fund"]
+	path = ai-trading/packages/ai-hedge-fund
+	url = https://github.com/virattt/ai-hedge-fund.git
+[submodule "ai-trading/packages/vibe-trading"]
+	path = ai-trading/packages/vibe-trading
+	url = https://github.com/HKUDS/Vibe-Trading.git
+[submodule "ai-trading/packages/mirofish"]
+	path = ai-trading/packages/mirofish
+	url = https://github.com/666ghj/MiroFish.git
