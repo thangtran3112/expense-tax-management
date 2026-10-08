@@ -113,6 +113,17 @@ jobs:
             ai-trading/deploy/docker-bake.hcl
             ai-trading/deploy/docker-bake.ci.hcl
           load: true
+      - name: Build MiroFish static frontend for smoke tests
+        # smoke-test.sh all checks this export; same step as ai-trading-ci.yml.
+        uses: docker/bake-action@v7
+        env:
+          TAG: ci
+        with:
+          provenance: false
+          files: |
+            ai-trading/deploy/docker-bake.hcl
+            ai-trading/deploy/docker-bake.ci.hcl
+          targets: mirofish-frontend
       - name: Smoke tests
         env:
           TAG: ci
