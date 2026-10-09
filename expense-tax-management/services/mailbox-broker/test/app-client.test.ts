@@ -4,6 +4,7 @@
  * credential (App audience, "mailbox-broker-app" subject, "mailbox:write"
  * scope) and request shape per route.
  */
+import { AttachmentQuerySchema } from "@expense-tax/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMailboxAppClient, MailboxAppClientError } from "../src/app-client.js";
@@ -371,6 +372,64 @@ describe("app-client.ts createMailboxAppClient", () => {
       idempotencyKey: "idem-upload-1",
     });
     expect(capturedBytes).toEqual(pdfBytes);
+  });
+
+  it("fix round 7, fix round 1 (review Important #1): captured request URL parses against the REAL AttachmentQuerySchema from @expense-tax/contracts", async () => {
+    // Fix round 1: this no longer checks the captured URL against literal
+    // expected values -- it parses it with the SAME schema object
+    // services/app-api/src/routes/mailbox-ingestion.ts uses as its real
+    // `schema.querystring` (both import AttachmentQuerySchema from
+    // @expense-tax/contracts). A future edit to either side's field names
+    // without updating the other fails this test, not just a hand-copied
+    // literal that could silently drift from the real route.
+    const { createClient } = await setup();
+    const candidateId = "99999999-9999-4999-8999-999999999999";
+    let capturedUrl: URL | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
+    const client = createClient(async (url, init) => {
+      capturedUrl = url;
+      capturedHeaders = init.headers as Record<string, string>;
+      const body = init.body as ReadableStream<Uint8Array>;
+      await body.getReader().read();
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          attachmentIndex: 0,
+          fileId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          status: "READY",
+          errorCode: null,
+          idempotencyKey: "idem-upload-2",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const pdfBytes = Buffer.from("%PDF-1.4\nsome tiny pdf body", "latin1");
+    async function* source(): AsyncIterable<Buffer> {
+      yield pdfBytes;
+    }
+
+    await client.uploadAttachment(
+      {
+        candidateId,
+        attachmentIndex: 0,
+        uploadGrantId: "88888888-8888-4888-8888-888888888888",
+        expectedCandidateVersion: 3,
+        idempotencyKey: "idem-upload-2",
+      },
+      source(),
+    );
+
+    const parsed = AttachmentQuerySchema.parse(
+      Object.fromEntries(capturedUrl?.searchParams.entries() ?? []),
+    );
+    expect(parsed).toEqual({
+      uploadGrantId: "88888888-8888-4888-8888-888888888888",
+      expectedCandidateVersion: 3,
+      idempotencyKey: "idem-upload-2",
+    });
+    // Never as headers (the exact bug): only authorization/content-type.
+    expect(Object.keys(capturedHeaders ?? {}).sort()).toEqual(["authorization", "content-type"]);
   });
 
   it("uploadAttachment rejects locally (never calls fetch) when attachmentIndex is the sixth attachment", async () => {

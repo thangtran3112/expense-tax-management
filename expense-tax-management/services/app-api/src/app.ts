@@ -1,5 +1,6 @@
 import Fastify, {
   type FastifyInstance,
+  type FastifyRequest,
   type FastifyServerOptions,
 } from "fastify";
 import fastifySwagger from "@fastify/swagger";
@@ -304,18 +305,78 @@ function createDisabledMailboxIngestionDomain(): MailboxIngestionDomain {
   };
 }
 
+/**
+ * Fix round 1 (review Important #2) -- `uploadGrantId` (routes/
+ * mailbox-ingestion.ts's attachment-upload querystring) travels in the
+ * request URL, not a header, so `SENSITIVE_LOG_PATHS`'s header-only/
+ * field-name redact paths never touch it: pino's declarative `redact`
+ * only strips structured object paths, never substrings embedded inside
+ * another string field like the logged request URL. It is not a
+ * standalone bearer capability -- see the req-serializer comment below --
+ * but redaction here is a small, self-contained addition, so it is
+ * applied anyway per the review's "prefer redaction" guidance.
+ */
+const SENSITIVE_QUERY_PARAMS = ["uploadGrantId"];
+
+function redactUrl(url: string): string {
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return url;
+  const params = new URLSearchParams(url.slice(queryIndex + 1));
+  let changed = false;
+  for (const name of SENSITIVE_QUERY_PARAMS) {
+    if (params.has(name)) {
+      params.set(name, "[Redacted]");
+      changed = true;
+    }
+  }
+  return changed ? `${url.slice(0, queryIndex)}?${params.toString()}` : url;
+}
+
+function redactQuery(query: unknown): unknown {
+  if (!query || typeof query !== "object") return query;
+  const redacted: Record<string, unknown> = { ...(query as Record<string, unknown>) };
+  for (const name of SENSITIVE_QUERY_PARAMS) {
+    if (name in redacted) redacted[name] = "[Redacted]";
+  }
+  return redacted;
+}
+
+/**
+ * Mirrors pino-std-serializers' default `req` serializer shape (method,
+ * url, headers, hostname, remoteAddress, remotePort, query, params) --
+ * Fastify's logger otherwise uses that default verbatim -- except
+ * `url`/`query` pass through `redactUrl`/`redactQuery` first, since the
+ * declarative `redact` option alone cannot reach into the URL string.
+ * `headers` is still the real (unredacted-here) object: `redact`'s own
+ * `req.headers.authorization`/etc. paths above still apply to it exactly
+ * as before this serializer existed.
+ */
+function reqSerializer(request: FastifyRequest): Record<string, unknown> {
+  return {
+    method: request.method,
+    url: redactUrl(request.url),
+    headers: request.headers,
+    hostname: request.hostname,
+    remoteAddress: request.ip,
+    remotePort: request.socket?.remotePort,
+    query: redactQuery(request.query),
+    params: request.params,
+  };
+}
+
 function loggerWithRedaction(logger: BuildAppOptions["logger"]): LoggerOption {
   if (logger === false) {
     return false;
   }
 
   if (logger === true || logger === undefined) {
-    return { redact: SENSITIVE_LOG_PATHS };
+    return { redact: SENSITIVE_LOG_PATHS, serializers: { req: reqSerializer } };
   }
 
   return {
     ...logger,
     redact: SENSITIVE_LOG_PATHS,
+    serializers: { ...logger.serializers, req: reqSerializer },
   };
 }
 

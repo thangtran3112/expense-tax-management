@@ -118,13 +118,22 @@ describe.skipIf(!e2eEnabled)("Phase 3D-C Task 7 Step 6 — connected mailbox, re
         "operator prerequisite: the connected test mailbox must contain at least one unprocessed receipt-shaped email",
       ).toBeDefined();
 
+      // The personal profile id is not the tenant id; read the caller's real one.
+      const scopesResponse = await apiFetch(`/api/v1/tenants/${tenantId}/scopes`);
+      expect(scopesResponse.status).toBe(200);
+      const scopes = (await scopesResponse.clone().json()) as {
+        personalProfiles: readonly { id: string }[];
+      };
+      const profileId = scopes.personalProfiles[0]?.id;
+      expect(profileId, "operator prerequisite: the caller has a personal profile in this tenant").toBeDefined();
+
       const resolve = await apiFetch(
         `/api/v1/tenants/${tenantId}/mailbox-connections/${connectionId}/candidates/${candidate!.id}/resolve`,
         {
           method: "POST",
           body: JSON.stringify({
             action: "ingest",
-            scope: { kind: "personal", profileId: tenantId },
+            scope: { kind: "personal", profileId: profileId! },
             expectedCandidateVersion: candidate!.version,
             requestId: crypto.randomUUID(),
           }),

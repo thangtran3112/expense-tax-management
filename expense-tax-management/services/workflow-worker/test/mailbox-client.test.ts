@@ -9,6 +9,13 @@
  * pattern `clients.test.ts` uses for `createAppApiClient`'s
  * `tokenProviders` override) to isolate the request plumbing.
  */
+import {
+  JobResultSubmitRequestV1Schema,
+  JobStatusUpdateRequestV1Schema,
+  ProcessingJobSchema,
+  type JobResultSubmitRequestV1,
+  type JobStatusUpdateRequestV1,
+} from "@expense-tax/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -217,6 +224,116 @@ describe("clients/mailbox-client.ts createMailboxAppApiClient", () => {
     expect(capturedMethod).toBe("POST");
     expect(capturedBody).toBe("{}");
     expect(capturedContentType).toBe("application/json");
+  });
+
+  it("fix round 7: mailboxJobStatus sends a body that validates against the canonical JobStatusUpdateRequestV1Schema the route itself uses", async () => {
+    let capturedPath = "";
+    let capturedBody: unknown;
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const processingJob = {
+      id: jobId,
+      tenantId: "22222222-2222-4222-8222-222222222222",
+      personalProfileId: null,
+      businessId: null,
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId: `job-${jobId}`,
+      taskQueue: "expense-tax-processing",
+      runId: null,
+      status: "RUNNING",
+      targetAggregateType: null,
+      targetAggregateId: null,
+      expectedAggregateVersion: null,
+      inputParams: {},
+      allowedResultSchemaVersion: "mailbox-materialize-v1",
+      result: null,
+      errorMessage: null,
+      version: 2,
+      createdAt: "2026-10-09T00:00:00.000Z",
+      updatedAt: "2026-10-09T00:00:00.000Z",
+      dispatchedAt: null,
+      completedAt: null,
+    };
+    const client = createMailboxAppApiClient(config, {
+      appTokenProvider: async () => "app-token-value",
+      brokerTokenProvider: async () => "broker-token-value",
+      fetch: fakeFetch((url, init) => {
+        capturedPath = url.pathname;
+        capturedBody = JSON.parse(String(init.body));
+        return new Response(JSON.stringify(processingJob), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    });
+
+    const request: JobStatusUpdateRequestV1 = {
+      schemaVersion: 1,
+      status: "RUNNING",
+      idempotencyKey: "idem-status-1",
+      expectedJobVersion: 1,
+    };
+    const result = await client.mailboxJobStatus(jobId, request);
+
+    expect(capturedPath).toBe(`/internal/v1/mailbox/jobs/${jobId}/status`);
+    expect(() => JobStatusUpdateRequestV1Schema.parse(capturedBody)).not.toThrow();
+    expect(JobStatusUpdateRequestV1Schema.parse(capturedBody)).toEqual(request);
+    expect(() => ProcessingJobSchema.parse(result)).not.toThrow();
+  });
+
+  it("fix round 7: mailboxJobResult sends a body that validates against the canonical JobResultSubmitRequestV1Schema the route itself uses", async () => {
+    let capturedPath = "";
+    let capturedBody: unknown;
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const processingJob = {
+      id: jobId,
+      tenantId: "22222222-2222-4222-8222-222222222222",
+      personalProfileId: null,
+      businessId: null,
+      workflowType: "MailboxMaterializeWorkflow",
+      workflowId: `job-${jobId}`,
+      taskQueue: "expense-tax-processing",
+      runId: null,
+      status: "SUCCEEDED",
+      targetAggregateType: null,
+      targetAggregateId: null,
+      expectedAggregateVersion: null,
+      inputParams: {},
+      allowedResultSchemaVersion: "mailbox-materialize-v1",
+      result: { candidateId: "33333333-3333-4333-8333-333333333333" },
+      errorMessage: null,
+      version: 3,
+      createdAt: "2026-10-09T00:00:00.000Z",
+      updatedAt: "2026-10-09T00:00:00.000Z",
+      dispatchedAt: null,
+      completedAt: null,
+    };
+    const client = createMailboxAppApiClient(config, {
+      appTokenProvider: async () => "app-token-value",
+      brokerTokenProvider: async () => "broker-token-value",
+      fetch: fakeFetch((url, init) => {
+        capturedPath = url.pathname;
+        capturedBody = JSON.parse(String(init.body));
+        return new Response(JSON.stringify(processingJob), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    });
+
+    const request: JobResultSubmitRequestV1 = {
+      schemaVersion: 1,
+      status: "SUCCEEDED",
+      idempotencyKey: "idem-result-1",
+      expectedJobVersion: 2,
+      resultSchemaVersion: "mailbox-materialize-v1",
+      result: { candidateId: "33333333-3333-4333-8333-333333333333" },
+    };
+    const result = await client.mailboxJobResult(jobId, request);
+
+    expect(capturedPath).toBe(`/internal/v1/mailbox/jobs/${jobId}/result`);
+    expect(() => JobResultSubmitRequestV1Schema.parse(capturedBody)).not.toThrow();
+    expect(JobResultSubmitRequestV1Schema.parse(capturedBody)).toEqual(request);
+    expect(() => ProcessingJobSchema.parse(result)).not.toThrow();
   });
 
   it("never sends the authorization header to anywhere but the single outbound request", async () => {
