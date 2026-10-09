@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { workerConfigFromEnv } from "../src/config.js";
+import { WorkerConfigError, workerConfigFromEnv } from "../src/config.js";
 
 const ENV = {
   TEMPORAL_HOST: " temporal:7233 ",
@@ -130,6 +130,14 @@ describe("workerConfigFromEnv", () => {
       delete env[missingKey];
 
       expect(() => workerConfigFromEnv(env)).toThrow(/must all be set together or all omitted/);
+      let thrown: unknown;
+      try {
+        workerConfigFromEnv(env);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(WorkerConfigError);
+      expect((thrown as WorkerConfigError).variables).toEqual([missingKey]);
     },
   );
 

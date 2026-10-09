@@ -1,6 +1,19 @@
 import { AI_WORKER_TASK_QUEUE } from "@expense-tax/contracts";
 import { z } from "zod";
 
+// Thrown by manual (non-Zod) config validation below. Carries the offending
+// env var NAMES as structured data -- never values -- so a caller (worker.ts)
+// can log them without parsing this error's message.
+export class WorkerConfigError extends Error {
+  readonly variables: readonly string[];
+
+  constructor(message: string, variables: readonly string[]) {
+    super(message);
+    this.name = "WorkerConfigError";
+    this.variables = variables;
+  }
+}
+
 export interface MachineCredentialConfig {
   readonly audience: string;
   readonly machineSecretKey: string;
@@ -209,8 +222,10 @@ export function workerConfigFromEnv(
   const mailboxPresence = MAILBOX_WORKER_KEYS.map((key) => parsed[key] !== undefined);
   const mailboxPresentCount = mailboxPresence.filter(Boolean).length;
   if (mailboxPresentCount !== 0 && mailboxPresentCount !== MAILBOX_WORKER_KEYS.length) {
-    throw new Error(
+    const missing = MAILBOX_WORKER_KEYS.filter((_key, index) => !mailboxPresence[index]);
+    throw new WorkerConfigError(
       `Mailbox worker configuration is incomplete: ${MAILBOX_WORKER_KEYS.join(", ")} must all be set together or all omitted`,
+      missing,
     );
   }
   const mailboxConfigured = mailboxPresentCount === MAILBOX_WORKER_KEYS.length;

@@ -11,7 +11,7 @@ import {
 import { createAppApiClient } from "./clients/app-api.js";
 import { createFoundryClient } from "./clients/foundry.js";
 import { createMailboxAppApiClient } from "./clients/mailbox-client.js";
-import { workerConfigFromEnv, type WorkerConfig } from "./config.js";
+import { WorkerConfigError, workerConfigFromEnv, type WorkerConfig } from "./config.js";
 import { extractFakeReceipt } from "./providers/fake-ocr.js";
 
 export interface WorkerFactories {
@@ -86,6 +86,12 @@ function describeStartupError(error: unknown): string {
       ...new Set(error.issues.map((issue) => String(issue.path[0] ?? "(unknown)"))),
     ];
     return `ZodError: ${keys.join(", ")}`;
+  }
+  // Manual (non-Zod) config validation, e.g. the mailbox all-or-nothing
+  // check -- `variables` is structured data set at the throw site, never
+  // derived by parsing `error.message`.
+  if (error instanceof WorkerConfigError) {
+    return `WorkerConfigError: ${error.variables.join(", ")}`;
   }
   if (error instanceof Error) {
     return error.constructor.name;

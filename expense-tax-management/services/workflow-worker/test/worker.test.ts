@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { workerConfigFromEnv } from "../src/config.js";
+import { WorkerConfigError, workerConfigFromEnv } from "../src/config.js";
 import {
   runWorker,
   startWorkerProcess,
@@ -134,6 +134,58 @@ describe("workflow worker process", () => {
       );
       const loggedArgs = consoleError.mock.calls.flat().map(String);
       expect(loggedArgs.some((arg) => arg.includes("super-secret-value-123"))).toBe(false);
+    } finally {
+      process.exitCode = previousExitCode;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("logs only the missing env var names for a partial mailbox configuration, never present secret values", async () => {
+    const previousExitCode = process.exitCode;
+    let configError: unknown;
+    try {
+      workerConfigFromEnv({
+        TEMPORAL_HOST: "temporal:7233",
+        TEMPORAL_NAMESPACE: "expense-tax",
+        AI_WORKER_TASK_QUEUE: "expense-tax-processing",
+        APP_API_BASE_URL: "http://app-api:8100",
+        FOUNDRY_BASE_URL: "http://foundry-service:8200",
+        CLERK_ISSUER_URL: "https://clerk.test",
+        CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
+        CLERK_APP_SERVICE_AUDIENCE: "mch_appAudience",
+        CLERK_APP_MACHINE_SECRET_KEY: "ak_test_app_secret",
+        CLERK_APP_SERVICE_SUBJECT: "mch_app",
+        CLERK_FOUNDRY_SERVICE_AUDIENCE: "mch_foundryAudience",
+        CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_test_foundry_secret",
+        CLERK_FOUNDRY_SERVICE_SUBJECT: "mch_foundry",
+        // Mailbox config present except CLERK_MAILBOX_WORKER_SUBJECT -- the
+        // all-or-nothing check must reject this and name only the missing key.
+        MAILBOX_BROKER_BASE_URL: "http://mailbox-broker:8300",
+        CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailboxAudience",
+        CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_super-secret-mailbox-key-999",
+      });
+    } catch (error) {
+      configError = error;
+    }
+    expect(configError).toBeInstanceOf(WorkerConfigError);
+
+    const connect = vi.fn().mockRejectedValue(configError);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      process.exitCode = undefined;
+      await startWorkerProcess(config, {
+        connect,
+        create: vi.fn(),
+      } as unknown as WorkerFactories);
+
+      expect(process.exitCode).toBe(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        "workflow-worker failed to start or run",
+        expect.stringContaining("CLERK_MAILBOX_WORKER_SUBJECT"),
+      );
+      const loggedArgs = consoleError.mock.calls.flat().map(String);
+      expect(loggedArgs.some((arg) => arg.includes("ak_super-secret-mailbox-key-999"))).toBe(false);
     } finally {
       process.exitCode = previousExitCode;
       consoleError.mockRestore();
