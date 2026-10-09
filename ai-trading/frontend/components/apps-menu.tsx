@@ -36,7 +36,9 @@ export function AppsMenu() {
   }, [open]);
 
   return (
-    <div className="relative">
+    <div className="relative" onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
       <button
         ref={buttonRef}
         type="button"

@@ -25,9 +25,14 @@ target "ahf-terminal" {
   cache-to   = ["type=gha,scope=ai-trading-ahf-terminal,mode=max"]
 }
 
-target "vibe-trading" {
+target "vibe-upstream" {
   cache-from = ["type=gha,scope=ai-trading-vibe-trading"]
   cache-to   = ["type=gha,scope=ai-trading-vibe-trading,mode=max"]
+}
+
+target "vibe-trading" {
+  cache-from = ["type=gha,scope=ai-trading-vibe-wrapper"]
+  cache-to   = ["type=gha,scope=ai-trading-vibe-wrapper,mode=max"]
 }
 
 target "auth" {
