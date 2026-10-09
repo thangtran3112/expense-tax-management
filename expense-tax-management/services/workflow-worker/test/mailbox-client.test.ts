@@ -41,8 +41,8 @@ const config: WorkerConfig = {
     },
     mailboxApp: {
       audience: "mch_appAudience",
-      machineSecretKey: "ak_test_mailbox_secret",
-      subject: "mch_workerMailbox",
+      machineSecretKey: "ak_test_mailbox_app_secret",
+      subject: "mch_workerMailboxApp",
     },
     mailboxBroker: {
       audience: "mch_mailboxAudience",

@@ -139,8 +139,21 @@ describe("docker-compose.mailbox.yml (opt-in override)", () => {
     expect((rendered.services["app-api"].environment as Record<string, string>).CLERK_MAILBOX_APP_API_SUBJECT).toBe(
       "dummy-value",
     );
+    // Fix round 5: one worker machine per audience -- App API authorizes
+    // the worker's App-audience machine (CLERK_MAILBOX_WORKER_APP_SUBJECT),
+    // never the broker-audience subject it never reads.
+    expect(
+      (rendered.services["app-api"].environment as Record<string, string>).CLERK_MAILBOX_WORKER_APP_SUBJECT,
+    ).toBe("dummy-value");
+    expect(rendered.services["app-api"].environment).not.toHaveProperty("CLERK_MAILBOX_WORKER_SUBJECT");
     expect(
       (rendered.services["workflow-worker"].environment as Record<string, string>).CLERK_MAILBOX_WORKER_SUBJECT,
+    ).toBe("dummy-value");
+    expect(
+      (rendered.services["workflow-worker"].environment as Record<string, string>).CLERK_MAILBOX_WORKER_APP_SUBJECT,
+    ).toBe("dummy-value");
+    expect(
+      (rendered.services["workflow-worker"].environment as Record<string, string>).CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY,
     ).toBe("dummy-value");
     expect(
       (rendered.services["workflow-worker"].environment as Record<string, string>).TEMPORAL_NAMESPACE,

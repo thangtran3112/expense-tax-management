@@ -235,7 +235,7 @@ export function createMailboxAppApiClient(
   const { mailboxBrokerBaseUrl } = config.services;
   if (!mailboxApp || !mailboxBroker || !mailboxBrokerBaseUrl) {
     throw new Error(
-      "createMailboxAppApiClient requires mailbox configuration (MAILBOX_BROKER_BASE_URL, CLERK_MAILBOX_SERVICE_AUDIENCE, CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_SUBJECT) to be set",
+      "createMailboxAppApiClient requires mailbox configuration (MAILBOX_BROKER_BASE_URL, CLERK_MAILBOX_SERVICE_AUDIENCE, CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_SUBJECT, CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_APP_SUBJECT) to be set",
     );
   }
 

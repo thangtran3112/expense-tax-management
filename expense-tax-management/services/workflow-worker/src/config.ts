@@ -53,16 +53,23 @@ export interface WorkerConfig {
      * Phase 3D-A Task 3: the worker's mailbox-scoped credential calling
      * App API's mailbox routes (`mailbox:discover`/`mailbox:materialize`).
      * Audience is the existing `CLERK_APP_SERVICE_AUDIENCE` -- the same
-     * App target `clerk.app` already calls -- but under the distinct
-     * mailbox-scoped subject/secret, so a leaked mailbox credential
-     * cannot reach non-mailbox App routes.
+     * App target `clerk.app` already calls -- but under a distinct
+     * mailbox-scoped subject/secret, so a leaked mailbox credential cannot
+     * reach non-mailbox App routes.
+     *
+     * Fix round 5: a DISTINCT Clerk machine from `mailboxBroker` below --
+     * App API's service-token verifier accepts only a single audience, so
+     * one machine per audience is required (`CLERK_MAILBOX_WORKER_APP_*`).
      */
     readonly mailboxApp?: MachineCredentialConfig;
     /**
      * Phase 3D-A Task 3: the worker's credential calling the mailbox
-     * broker directly (3D-B/C). Same subject/secret as `mailboxApp` --
-     * one Clerk machine identity, two request-time audiences -- targeting
-     * the new `CLERK_MAILBOX_SERVICE_AUDIENCE`.
+     * broker directly (3D-B/C), audience `CLERK_MAILBOX_SERVICE_AUDIENCE`.
+     *
+     * Fix round 5: a DISTINCT Clerk machine from `mailboxApp` above
+     * (`CLERK_MAILBOX_WORKER_*`, no longer shared) -- this broker's own
+     * verifier tolerates a multi-audience token, but App API's does not,
+     * so the two machines must never be the same one.
      *
      * Optional for the same reason as `services.mailboxBrokerBaseUrl`
      * above (Task 5 controller ruling).
@@ -188,15 +195,25 @@ const WorkerEnvironmentSchema = z.object({
   CLERK_MAILBOX_SERVICE_AUDIENCE: machineIdSchema(
     "CLERK_MAILBOX_SERVICE_AUDIENCE",
   ).optional(),
+  // Fix round 5: one Clerk machine per audience -- App API's service-token
+  // verifier (services/app-api/src/auth/verifier.ts) deliberately accepts
+  // only a single audience, so the worker cannot reuse its broker-scoped
+  // machine (below) to call App API. This pair is the broker-audience
+  // machine only.
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: machineSecretSchema(
     "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
   ).optional(),
-  // Real value is the Clerk machine ID of the worker's mailbox identity
-  // (`mch_...`), not a human-readable name -- this machine must be scoped
-  // to both App API and the mailbox broker, same shape as every other
-  // machine ID this schema validates.
   CLERK_MAILBOX_WORKER_SUBJECT: machineIdSchema(
     "CLERK_MAILBOX_WORKER_SUBJECT",
+  ).optional(),
+  // Fix round 5: the App-audience machine -- distinct Clerk machine ID
+  // and secret from the broker-audience pair above, scoped to App API
+  // only, so its tokens carry exactly one audience.
+  CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY: machineSecretSchema(
+    "CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY",
+  ).optional(),
+  CLERK_MAILBOX_WORKER_APP_SUBJECT: machineIdSchema(
+    "CLERK_MAILBOX_WORKER_APP_SUBJECT",
   ).optional(),
 });
 
@@ -212,6 +229,8 @@ const MAILBOX_WORKER_KEYS = [
   "CLERK_MAILBOX_SERVICE_AUDIENCE",
   "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
   "CLERK_MAILBOX_WORKER_SUBJECT",
+  "CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY",
+  "CLERK_MAILBOX_WORKER_APP_SUBJECT",
 ] as const;
 
 export function workerConfigFromEnv(
@@ -255,10 +274,13 @@ export function workerConfigFromEnv(
           machineSecretKey: parsed.CLERK_FOUNDRY_MACHINE_SECRET_KEY,
           subject: parsed.CLERK_FOUNDRY_SERVICE_SUBJECT,
         },
+        // Fix round 5: distinct machines per audience -- mailboxApp uses
+        // the App-audience pair, mailboxBroker keeps the broker-audience
+        // pair. Never share a machine across the two.
         mailboxApp: {
           audience: parsed.CLERK_APP_SERVICE_AUDIENCE,
-          machineSecretKey: parsed.CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY as string,
-          subject: parsed.CLERK_MAILBOX_WORKER_SUBJECT as string,
+          machineSecretKey: parsed.CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY as string,
+          subject: parsed.CLERK_MAILBOX_WORKER_APP_SUBJECT as string,
         },
         mailboxBroker: {
           audience: parsed.CLERK_MAILBOX_SERVICE_AUDIENCE as string,

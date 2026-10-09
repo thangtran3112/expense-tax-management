@@ -26,6 +26,8 @@ const config = workerConfigFromEnv({
   CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailboxAudience",
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_test_mailbox_secret",
   CLERK_MAILBOX_WORKER_SUBJECT: "mch_workerMailbox",
+  CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY: "ak_test_mailbox_app_secret",
+  CLERK_MAILBOX_WORKER_APP_SUBJECT: "mch_workerMailboxApp",
 });
 
 function workerFactories(options: { runError?: Error } = {}) {
@@ -158,8 +160,9 @@ describe("workflow worker process", () => {
         CLERK_FOUNDRY_SERVICE_AUDIENCE: "mch_foundryAudience",
         CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_test_foundry_secret",
         CLERK_FOUNDRY_SERVICE_SUBJECT: "mch_foundry",
-        // Mailbox config present except CLERK_MAILBOX_WORKER_SUBJECT -- the
-        // all-or-nothing check must reject this and name only the missing key.
+        // Mailbox config present except CLERK_MAILBOX_WORKER_SUBJECT and
+        // the fix-round-5 App-audience pair -- the all-or-nothing check
+        // must reject this and name every missing key, never a value.
         MAILBOX_BROKER_BASE_URL: "http://mailbox-broker:8300",
         CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailboxAudience",
         CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_super-secret-mailbox-key-999",
@@ -168,6 +171,11 @@ describe("workflow worker process", () => {
       configError = error;
     }
     expect(configError).toBeInstanceOf(WorkerConfigError);
+    expect((configError as WorkerConfigError).variables).toEqual([
+      "CLERK_MAILBOX_WORKER_SUBJECT",
+      "CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY",
+      "CLERK_MAILBOX_WORKER_APP_SUBJECT",
+    ]);
 
     const connect = vi.fn().mockRejectedValue(configError);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -184,6 +192,9 @@ describe("workflow worker process", () => {
         "workflow-worker failed to start or run",
         expect.stringContaining("CLERK_MAILBOX_WORKER_SUBJECT"),
       );
+      const loggedMessage = consoleError.mock.calls[0]?.[1];
+      expect(loggedMessage).toContain("CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY");
+      expect(loggedMessage).toContain("CLERK_MAILBOX_WORKER_APP_SUBJECT");
       const loggedArgs = consoleError.mock.calls.flat().map(String);
       expect(loggedArgs.some((arg) => arg.includes("ak_super-secret-mailbox-key-999"))).toBe(false);
     } finally {
