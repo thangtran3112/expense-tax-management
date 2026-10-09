@@ -278,6 +278,56 @@ test("GET /__auth/session is 405 (wrong method)", async () => {
   });
 });
 
+// --- POST /__auth/logout: expire this browser's cookie, not copied tokens ---
+
+test("POST /__auth/logout expires the shared HttpOnly cookie on an allowed origin", async () => {
+  await withAuthServer(ENV, async (port) => {
+    const res = await fetch(`http://127.0.0.1:${port}/__auth/logout`, {
+      method: "POST",
+      headers: { origin: ALLOWED_ORIGIN, cookie: validCookie() },
+    });
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get("set-cookie"), "__ai_trading_session=; Domain=tobytran.dev; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0");
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const check = await fetch(`http://127.0.0.1:${port}/__auth/check`, {
+      headers: { cookie: res.headers.get("set-cookie").split(";")[0] },
+    });
+    assert.equal(check.status, 401);
+  });
+});
+
+test("POST /__auth/logout is idempotent and accepts the configured staging origin", async () => {
+  const staging = "https://trading-static.tobytran.dev";
+  await withAuthServer({ ...ENV, ALLOWED_ORIGINS: `${ALLOWED_ORIGIN},${staging}` }, async (port) => {
+    for (let i = 0; i < 2; i += 1) {
+      const res = await fetch(`http://127.0.0.1:${port}/__auth/logout`, { method: "POST", headers: { origin: staging } });
+      assert.equal(res.status, 204);
+      assert.match(res.headers.get("set-cookie"), /Max-Age=0/);
+    }
+  });
+});
+
+test("POST /__auth/logout refuses missing or cross-site origins without clearing cookies", async () => {
+  await withAuthServer(ENV, async (port) => {
+    for (const origin of [undefined, "https://evil.example.test", `${ALLOWED_ORIGIN}.evil.example.test`]) {
+      const res = await fetch(`http://127.0.0.1:${port}/__auth/logout`, {
+        method: "POST",
+        headers: { cookie: validCookie(), ...(origin ? { origin } : {}) },
+      });
+      assert.equal(res.status, 403);
+      assert.equal(res.headers.get("set-cookie"), null);
+    }
+  });
+});
+
+test("GET /__auth/logout refuses the wrong method without clearing cookies", async () => {
+  await withAuthServer(ENV, async (port) => {
+    const res = await fetch(`http://127.0.0.1:${port}/__auth/logout`, { headers: { origin: ALLOWED_ORIGIN, cookie: validCookie() } });
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get("set-cookie"), null);
+  });
+});
+
 // --- Unknown route ---
 
 test("an unknown path is 404", async () => {

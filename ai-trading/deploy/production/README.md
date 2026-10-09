@@ -37,6 +37,18 @@ $CLI get ai-trading/clerk PUBLISHABLE_KEY   # prints one value exactly
 
 LLM keys are shared: every app profile links `ANTHROPIC_API_KEY` and an `OPENAI_API_KEY_*` from `shared/llm`. No provider spend limit is set (owner decision, 2026-10-08).
 
+Vibe-Trading's wrapper installs the native Anthropic adapter from `deploy/upstream/vibe-trading/requirements-anthropic.lock`, with exact versions and wheel hashes. It leaves upstream's pinned dependencies and source unchanged. The smoke test constructs the real adapter offline and checks installed upstream versions; on an upstream bump, regenerate the additions against that base image if compatibility changes. Do not install dependencies by hand on the running VPS.
+
+Rotate the shared Anthropic key with `family_config.py set shared/llm ANTHROPIC_API_KEY` (value on stdin), then redeploy so all three app containers receive it. The retired Secret Manager bundle is not used.
+
+## Account and sign-out
+
+The header's Account panel shows the signed-in Clerk user's name and email read-only. There are no account-editing controls, and identity data is loaded client-side rather than embedded in GCS assets.
+
+Sign out pauses new session exchanges, waits for an active exchange to settle, clears this browser's shared HttpOnly trading cookie through Origin-checked `POST /__auth/logout`, then ends the current Clerk session. The workspace is hidden during the action; a failed action offers Retry sign out instead of reporting success. Other family apps using that same Clerk session may also become signed out; this does not sign out the Google account itself.
+
+This is browser-cookie cleanup, not server-side revocation: copied stateless cookies can remain valid until their one-hour expiry, and already-open external WebSocket/SSE connections are not forcibly closed. The serializer is per tab; an already-started refresh in another tab can still repopulate the shared cookie. A genuinely stalled exchange can delay sign-out, because the existing serial queue never aborts an active request. Public Worker cutover still requires separate approval and review of these limits.
+
 ## Deploy
 
 Every push to `main` touching `ai-trading/**` (excluding `ai-trading/plans/**` and any `*.md` file), `.gitmodules`, this workflow file itself, or `common/config/**` runs `build` and `deploy` below unconditionally. A manual `workflow_dispatch` instead runs **only** the jobs whose boolean input the operator explicitly sets true on that dispatch; every input defaults to `false`, so a bare "Run workflow" click with no inputs changed runs nothing.
@@ -89,6 +101,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
 5. ai-hedge-fund opens its terminal UI and reaches a backtest screen (with a data key) or its missing-key prompt.
 6. Vibe-Trading opens with no key to paste (the gateway supplies `API_AUTH_KEY` after the Clerk check) and answers one chat request.
+7. Account opens with read-only name/email on desktop and iPad; Escape closes it and restores focus. Sign out returns to Clerk sign-in, and new backend requests from that browser return 401 until signing in again.
 
 ## Operations
 

@@ -68,8 +68,15 @@ target "ahf-terminal" {
   tags = ["${REGISTRY}/ai-trading-ahf-terminal:${TAG}"]
 }
 
-target "vibe-trading" {
+target "vibe-upstream" {
   context = "ai-trading/packages/vibe-trading"
+}
+
+target "vibe-trading" {
+  context = "ai-trading/deploy/upstream/vibe-trading"
+  contexts = {
+    base = "target:vibe-upstream"
+  }
   tags    = ["${REGISTRY}/ai-trading-vibe-trading:${TAG}"]
 }
 
