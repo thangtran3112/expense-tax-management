@@ -2856,7 +2856,6 @@ export interface paths {
                                     pendingDuplicateReview: boolean;
                                     /** Format: date-time */
                                     receivedAt: string;
-                                    /** Format: email */
                                     senderAddress: string;
                                 } | null;
                                 merchant: string;
@@ -3030,7 +3029,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
@@ -3200,7 +3198,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
@@ -3495,7 +3492,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
@@ -10863,7 +10859,6 @@ export interface paths {
                                     /** @enum {string} */
                                     kind: "business";
                                 }) | null;
-                                /** Format: email */
                                 senderAddress: string;
                                 senderDomain: string;
                                 sourceId: string | null;
@@ -11065,7 +11060,6 @@ export interface paths {
                                 /** @enum {string} */
                                 kind: "business";
                             }) | null;
-                            /** Format: email */
                             senderAddress: string;
                             senderDomain: string;
                             sourceId: string | null;
@@ -12473,7 +12467,6 @@ export interface paths {
                                     pendingDuplicateReview: boolean;
                                     /** Format: date-time */
                                     receivedAt: string;
-                                    /** Format: email */
                                     senderAddress: string;
                                 } | null;
                                 merchant: string;
@@ -12647,7 +12640,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
@@ -12817,7 +12809,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
@@ -13112,7 +13103,6 @@ export interface paths {
                                 pendingDuplicateReview: boolean;
                                 /** Format: date-time */
                                 receivedAt: string;
-                                /** Format: email */
                                 senderAddress: string;
                             } | null;
                             merchant: string;
