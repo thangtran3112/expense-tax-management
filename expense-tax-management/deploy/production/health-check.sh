@@ -43,18 +43,31 @@ done
 # without weakening the default (workflow-worker required) for every
 # normal deploy/health check. Uses `-` (not `:-`) so an explicit empty
 # string is honored instead of falling back to the default.
+#
+# Requires Docker's own `healthy` state (via `docker inspect`), not merely
+# "a container is running" (`compose ps -q`): the worker's startup
+# validation can crash-loop (`restart: unless-stopped` immediately
+# restarting it), and a single poll can land on a moment where a
+# crash-looping container happens to be between restarts -- a false
+# positive the endpoint curls above don't have because they probe actual
+# liveness, not container state. A crash-looping container never
+# accumulates the healthcheck's interval before it dies again, so it never
+# reaches `healthy`, same idiom `verify_running_images` in deploy.sh uses
+# to resolve a service's container id via `compose ps -q`.
 read -r -a required_workers <<<"${HEALTH_CHECK_REQUIRED_WORKERS-workflow-worker}"
 for worker in "${required_workers[@]}"; do
   worker_ready=0
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-    if compose ps --status running --services | awk -v worker="$worker" '$1 == worker { found=1 } END { exit found ? 0 : 1 }'; then
+    container_id=$(compose ps -q "$worker" 2>/dev/null || true)
+    if [[ -n "$container_id" ]] &&
+      [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null)" == "healthy" ]]; then
       worker_ready=1
       break
     fi
     sleep "$delay"
   done
   if ((worker_ready == 0)); then
-    printf '%s is not running\n' "$worker" >&2
+    printf '%s is not healthy\n' "$worker" >&2
     exit 1
   fi
 done

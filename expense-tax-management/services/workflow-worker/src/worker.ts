@@ -1,6 +1,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NativeConnection, Worker } from "@temporalio/worker";
+import { ZodError } from "zod";
 
 import { createActivities, createMailboxActivities } from "./activities/index.js";
 import {
@@ -10,7 +11,7 @@ import {
 import { createAppApiClient } from "./clients/app-api.js";
 import { createFoundryClient } from "./clients/foundry.js";
 import { createMailboxAppApiClient } from "./clients/mailbox-client.js";
-import { workerConfigFromEnv, type WorkerConfig } from "./config.js";
+import { WorkerConfigError, workerConfigFromEnv, type WorkerConfig } from "./config.js";
 import { extractFakeReceipt } from "./providers/fake-ocr.js";
 
 export interface WorkerFactories {
@@ -76,14 +77,36 @@ export async function runWorker(
   }
 }
 
+// Sanitized startup-failure cause: safe to log because it never includes a
+// claim value, URL, or secret -- only the error's class name and, for a
+// configuration validation failure, the offending env var NAMES.
+function describeStartupError(error: unknown): string {
+  if (error instanceof ZodError) {
+    const keys = [
+      ...new Set(error.issues.map((issue) => String(issue.path[0] ?? "(unknown)"))),
+    ];
+    return `ZodError: ${keys.join(", ")}`;
+  }
+  // Manual (non-Zod) config validation, e.g. the mailbox all-or-nothing
+  // check -- `variables` is structured data set at the throw site, never
+  // derived by parsing `error.message`.
+  if (error instanceof WorkerConfigError) {
+    return `WorkerConfigError: ${error.variables.join(", ")}`;
+  }
+  if (error instanceof Error) {
+    return error.constructor.name;
+  }
+  return "UnknownError";
+}
+
 export async function startWorkerProcess(
   config?: WorkerConfig,
   factories: WorkerFactories = defaultFactories,
 ): Promise<void> {
   try {
     await runWorker(config ?? workerConfigFromEnv(), factories);
-  } catch {
-    console.error("workflow-worker failed to start or run");
+  } catch (error) {
+    console.error("workflow-worker failed to start or run", describeStartupError(error));
     process.exitCode = 1;
   }
 }

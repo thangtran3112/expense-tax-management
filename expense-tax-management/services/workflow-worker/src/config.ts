@@ -1,6 +1,19 @@
 import { AI_WORKER_TASK_QUEUE } from "@expense-tax/contracts";
 import { z } from "zod";
 
+// Thrown by manual (non-Zod) config validation below. Carries the offending
+// env var NAMES as structured data -- never values -- so a caller (worker.ts)
+// can log them without parsing this error's message.
+export class WorkerConfigError extends Error {
+  readonly variables: readonly string[];
+
+  constructor(message: string, variables: readonly string[]) {
+    super(message);
+    this.name = "WorkerConfigError";
+    this.variables = variables;
+  }
+}
+
 export interface MachineCredentialConfig {
   readonly audience: string;
   readonly machineSecretKey: string;
@@ -75,24 +88,6 @@ function machineSecretSchema(key: string): z.ZodType<string> {
   ).refine(
     (value) => !PlaceholderPattern.test(value),
     `${key} must not be a placeholder`,
-  );
-}
-
-/**
- * Phase 3D-A mailbox subjects (`app-api-mailbox` / `workflow-worker-
- * mailbox` / `mailbox-broker-app`, per the plan's exact machine subjects)
- * are human-readable per-identity names, not Clerk `mch_`-format resource
- * IDs like the existing `CLERK_APP_SERVICE_SUBJECT`/
- * `CLERK_FOUNDRY_SERVICE_SUBJECT` values `machineIdSchema` validates.
- * App API's own config.ts (Task 2) already treats these as plain
- * required strings (no `mch_` regex) for the same reason. A dedicated,
- * looser schema here keeps the existing `machineIdSchema` contract
- * (and every value it already validates) completely unchanged.
- */
-function mailboxSubjectSchema(key: string): z.ZodType<string> {
-  return RequiredStringSchema.regex(
-    /^[a-z][a-z0-9-]*$/,
-    `${key} must be a lowercase-hyphenated mailbox subject`,
   );
 }
 
@@ -196,7 +191,11 @@ const WorkerEnvironmentSchema = z.object({
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: machineSecretSchema(
     "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
   ).optional(),
-  CLERK_MAILBOX_WORKER_SUBJECT: mailboxSubjectSchema(
+  // Real value is the Clerk machine ID of the worker's mailbox identity
+  // (`mch_...`), not a human-readable name -- this machine must be scoped
+  // to both App API and the mailbox broker, same shape as every other
+  // machine ID this schema validates.
+  CLERK_MAILBOX_WORKER_SUBJECT: machineIdSchema(
     "CLERK_MAILBOX_WORKER_SUBJECT",
   ).optional(),
 });
@@ -223,8 +222,10 @@ export function workerConfigFromEnv(
   const mailboxPresence = MAILBOX_WORKER_KEYS.map((key) => parsed[key] !== undefined);
   const mailboxPresentCount = mailboxPresence.filter(Boolean).length;
   if (mailboxPresentCount !== 0 && mailboxPresentCount !== MAILBOX_WORKER_KEYS.length) {
-    throw new Error(
+    const missing = MAILBOX_WORKER_KEYS.filter((_key, index) => !mailboxPresence[index]);
+    throw new WorkerConfigError(
       `Mailbox worker configuration is incomplete: ${MAILBOX_WORKER_KEYS.join(", ")} must all be set together or all omitted`,
+      missing,
     );
   }
   const mailboxConfigured = mailboxPresentCount === MAILBOX_WORKER_KEYS.length;
