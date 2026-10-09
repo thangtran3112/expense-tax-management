@@ -170,7 +170,14 @@ const MailboxCandidatePublicFields = {
   connectionId: z.uuid(),
   tenantId: z.uuid(),
   receivedAt: TimestampSchema,
-  senderAddress: z.email().max(320),
+  // Fix round 6: sender addresses come from external `From` headers --
+  // App API normalizes a display-name form to a bare address-spec before
+  // storage, but RFC 5322 permits local-part characters (`=`, `#`, `&`,
+  // `+`, ...) that zod's strict `z.email()` regex rejects. A bounded
+  // string keeps this a display-only field (same contract office-web
+  // already treats it as) instead of turning one odd sender into a
+  // ResponseSerializationError for the whole candidates list.
+  senderAddress: z.string().min(1).max(320),
   senderDomain: z.string().trim().min(1).max(255),
   subject: z.string().trim().max(998),
   contentHash: Sha256DigestSchema,
