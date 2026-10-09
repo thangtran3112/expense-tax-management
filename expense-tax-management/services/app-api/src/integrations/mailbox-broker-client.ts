@@ -132,7 +132,8 @@ export function createMailboxBrokerClient(
         issuerUrl: config.issuerUrl,
         jwksUrl: config.jwksUrl,
         credentials: config.credentials,
-        scopes: ["mailbox:write"],
+        // Must match the broker start route guard: createGuard("app-api", ["oauth:start"]).
+        scopes: ["oauth:start"],
       },
       { fetch: fetchImplementation, ...options.machineTokenOptions },
     );
