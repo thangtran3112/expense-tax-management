@@ -1,13 +1,13 @@
 # Expense Tax Management - Master Plan
 
-> **Status:** Production foundation complete. Release 2026-10-05 (`main` `d7426e5`, expense only) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert, `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B with shared Temporal active, and family-config runtime env (Firestore `family-config`, `common/config/family_config.py`). Runtime migration Phase 2 is done (2026-10-06): generation 2 routes new jobs to the TypeScript worker; generation 1 had nothing to drain. Remaining: Stage C Python removal, 3D operator activation, and VPS backup tooling activation.
-> **Last updated:** 2026-10-04
+> **Status:** Production foundation complete. Release 2026-10-05 (`main` `d7426e5`, expense only) is deployed: Phases 3B, 3C, 3D-A/B/C (3D inert, `MAILBOX_FEATURE_ENABLED=false`), runtime migration Task 7 Stage A/B with shared Temporal active, and family-config runtime env (Firestore `family-config`, `common/config/family_config.py`). Runtime migration is complete: generation 2 routes all jobs to the TypeScript worker (2026-10-06), and Stage C removed the Python worker (2026-10-07, `main` `f20c451`). Web session wiring and first-upload fixes are live (#31, #33). Remaining: 3D operator activation and VPS backup tooling activation.
+> **Last updated:** 2026-10-07
 > **Source of truth:** This file tracks phase state. Completed implementation details were removed after verification and remain available in git history.
 
 ## Handoff
 
-- Runtime migration Tasks 1-6 and Task 7 Stage A merged (through PR #12); Task 7 Stage B source merged (#14) -- `workflow-worker` now ships idle in production Compose alongside `ai-worker`, routed by the data-driven dispatch-routing fence (generation 1 = Python, until an operator runs `advance`). Remaining: the Stage B operator cutover sequence (shared Temporal activation, non-production smoke, `advance`, drain, schedule migration), then Stage C Python removal.
-- Phase 3D-A merged (#15), Phase 3D-B merged (#16), Phase 3D-C merged (#17). All three remain undeployed and inert in production (`MAILBOX_FEATURE_ENABLED` unset); 3D-B/3D-C production activation additionally requires the runtime migration Task 7 operator cutover above.
+- Runtime migration complete: Tasks 1-7 merged (#12, #14, #35); operator cutover done 2026-10-06 (generation 2); Stage C Python removal released 2026-10-07 (#36, `main` `f20c451`).
+- Phase 3D-A merged (#15), Phase 3D-B merged (#16), Phase 3D-C merged (#17). All three remain undeployed and inert in production (`MAILBOX_FEATURE_ENABLED` unset); The runtime migration that 3D-B/3D-C activation depended on is complete.
 - VPS encrypted backup/restore tooling merged (#13); production activation (bucket/IAM provisioning, first real backup, operator restore rehearsal) is operator-only and pending.
 - Execute Phase 3D-A, Phase 3D-B, then Phase 3D-C only after Phase 3C completes.
 - Work on `feature/toby` from current `origin/dev`; create a separate worktree only when explicitly requested.
@@ -67,7 +67,7 @@ Foundry Web ----------> Foundry Service (Fastify/Zod/Kysely)
 
 | Order | Phase | Status | Canonical documents |
 |---|---|---|---|
-| Parallel | **TypeScript Temporal worker migration** | Tasks 1-6 and Task 7 Stage A merged (#12); Task 7 Stage B source merged (#14, `workflow-worker` idle in production Compose); remaining: operator cutover (shared Temporal activation, release, advance, drain) then Stage C Python removal | [migration plan](sub-plans/runtime-typescript-temporal-migration.md) / [historical handoff](HANDOFF.md) |
+| Parallel | **TypeScript Temporal worker migration** | Complete: Tasks 1-7 merged (#12, #14, #35); generation 2 cutover 2026-10-06; Stage C released 2026-10-07 (#36, `main` `f20c451`) | [migration plan](sub-plans/runtime-typescript-temporal-migration.md) / [historical handoff](HANDOFF.md) |
 | Parallel | **Local Clerk development bootstrap** | Development credentials, M2M checks, local Compose stack (PostgreSQL/Temporal/both workers), and a reproducible dual-generation worker smoke complete; local frontend sign-in and local Clerk webhook remain owner-action-required | [sub-plan](sub-plans/local-clerk-development-bootstrap.md) |
 | Parallel | **VPS encrypted backup and restore tooling** | Merged (#13); production activation (bucket/IAM provisioning, first backup, operator restore rehearsal) pending | [plan](sub-plans/vps-backup-and-restore.md) |
 | 1 | **3C - Auto-tagging and categorization** | Implemented on `dev` (commits `a4ae60b`..`14bd9df`; PostgreSQL evidence 2026-09-19); not deployed | [spec](../../docs/superpowers/specs/2026-09-12-phase-3c-auto-tagging-design.md) / [implementation plan](../../docs/superpowers/plans/2026-09-12-phase-3c-auto-tagging.md) |
