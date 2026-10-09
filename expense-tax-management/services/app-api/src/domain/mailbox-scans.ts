@@ -72,6 +72,7 @@ import type { AppDatabase, JsonValue } from "../database/types.js";
 import { DomainError } from "../errors.js";
 import { requireScopeRole } from "./files.js";
 import { hashNormalizedRequest, toJsonValue } from "./idempotency.js";
+import { normalizeMailboxSenderAddress } from "./mailbox-sender-address.js";
 import type { PlansDomain } from "./plans.js";
 
 type ConnectionRow = Selectable<AppDatabase["app.mailbox_connections"]>;
@@ -597,7 +598,11 @@ export function createMailboxScansDomain(
               connection_id: input.connectionId,
               tenant_id: scanRun.tenant_id,
               received_at: new Date(message.receivedAt),
-              sender_address: message.senderAddress,
+              // Fix round 6: the broker stores the raw `From` header
+              // verbatim; this is the one INSERT into this column, so
+              // normalizing here (not in the broker/worker) guarantees
+              // every stored value is already a bare address-spec.
+              sender_address: normalizeMailboxSenderAddress(message.senderAddress),
               sender_domain: message.senderDomain,
               subject: message.subject,
               content_hash: message.contentHash,
