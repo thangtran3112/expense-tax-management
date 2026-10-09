@@ -235,7 +235,7 @@ export function createMailboxAppApiClient(
   const { mailboxBrokerBaseUrl } = config.services;
   if (!mailboxApp || !mailboxBroker || !mailboxBrokerBaseUrl) {
     throw new Error(
-      "createMailboxAppApiClient requires mailbox configuration (MAILBOX_BROKER_BASE_URL, CLERK_MAILBOX_SERVICE_AUDIENCE, CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_SUBJECT) to be set",
+      "createMailboxAppApiClient requires mailbox configuration (MAILBOX_BROKER_BASE_URL, CLERK_MAILBOX_SERVICE_AUDIENCE, CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_SUBJECT, CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY, CLERK_MAILBOX_WORKER_APP_SUBJECT) to be set",
     );
   }
 
@@ -322,10 +322,15 @@ export function createMailboxAppApiClient(
       return request(mailboxBrokerBaseUrl, brokerTokenProvider, input);
     },
     discoverPage(scanRunId) {
+      // The broker route requires `body: z.strictObject({})` -- an absent
+      // body (no content-type, no body sent at all) fails that schema
+      // with a 400. An empty object satisfies it; this route never takes
+      // real input (the broker resolves everything itself).
       return client.requestBroker({
         path: `/internal/v1/mailbox/scan-runs/${scanRunId}/discover`,
         method: "POST",
         responseSchema: DiscoveryPageV1Schema,
+        body: {},
       });
     },
     startScheduledScan({ tenantId, connectionId, requestId }) {

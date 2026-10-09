@@ -624,7 +624,7 @@ describe("mailbox routes — real registration through buildApp", () => {
     });
 
     it("honors a configured mailboxWorkerServiceSubject override", async () => {
-      const { app } = createTestApp({ CLERK_MAILBOX_WORKER_SUBJECT: "custom-worker-subject" });
+      const { app } = createTestApp({ CLERK_MAILBOX_WORKER_APP_SUBJECT: "custom-worker-subject" });
 
       const rejected = await postScheduledScan(app, `Bearer ${await workerToken()}`);
       expect(rejected.statusCode).toBe(403);

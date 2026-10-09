@@ -23,15 +23,24 @@ services:
       CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY:?CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY is required}
       CLERK_MAILBOX_APP_API_SUBJECT: ${CLERK_MAILBOX_APP_API_SUBJECT:?CLERK_MAILBOX_APP_API_SUBJECT is required}
       CLERK_MAILBOX_BROKER_SUBJECT: ${CLERK_MAILBOX_BROKER_SUBJECT:?CLERK_MAILBOX_BROKER_SUBJECT is required}
-      CLERK_MAILBOX_WORKER_SUBJECT: ${CLERK_MAILBOX_WORKER_SUBJECT:?CLERK_MAILBOX_WORKER_SUBJECT is required}
+      # One machine per audience (fix round 5): App API authorizes the
+      # worker's App-audience machine, distinct from the worker's
+      # broker-audience machine the broker itself authorizes below.
+      CLERK_MAILBOX_WORKER_APP_SUBJECT: ${CLERK_MAILBOX_WORKER_APP_SUBJECT:?CLERK_MAILBOX_WORKER_APP_SUBJECT is required}
       MAILBOX_ALLOWED_REDIRECT_ORIGINS: ${MAILBOX_ALLOWED_REDIRECT_ORIGINS:?MAILBOX_ALLOWED_REDIRECT_ORIGINS is required}
 
   workflow-worker:
     environment:
       MAILBOX_BROKER_BASE_URL: http://mailbox-broker:8300
       CLERK_MAILBOX_SERVICE_AUDIENCE: ${CLERK_MAILBOX_SERVICE_AUDIENCE:?CLERK_MAILBOX_SERVICE_AUDIENCE is required}
+      # Broker-audience machine (authorized by the broker, below).
       CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY:?CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY is required}
       CLERK_MAILBOX_WORKER_SUBJECT: ${CLERK_MAILBOX_WORKER_SUBJECT:?CLERK_MAILBOX_WORKER_SUBJECT is required}
+      # App-audience machine (authorized by App API, above) -- one
+      # machine per audience, since App API only ever accepts a single
+      # audience on a service token.
+      CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY: ${CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY:?CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY is required}
+      CLERK_MAILBOX_WORKER_APP_SUBJECT: ${CLERK_MAILBOX_WORKER_APP_SUBJECT:?CLERK_MAILBOX_WORKER_APP_SUBJECT is required}
 
   mailbox-broker:
     image: ghcr.io/thangtran3112/family-app/expense-tax-mailbox-broker:${IMAGE_TAG}

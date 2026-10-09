@@ -41,8 +41,8 @@ const config: WorkerConfig = {
     },
     mailboxApp: {
       audience: "mch_appAudience",
-      machineSecretKey: "ak_test_mailbox_secret",
-      subject: "mch_workerMailbox",
+      machineSecretKey: "ak_test_mailbox_app_secret",
+      subject: "mch_workerMailboxApp",
     },
     mailboxBroker: {
       audience: "mch_mailboxAudience",
@@ -178,6 +178,44 @@ describe("clients/mailbox-client.ts createMailboxAppApiClient", () => {
     });
 
     expect(capturedBody).toBe(JSON.stringify({ foo: "bar" }));
+    expect(capturedContentType).toBe("application/json");
+  });
+
+  it("discoverPage POSTs a JSON object body ({}) with content-type application/json, never a bodyless request", async () => {
+    // Fix round 5, bug 1: the broker route requires `body:
+    // z.strictObject({})` -- an absent body (no content-type, no body at
+    // all) fails that schema with a 400. Pins the exact wire bytes.
+    let capturedPath = "";
+    let capturedMethod = "";
+    let capturedBody = "";
+    let capturedContentType: string | undefined;
+    const client = createMailboxAppApiClient(config, {
+      appTokenProvider: async () => "app-token-value",
+      brokerTokenProvider: async () => "broker-token-value",
+      fetch: fakeFetch((url, init) => {
+        capturedPath = url.pathname;
+        capturedMethod = init.method ?? "";
+        capturedBody = String(init.body);
+        capturedContentType = (init.headers as Record<string, string>)["content-type"];
+        return new Response(
+          JSON.stringify({
+            scanRunId: "11111111-1111-4111-8111-111111111111",
+            pageSequence: 1,
+            candidateCount: 0,
+            retryCount: 0,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    });
+
+    await client.discoverPage("11111111-1111-4111-8111-111111111111");
+
+    expect(capturedPath).toBe(
+      "/internal/v1/mailbox/scan-runs/11111111-1111-4111-8111-111111111111/discover",
+    );
+    expect(capturedMethod).toBe("POST");
+    expect(capturedBody).toBe("{}");
     expect(capturedContentType).toBe("application/json");
   });
 
