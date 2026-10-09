@@ -170,6 +170,93 @@ describe("routes/mailbox-ingestion.ts -- attachment upload streaming", () => {
     expect(capturedSource).toBeDefined();
     expect(capturedSource instanceof Buffer).toBe(false);
   });
+
+  // ------------------------------------------------------------------ //
+  // Fix round 7 -- production incident (2026-10-09): the broker's own
+  // outbound client (services/mailbox-broker/src/app-client.ts) sent
+  // uploadGrantId/expectedCandidateVersion/idempotencyKey as custom
+  // headers; this route reads them from the QUERYSTRING
+  // (AttachmentQuerySchema). Every real upload 400'd. Pins both halves of
+  // that contract so either side drifting from it fails a test
+  // immediately -- the broker's own mirror test is
+  // app-client.test.ts's "sends uploadGrantId/expectedCandidateVersion/
+  // idempotencyKey as querystring, not headers".
+  // ------------------------------------------------------------------ //
+
+  it("fix round 7: accepts uploadGrantId/expectedCandidateVersion/idempotencyKey via querystring -- the exact fields the broker's app-client.ts sends", async () => {
+    const app = createStreamingTestApp(async (input, source) => {
+      for await (const chunk of source) void chunk; // drain
+      return {
+        candidateId: input.candidateId,
+        attachmentIndex: input.attachmentIndex,
+        fileId: randomUUID(),
+        status: "READY",
+        errorCode: null,
+        idempotencyKey: input.idempotencyKey,
+      };
+    });
+    await app.ready();
+
+    const uploadGrantId = randomUUID();
+    const idempotencyKey = randomUUID();
+    const url = new URL(
+      `http://app-api.test/internal/v1/mailbox/candidates/${randomUUID()}/attachments/0`,
+    );
+    url.searchParams.set("uploadGrantId", uploadGrantId);
+    url.searchParams.set("expectedCandidateVersion", "2");
+    url.searchParams.set("idempotencyKey", idempotencyKey);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `${url.pathname}${url.search}`,
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/octet-stream",
+      },
+      payload: Buffer.from("fake-attachment-bytes"),
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("fix round 7: rejects the request when those three fields arrive as headers instead of querystring (the exact production incident)", async () => {
+    const app = createStreamingTestApp(async () => {
+      throw new Error("must not be called -- schema validation should reject first");
+    });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/v1/mailbox/candidates/${randomUUID()}/attachments/0`,
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/octet-stream",
+        // The pre-fix broker behavior: everything as headers, nothing in
+        // the querystring.
+        "x-mailbox-upload-grant-id": randomUUID(),
+        "x-mailbox-expected-candidate-version": "2",
+        "x-mailbox-idempotency-key": randomUUID(),
+      },
+      payload: Buffer.from("fake-attachment-bytes"),
+    });
+
+    // App API's error handler deliberately sanitizes validation failures
+    // to a generic message in the HTTP response (errors.ts never echoes
+    // raw Zod paths back to a caller); the exact missing-field detail from
+    // the real incident appeared in server logs, not the response body.
+    // The schema-level assertion below pins that detail directly.
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("fix round 7: AttachmentQuerySchema names all three missing fields (the exact detail the production logs showed)", async () => {
+    const { AttachmentQuerySchema } = await import("../src/routes/mailbox-ingestion.js");
+    const result = AttachmentQuerySchema.safeParse({});
+    expect(result.success).toBe(false);
+    const paths = result.success ? [] : result.error.issues.map((issue) => issue.path.join("."));
+    expect(paths).toEqual(
+      expect.arrayContaining(["uploadGrantId", "expectedCandidateVersion", "idempotencyKey"]),
+    );
+  });
 });
 
 // -------------------------------------------------------------------- //

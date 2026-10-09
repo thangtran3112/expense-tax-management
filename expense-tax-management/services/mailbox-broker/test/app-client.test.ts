@@ -373,6 +373,62 @@ describe("app-client.ts createMailboxAppClient", () => {
     expect(capturedBytes).toEqual(pdfBytes);
   });
 
+  it("fix round 7: sends uploadGrantId/expectedCandidateVersion/idempotencyKey as querystring, not headers (production incident regression pin)", async () => {
+    // Mirrors services/app-api/src/routes/mailbox-ingestion.ts's exported
+    // AttachmentQuerySchema exactly (field names + that
+    // expectedCandidateVersion arrives as a querystring value, coerced to
+    // a number server-side) -- this monorepo's services only ever depend
+    // on @expense-tax/contracts, never on each other, so there is no
+    // cross-service import to pin this against directly; App API's own
+    // mailbox-ingestion.test.ts pins the receiving half of this same
+    // contract against the real (now-exported) schema.
+    const { createClient } = await setup();
+    const candidateId = "99999999-9999-4999-8999-999999999999";
+    let capturedUrl: URL | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
+    const client = createClient(async (url, init) => {
+      capturedUrl = url;
+      capturedHeaders = init.headers as Record<string, string>;
+      const body = init.body as ReadableStream<Uint8Array>;
+      await body.getReader().read();
+      return new Response(
+        JSON.stringify({
+          candidateId,
+          attachmentIndex: 0,
+          fileId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          status: "READY",
+          errorCode: null,
+          idempotencyKey: "idem-upload-2",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const pdfBytes = Buffer.from("%PDF-1.4\nsome tiny pdf body", "latin1");
+    async function* source(): AsyncIterable<Buffer> {
+      yield pdfBytes;
+    }
+
+    await client.uploadAttachment(
+      {
+        candidateId,
+        attachmentIndex: 0,
+        uploadGrantId: "88888888-8888-4888-8888-888888888888",
+        expectedCandidateVersion: 3,
+        idempotencyKey: "idem-upload-2",
+      },
+      source(),
+    );
+
+    expect(capturedUrl?.searchParams.get("uploadGrantId")).toBe(
+      "88888888-8888-4888-8888-888888888888",
+    );
+    expect(capturedUrl?.searchParams.get("expectedCandidateVersion")).toBe("3");
+    expect(capturedUrl?.searchParams.get("idempotencyKey")).toBe("idem-upload-2");
+    // Never as headers (the exact bug): only authorization/content-type.
+    expect(Object.keys(capturedHeaders ?? {}).sort()).toEqual(["authorization", "content-type"]);
+  });
+
   it("uploadAttachment rejects locally (never calls fetch) when attachmentIndex is the sixth attachment", async () => {
     const { createClient } = await setup();
     let fetchCalled = false;

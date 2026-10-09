@@ -64,7 +64,21 @@ const errors = {
 };
 
 const CandidateIdParamsSchema = z.strictObject({ candidateId: z.uuid() });
-const AttachmentParamsSchema = z.strictObject({
+/**
+ * Exported (fix round 7) -- the broker's own outbound client
+ * (services/mailbox-broker/src/app-client.ts's `uploadAttachment`) has no
+ * `@expense-tax/mailbox-broker` <-> `@expense-tax/app-api` package
+ * dependency to import this from directly (this monorepo's services only
+ * ever depend on `@expense-tax/contracts`, never on each other -- no
+ * existing precedent for a cross-service devDependency). Exporting these
+ * two request-shape schemas lets App API's OWN test suite pin the exact
+ * wire contract the broker must hit; the broker's own test suite pins its
+ * own outbound request shape against a literal fixture that mirrors this
+ * schema's field names (see app-client.test.ts's "sends uploadGrantId/
+ * expectedCandidateVersion/idempotencyKey as querystring" test). Belongs
+ * to the request shape only -- response/body schemas stay private.
+ */
+export const AttachmentParamsSchema = z.strictObject({
   candidateId: z.uuid(),
   attachmentIndex: z.coerce.number().int().min(0),
 });
@@ -83,7 +97,7 @@ const UploadGrantResponseSchema = z.strictObject({
   maxAttachments: z.literal(5),
 });
 
-const AttachmentQuerySchema = z.strictObject({
+export const AttachmentQuerySchema = z.strictObject({
   uploadGrantId: z.uuid(),
   expectedCandidateVersion: z.coerce.number().int(),
   idempotencyKey: z.string().trim().min(1).max(500),
