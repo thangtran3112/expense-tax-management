@@ -33,6 +33,12 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
 - Shared Temporal `family-temporal` is active (`/opt/family-app/temporal`); legacy Expense Temporal is stopped (`restart=no`).
 - Dispatch routing advanced to generation 2 on 2026-10-06. New jobs run on the TypeScript `workflow-worker` (namespace `expense-tax`, queue `expense-tax-processing`).
 - Real Capture OCR jobs completed on the TypeScript worker on 2026-10-07. Stage C is done (2026-10-07, #35/#36, `main` `f20c451`): the Python `ai-worker` is gone from code, CI, and production; a rollback cannot restore it.
+- Connected mailbox (Phase 4) is live since 2026-10-08/09 (`MAILBOX_FEATURE_ENABLED=true`, `main` `be7af1e`, releases #59 #62 #64 #66 #68):
+  - Gmail OAuth client "Mailbox broker (expense-mailbox.tobytran.dev)" in `expense-tax-tobytran-2026`, with the Gmail API enabled;
+  - 4 Clerk M2M machines, one per audience: `app-api-mailbox`, `mailbox-broker-app`, `workflow-worker-mailbox` (to the broker), `workflow-worker-mailbox-app` (to App API);
+  - the family tenant's `connected_mailbox_scan` entitlement comes from an operator override in `app.tenant_feature_overrides` (the `trial` plan keeps it off);
+  - the owner's Gmail is connected (Personal), with a daily 02:00 scan schedule.
+- Receipt OCR is still a fake extractor: `services/workflow-worker/src/worker.ts` wires `extractFakeReceipt` ("Fake OCR Merchant"). Real OCR needs a provider decision.
 - Clerk production Google sign-in uses a custom OAuth client in GCP project `expense-tax-tobytran-2026` (Google Auth Platform app `Family Expense Tax`, published "In production"). Its ID/secret live in Firestore `expense-tax-management/ops` (`CLERK_GOOGLE_OAUTH_CLIENT_*`).
 
 ## Boundaries
