@@ -366,9 +366,14 @@ export function createAppConfig(options: AppConfigOptions = {}): AppConfig {
             env,
             "CLERK_MAILBOX_BROKER_SUBJECT",
           ),
+          // Fix round 5: one Clerk machine per audience -- this is the
+          // worker's App-audience machine (CLERK_MAILBOX_WORKER_APP_SUBJECT),
+          // distinct from CLERK_MAILBOX_WORKER_SUBJECT, which scopes the
+          // worker's broker-audience machine the mailbox broker authorizes.
+          // App API never reads that one.
           mailboxWorkerServiceSubject: optionalEnvironmentValue(
             env,
-            "CLERK_MAILBOX_WORKER_SUBJECT",
+            "CLERK_MAILBOX_WORKER_APP_SUBJECT",
           ),
         }
       : undefined;
