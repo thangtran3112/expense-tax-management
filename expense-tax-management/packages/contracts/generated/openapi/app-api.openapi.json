@@ -6998,9 +6998,8 @@
                                     "type": "string"
                                   },
                                   "senderAddress": {
-                                    "format": "email",
                                     "maxLength": 320,
-                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "minLength": 1,
                                     "type": "string"
                                   }
                                 },
@@ -7590,9 +7589,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
@@ -8364,9 +8362,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
@@ -8936,9 +8933,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
@@ -28968,9 +28964,8 @@
                             ]
                           },
                           "senderAddress": {
-                            "format": "email",
                             "maxLength": 320,
-                            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                            "minLength": 1,
                             "type": "string"
                           },
                           "senderDomain": {
@@ -29669,9 +29664,8 @@
                       ]
                     },
                     "senderAddress": {
-                      "format": "email",
                       "maxLength": 320,
-                      "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                      "minLength": 1,
                       "type": "string"
                     },
                     "senderDomain": {
@@ -33755,9 +33749,8 @@
                                     "type": "string"
                                   },
                                   "senderAddress": {
-                                    "format": "email",
                                     "maxLength": 320,
-                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                    "minLength": 1,
                                     "type": "string"
                                   }
                                 },
@@ -34347,9 +34340,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
@@ -35121,9 +35113,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
@@ -35693,9 +35684,8 @@
                               "type": "string"
                             },
                             "senderAddress": {
-                              "format": "email",
                               "maxLength": 320,
-                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "minLength": 1,
                               "type": "string"
                             }
                           },
