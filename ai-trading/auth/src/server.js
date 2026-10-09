@@ -1,4 +1,4 @@
-// Two routes only. Caddy (ai-trading/deploy/production/Caddyfile, the
+// Session exchange, check, and browser-cookie logout only. Caddy (ai-trading/deploy/production/Caddyfile, the
 // "gateway" service) owns every reverse-proxy and WebSocket concern
 // declaratively; this file never does either -- no `node:net`, no
 // `http.request` against another service, no WebSocket handling.
@@ -87,10 +87,23 @@ export function createAuthServer(env) {
     res.end();
   }
 
+  function handleLogout(req, res) {
+    if (req.method !== "POST") return res.writeHead(405).end();
+    if (!isAllowedOrigin(req.headers.origin, ALLOWED_ORIGINS)) return res.writeHead(403).end();
+    // Delete only this browser's cookie with exactly the scope used to set it.
+    // This does not revoke copied stateless cookies or already-open streams.
+    res.writeHead(204, {
+      "set-cookie": `${COOKIE_NAME}=; Domain=tobytran.dev; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
+      "cache-control": "no-store",
+    });
+    res.end();
+  }
+
   return createServer((req, res) => {
     const { pathname } = new URL(req.url, "http://auth");
     if (pathname === "/__auth/session") return void handleSession(req, res);
     if (pathname === "/__auth/check") return void handleCheck(req, res);
+    if (pathname === "/__auth/logout") return void handleLogout(req, res);
     res.writeHead(404).end();
   });
 }

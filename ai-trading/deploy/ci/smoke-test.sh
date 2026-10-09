@@ -96,6 +96,31 @@ smoke_terminal() {
 }
 
 smoke_vibe() {
+  # Native Anthropic is our deployed provider. Construct its actual adapter
+  # with a fake key and no network; liveness alone misses absent extras.
+  docker run --rm --network none --entrypoint python \
+    -v "$PWD/ai-trading/packages/vibe-trading/requirements-lock.txt:/expected-base-requirements.txt:ro" \
+    -e ANTHROPIC_API_KEY=sk-ant-smoke-dummy -e LANGCHAIN_PROVIDER=anthropic \
+    -e LANGCHAIN_MODEL_NAME=claude-sonnet-5-5 "$(image vibe-trading)" -c '
+import importlib.metadata as metadata
+import re
+from pathlib import Path
+# Optional provider installation must not upgrade upstream hash-locked packages.
+for line in Path("/expected-base-requirements.txt").read_text().splitlines():
+    pin = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", line)
+    if not pin:
+        continue
+    name, expected = pin.groups()
+    try:
+        actual = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        continue  # platform-specific packages may be absent from this image
+    assert actual == expected, f"{name} changed from upstream {expected} to {actual}"
+from langchain_anthropic import ChatAnthropic
+from src.providers.llm import build_llm
+assert isinstance(build_llm(), ChatAnthropic)
+' || fail "Vibe-Trading native Anthropic adapter could not be constructed"
+  echo "ok   Vibe-Trading constructs its native Anthropic adapter offline"
   local url=http://127.0.0.1:18899/auth/sse-ticket
   local site=(-X POST -H "Origin: https://vibe.example.test" -H "Host: vibe.example.test")
   start smoke-vibe "$(image vibe-trading)" 18899 8899 \
@@ -199,6 +224,16 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   expect_status 401 http://127.0.0.1:18080/live -H 'Host: vibe-trading.tobytran.dev'
   expect_status 403 http://127.0.0.1:18080/__auth/session \
     -X POST -H 'Origin: https://evil.example.test' -H 'Content-Type: application/json' -d '{}'
+  expect_status 403 http://127.0.0.1:18080/__auth/logout \
+    -X POST -H 'Origin: https://evil.example.test' --cookie "$cookie"
+  expect_status 405 http://127.0.0.1:18080/__auth/logout
+  expect_status 204 http://127.0.0.1:18080/__auth/logout \
+    -X POST -H 'Origin: https://trading.example.test' --cookie "$cookie"
+  local logout_headers
+  logout_headers="$(curl -s -D - -o /dev/null --cookie "$cookie" \
+    -X POST -H 'Origin: https://trading.example.test' http://127.0.0.1:18080/__auth/logout)"
+  grep -qi '^set-cookie: __ai_trading_session=; .*Max-Age=0' <<<"$logout_headers" || fail "Caddy did not forward the trading cookie deletion"
+  echo "ok   Caddy forwards Origin-checked gateway cookie logout"
   expect_status 401 http://127.0.0.1:18080/u/tradingagents/ --cookie "$expired_cookie"
 
   body="$(curl -s --cookie "$cookie" -H 'Cf-Access-Authenticated-User-Email: attacker@evil.com' \

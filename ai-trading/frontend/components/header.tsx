@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CandlestickChart } from "lucide-react";
 import { AppsMenu } from "@/components/apps-menu";
+import { AccountMenu } from "@/components/account-menu";
 
 export function Header({ breadcrumb }: { breadcrumb?: string }) {
   return (
@@ -17,12 +18,15 @@ export function Header({ breadcrumb }: { breadcrumb?: string }) {
             Trading Hub
           </Link>
           {breadcrumb && (
-            <span className="truncate text-sm text-muted-foreground">
+            <span className="hidden truncate text-sm text-muted-foreground sm:inline">
               Hub <span aria-hidden>/</span> {breadcrumb}
             </span>
           )}
         </div>
-        <AppsMenu />
+        <div className="flex shrink-0 items-center gap-2">
+          <AppsMenu />
+          <AccountMenu />
+        </div>
       </div>
     </header>
   );

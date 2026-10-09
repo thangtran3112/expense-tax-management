@@ -10,12 +10,12 @@ export function getGateState(input: { isLoaded: boolean; isSignedIn: boolean | u
 // refresh well before that so a user never sees a mid-session 401.
 //
 // Operator-facing limitation, not an oversight, requiring explicit
-// acceptance before production activation: the stateless two-route auth
+// acceptance before production activation: the stateless auth
 // design has no revocation list, so a copied or not-yet-expired cookie
 // remains usable for up to this same ~3600-second window after the user
 // signs out of Clerk -- there is no server-side state to immediately
-// invalidate it. Adding one is out of scope here (progress.md ruling,
-// round 1: do not add a fake logout endpoint). See `components/
+// invalidate it. The sign-out control clears this browser's cookie, not
+// copied cookies or already-open upstream connections. See `components/
 // auth-gate.tsx`'s module-level comment for the other accepted
 // limitation (an indefinite liveness ceiling on a genuinely hung
 // exchange) that should be reviewed alongside this one.
@@ -173,6 +173,25 @@ export function createSerialExchangeQueue(): ExchangeQueue {
   return enqueue;
 }
 
+// Caller pauses new exchanges before enqueueing this action on the same queue.
+// Let an active exchange settle so its Set-Cookie cannot overwrite logout.
+export function signOutTradingSession(
+  queue: ExchangeQueue,
+  signOut: () => Promise<void>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SessionExchangeResult> {
+  return queue(async () => {
+    try {
+      const res = await fetchImpl("/__auth/logout", { method: "POST", credentials: "include" });
+      if (res.status !== 204) return "error";
+      await signOut();
+      return "ok";
+    } catch {
+      return "error";
+    }
+  });
+}
+
 // Wraps a queued exchange task so that if a newer session has already
 // taken over by the time this task's turn in the queue actually arrives,
 // it is skipped entirely: no token is acquired, no fetch is dispatched.
@@ -192,7 +211,7 @@ export function createSessionGatedTask(
   fetchImpl: typeof fetch = fetch,
 ): () => Promise<SessionExchangeResult> {
   return async () => {
-    if (getCurrentSessionId() !== ownerSessionId) return "error";
+    if (!ownerSessionId || getCurrentSessionId() !== ownerSessionId) return "error";
     return acquireAndExchange(getToken, fetchImpl);
   };
 }
