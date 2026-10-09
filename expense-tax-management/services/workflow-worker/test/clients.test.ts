@@ -57,12 +57,12 @@ const config: WorkerConfig = {
     mailboxApp: {
       audience: "mch_appAudience",
       machineSecretKey: "ak_test_mailbox_secret",
-      subject: "workflow-worker-mailbox",
+      subject: "mch_workerMailbox",
     },
     mailboxBroker: {
       audience: "mch_mailboxAudience",
       machineSecretKey: "ak_test_mailbox_secret",
-      subject: "workflow-worker-mailbox",
+      subject: "mch_workerMailbox",
     },
   },
 };
@@ -292,6 +292,29 @@ describe("machine token provider", () => {
   it("accepts an exact string audience", async () => {
     const token = await signedJwt(
       validClaims({ aud: config.clerk.app.audience }),
+    );
+    const getToken = createMachineTokenProvider(
+      {
+        issuerUrl: config.clerk.issuerUrl,
+        jwksUrl: config.clerk.jwksUrl,
+        credentials: config.clerk.app,
+        scopes: ["jobs:write", "files:read"],
+      },
+      {
+        fetch: vi.fn().mockResolvedValue(jsonResponse({ token })),
+        keyResolver,
+        nowSeconds: () => 1_000,
+      },
+    );
+
+    await expect(getToken()).resolves.toBe(token);
+  });
+
+  it("accepts a multi-audience token that includes the expected audience (mailbox worker machine scoped to both App API and the broker)", async () => {
+    const token = await signedJwt(
+      validClaims({
+        aud: [config.clerk.app.audience, config.clerk.mailboxBroker!.audience],
+      }),
     );
     const getToken = createMachineTokenProvider(
       {

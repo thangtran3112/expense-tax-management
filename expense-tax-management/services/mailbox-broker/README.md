@@ -40,7 +40,7 @@ deploy.
 | `MAILBOX_BROKER_DATABASE_URL` | Runtime (DML-only) token-vault connection |
 | `MAILBOX_BROKER_MIGRATION_DATABASE_URL` | Migration (DDL-only) token-vault connection |
 | `MAILBOX_SERVICE_TOKEN_ISSUER` / `_AUDIENCE` / `MAILBOX_SERVICE_JWKS_URL` | Inbound M2M verifier config (App API / workflow worker callers) |
-| `CLERK_MAILBOX_APP_API_SUBJECT` / `CLERK_MAILBOX_WORKER_SUBJECT` | Expected inbound caller subjects |
+| `CLERK_MAILBOX_APP_API_SUBJECT` / `CLERK_MAILBOX_WORKER_SUBJECT` | Expected inbound caller subjects — each is the caller's Clerk machine ID (`mch_...`), not a human-readable name |
 | `CLERK_ISSUER_URL` / `CLERK_JWKS_URL` / `CLERK_APP_SERVICE_AUDIENCE` | Outbound call into App API (reused from the base bundle) |
 | `CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY` / `CLERK_MAILBOX_BROKER_SUBJECT` | Outbound M2M credential to App API |
 | `MAILBOX_VAULT_KEYS` / `MAILBOX_VAULT_ACTIVE_KEY_ID` | AES-256-GCM token-vault encryption keys |
@@ -58,7 +58,7 @@ caller, added in Phase 3D-A Task 3/5 once `feature/task7-routing` merged:
 |---|---|
 | `CLERK_MAILBOX_SERVICE_AUDIENCE` | shared with `app-api`'s own value |
 | `CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY` | worker's own mailbox-scoped secret |
-| `CLERK_MAILBOX_WORKER_SUBJECT` | exactly `workflow-worker-mailbox` |
+| `CLERK_MAILBOX_WORKER_SUBJECT` | the Clerk machine ID (`mch_...`) of the worker's mailbox machine — **not** a human-readable name. Clerk M2M tokens carry `sub` as the caller's machine ID and `aud` as every machine that caller is scoped to, so this one machine must be scoped to both the App API machine (audience `CLERK_APP_SERVICE_AUDIENCE`) and this broker's machine (audience `CLERK_MAILBOX_SERVICE_AUDIENCE`), and its tokens carry both audiences |
 
 `services/workflow-worker/src/config.ts` treats all four of its mailbox
 env vars (the three above plus `MAILBOX_BROKER_BASE_URL`) as optional,

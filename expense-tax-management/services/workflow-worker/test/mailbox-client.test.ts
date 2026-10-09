@@ -42,12 +42,12 @@ const config: WorkerConfig = {
     mailboxApp: {
       audience: "mch_appAudience",
       machineSecretKey: "ak_test_mailbox_secret",
-      subject: "workflow-worker-mailbox",
+      subject: "mch_workerMailbox",
     },
     mailboxBroker: {
       audience: "mch_mailboxAudience",
       machineSecretKey: "ak_test_mailbox_secret",
-      subject: "workflow-worker-mailbox",
+      subject: "mch_workerMailbox",
     },
   },
 };
