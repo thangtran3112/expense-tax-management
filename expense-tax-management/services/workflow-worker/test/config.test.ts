@@ -19,7 +19,7 @@ const ENV = {
   CLERK_FOUNDRY_SERVICE_SUBJECT: " mch_foundry ",
   CLERK_MAILBOX_SERVICE_AUDIENCE: " mch_mailboxAudience ",
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: " ak_test_mailbox_secret ",
-  CLERK_MAILBOX_WORKER_SUBJECT: " workflow-worker-mailbox ",
+  CLERK_MAILBOX_WORKER_SUBJECT: " mch_workerMailbox ",
 } as const;
 
 const REQUIRED_KEYS = Object.keys(ENV) as (keyof typeof ENV)[];
@@ -53,12 +53,12 @@ describe("workerConfigFromEnv", () => {
         mailboxApp: {
           audience: "mch_appAudience",
           machineSecretKey: "ak_test_mailbox_secret",
-          subject: "workflow-worker-mailbox",
+          subject: "mch_workerMailbox",
         },
         mailboxBroker: {
           audience: "mch_mailboxAudience",
           machineSecretKey: "ak_test_mailbox_secret",
-          subject: "workflow-worker-mailbox",
+          subject: "mch_workerMailbox",
         },
       },
     });
@@ -143,8 +143,8 @@ describe("workerConfigFromEnv", () => {
     ["CLERK_FOUNDRY_SERVICE_SUBJECT", "foundry-subject"],
     ["CLERK_MAILBOX_SERVICE_AUDIENCE", "mailbox-audience"],
     ["CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY", "not-yet-issued"],
+    ["CLERK_MAILBOX_WORKER_SUBJECT", "workflow-worker-mailbox"],
     ["CLERK_MAILBOX_WORKER_SUBJECT", "Workflow-Worker-Mailbox"],
-    ["CLERK_MAILBOX_WORKER_SUBJECT", "mch_workerMailbox"],
   ] as const)("rejects invalid machine credential %s", (key, value) => {
     expect(() => workerConfigFromEnv({ ...ENV, [key]: value })).toThrow(key);
   });

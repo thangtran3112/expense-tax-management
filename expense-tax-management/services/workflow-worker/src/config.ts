@@ -78,24 +78,6 @@ function machineSecretSchema(key: string): z.ZodType<string> {
   );
 }
 
-/**
- * Phase 3D-A mailbox subjects (`app-api-mailbox` / `workflow-worker-
- * mailbox` / `mailbox-broker-app`, per the plan's exact machine subjects)
- * are human-readable per-identity names, not Clerk `mch_`-format resource
- * IDs like the existing `CLERK_APP_SERVICE_SUBJECT`/
- * `CLERK_FOUNDRY_SERVICE_SUBJECT` values `machineIdSchema` validates.
- * App API's own config.ts (Task 2) already treats these as plain
- * required strings (no `mch_` regex) for the same reason. A dedicated,
- * looser schema here keeps the existing `machineIdSchema` contract
- * (and every value it already validates) completely unchanged.
- */
-function mailboxSubjectSchema(key: string): z.ZodType<string> {
-  return RequiredStringSchema.regex(
-    /^[a-z][a-z0-9-]*$/,
-    `${key} must be a lowercase-hyphenated mailbox subject`,
-  );
-}
-
 const TemporalAddressSchema = RequiredStringSchema.refine((value) => {
   const match = /^(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):(\d{1,5})$/.exec(
     value,
@@ -196,7 +178,11 @@ const WorkerEnvironmentSchema = z.object({
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: machineSecretSchema(
     "CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY",
   ).optional(),
-  CLERK_MAILBOX_WORKER_SUBJECT: mailboxSubjectSchema(
+  // Real value is the Clerk machine ID of the worker's mailbox identity
+  // (`mch_...`), not a human-readable name -- this machine must be scoped
+  // to both App API and the mailbox broker, same shape as every other
+  // machine ID this schema validates.
+  CLERK_MAILBOX_WORKER_SUBJECT: machineIdSchema(
     "CLERK_MAILBOX_WORKER_SUBJECT",
   ).optional(),
 });

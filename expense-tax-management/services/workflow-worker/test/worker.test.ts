@@ -24,7 +24,7 @@ const config = workerConfigFromEnv({
   CLERK_FOUNDRY_SERVICE_SUBJECT: "mch_foundry",
   CLERK_MAILBOX_SERVICE_AUDIENCE: "mch_mailboxAudience",
   CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY: "ak_test_mailbox_secret",
-  CLERK_MAILBOX_WORKER_SUBJECT: "workflow-worker-mailbox",
+  CLERK_MAILBOX_WORKER_SUBJECT: "mch_workerMailbox",
 });
 
 function workerFactories(options: { runError?: Error } = {}) {
