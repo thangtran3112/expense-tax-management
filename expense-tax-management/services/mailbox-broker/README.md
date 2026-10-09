@@ -48,21 +48,27 @@ deploy.
 | `MAILBOX_ALLOWED_REDIRECT_ORIGINS` | Origin allowlist for the OAuth state/cookie flow |
 | `MAILBOX_CALLBACK_HOST` (optional) | Host-header allowlist for the public callback route |
 
-## Workflow worker credential — runtime migration Task 7 handoff
+## Workflow worker credentials — two machines, one per audience (fix round 5)
 
-The real `workflow-worker` Compose service already carries the three
-mailbox-scoped env vars this service's inbound verifier expects from that
-caller, added in Phase 3D-A Task 3/5 once `feature/task7-routing` merged:
+App API's inbound service-token verifier deliberately accepts only a
+single audience (`hasExpectedAudience` in
+`services/app-api/src/auth/verifier.ts`) — it never relaxes to Clerk's own
+multi-audience `aud` semantics, unlike this broker's own verifier. A
+worker Clerk machine scoped to both this broker and App API would mint
+tokens carrying both audiences, and App API would reject every one. The
+ruling is one machine per audience: the real `workflow-worker` Compose
+service carries credentials for **two distinct Clerk machines**, added in
+Phase 3D-A Task 3/5 and split in fix round 5:
 
 | Variable | Value |
 |---|---|
 | `CLERK_MAILBOX_SERVICE_AUDIENCE` | shared with `app-api`'s own value |
-| `CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY` | worker's own mailbox-scoped secret |
-| `CLERK_MAILBOX_WORKER_SUBJECT` | the Clerk machine ID (`mch_...`) of the worker's mailbox machine — **not** a human-readable name. Clerk M2M tokens carry `sub` as the caller's machine ID and `aud` as every machine that caller is scoped to, so this one machine must be scoped to both the App API machine (audience `CLERK_APP_SERVICE_AUDIENCE`) and this broker's machine (audience `CLERK_MAILBOX_SERVICE_AUDIENCE`), and its tokens carry both audiences |
+| `CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY` | secret for the **broker-scoped** machine (`workflow-worker-mailbox`), audience = this broker |
+| `CLERK_MAILBOX_WORKER_SUBJECT` | the Clerk machine ID (`mch_...`) of the broker-scoped machine — **not** a human-readable name. This is the only worker subject this broker's inbound verifier ever authorizes |
+| `CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY` | secret for the **App-API-scoped** machine (`workflow-worker-mailbox-app`), audience = `CLERK_APP_SERVICE_AUDIENCE` |
+| `CLERK_MAILBOX_WORKER_APP_SUBJECT` | the Clerk machine ID (`mch_...`) of the App-API-scoped machine — the subject App API's mailbox worker routes authorize. This broker never sees it |
 
-`services/workflow-worker/src/config.ts` treats all four of its mailbox
-env vars (the three above plus `MAILBOX_BROKER_BASE_URL`) as optional,
-required together or not at all — see Phase 3D-A Task 5's controller
-ruling: nothing in the worker's production startup constructs a mailbox
-client yet (3D-B/C's job), so an ordinary dev→main deploy with no mailbox
-env at all still starts cleanly.
+`services/workflow-worker/src/config.ts` treats all six of its mailbox env
+vars (the five above plus `MAILBOX_BROKER_BASE_URL`) as optional, required
+together or not at all — see Phase 3D-A Task 5's controller ruling: an
+ordinary dev→main deploy with no mailbox env at all still starts cleanly.
