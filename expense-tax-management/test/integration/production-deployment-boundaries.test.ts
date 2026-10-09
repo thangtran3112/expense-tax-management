@@ -502,7 +502,7 @@ esac
     expect(health).toContain("docker exec family-temporal temporal operator namespace describe");
     expect(health).toContain("temporal operator cluster health");
     expect(health).toContain("workflow-worker");
-    expect(health).toContain("--status running --services");
+    expect(health).toContain("State.Health.Status");
     for (const name of ["deploy.sh", "health-check.sh", "bootstrap-temporal-db.sh"]) {
       expect(readProductionFile(name)).toMatch(/^set -Eeuo pipefail/m);
       expect(statSync(path.join(productionRoot, name)).mode & 0o777).toBe(0o755);
@@ -644,12 +644,16 @@ esac
     }
   });
 
-  it("requires workflow-worker running in health-check.sh via a configurable, defaulted list", () => {
+  it("requires workflow-worker Docker-healthy in health-check.sh via a configurable, defaulted list", () => {
     const health = readProductionFile("health-check.sh");
     expect(health).toContain("HEALTH_CHECK_REQUIRED_WORKERS");
     expect(health).toMatch(/HEALTH_CHECK_REQUIRED_WORKERS-workflow-worker/);
-    expect(health).toMatch(/\$1 == worker \{ found=1 \}/);
-    expect(health).not.toContain('$1 == "workflow-worker"');
+    // Generic $worker-driven lookup, not a name hardcoded in the probe --
+    // a real crash loop never settles into `healthy`, unlike the prior
+    // single-poll "is it running right now" check.
+    expect(health).toMatch(/compose ps -q "\$worker"/);
+    expect(health).toContain("docker inspect --format '{{.State.Health.Status}}'");
+    expect(health).not.toContain('compose ps -q "workflow-worker"');
   });
 });
 
@@ -767,9 +771,22 @@ case "\$1" in
     esac
     ;;
   inspect)
-    container_id="\${*: -1}"
+    shift
+    fmt=""
+    inspect_args=()
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --format) fmt="\$2"; shift 2 ;;
+        *) inspect_args+=("\$1"); shift ;;
+      esac
+    done
+    container_id="\${inspect_args[-1]}"
     svc="\${container_id#fake-container-}"
-    printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    if [[ "\$fmt" == *"Health.Status"* ]]; then
+      printf 'healthy\\n'
+    else
+      printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    fi
     exit 0 ;;
   exec) exit 0 ;;
   *) exit 0 ;;

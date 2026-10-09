@@ -66,9 +66,22 @@ case "\$1" in
     esac
     ;;
   inspect)
-    container_id="\${*: -1}"
+    shift
+    fmt=""
+    inspect_args=()
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --format) fmt="\$2"; shift 2 ;;
+        *) inspect_args+=("\$1"); shift ;;
+      esac
+    done
+    container_id="\${inspect_args[-1]}"
     svc="\${container_id#fake-container-}"
-    printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    if [[ "\$fmt" == *"Health.Status"* ]]; then
+      printf 'healthy\\n'
+    else
+      printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    fi
     exit 0 ;;
   *) exit 0 ;;
 esac
@@ -249,9 +262,22 @@ case "\$1" in
       rm) printf '%s\\n' "\${*: -1}" >> "${rmLog}"; exit 0 ;;
     esac ;;
   inspect)
-    container_id="\${*: -1}"
+    shift
+    fmt=""
+    inspect_args=()
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --format) fmt="\$2"; shift 2 ;;
+        *) inspect_args+=("\$1"); shift ;;
+      esac
+    done
+    container_id="\${inspect_args[-1]}"
     svc="\${container_id#fake-container-}"
-    printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    if [[ "\$fmt" == *"Health.Status"* ]]; then
+      printf 'healthy\\n'
+    else
+      printf 'ghcr.io/thangtran3112/family-app/expense-tax-%s:%s\\n' "\$svc" "\${IMAGE_TAG:-}"
+    fi
     exit 0 ;;
   exec) exit 0 ;;
   *) exit 0 ;;
