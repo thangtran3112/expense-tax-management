@@ -1,6 +1,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NativeConnection, Worker } from "@temporalio/worker";
+import { ZodError } from "zod";
 
 import { createActivities, createMailboxActivities } from "./activities/index.js";
 import {
@@ -76,14 +77,30 @@ export async function runWorker(
   }
 }
 
+// Sanitized startup-failure cause: safe to log because it never includes a
+// claim value, URL, or secret -- only the error's class name and, for a
+// configuration validation failure, the offending env var NAMES.
+function describeStartupError(error: unknown): string {
+  if (error instanceof ZodError) {
+    const keys = [
+      ...new Set(error.issues.map((issue) => String(issue.path[0] ?? "(unknown)"))),
+    ];
+    return `ZodError: ${keys.join(", ")}`;
+  }
+  if (error instanceof Error) {
+    return error.constructor.name;
+  }
+  return "UnknownError";
+}
+
 export async function startWorkerProcess(
   config?: WorkerConfig,
   factories: WorkerFactories = defaultFactories,
 ): Promise<void> {
   try {
     await runWorker(config ?? workerConfigFromEnv(), factories);
-  } catch {
-    console.error("workflow-worker failed to start or run");
+  } catch (error) {
+    console.error("workflow-worker failed to start or run", describeStartupError(error));
     process.exitCode = 1;
   }
 }

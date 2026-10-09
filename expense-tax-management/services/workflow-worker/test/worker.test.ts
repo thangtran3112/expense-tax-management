@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { workerConfigFromEnv } from "../src/config.js";
 import {
@@ -78,7 +79,7 @@ describe("workflow worker process", () => {
     expect(fakes.close).toHaveBeenCalledOnce();
   });
 
-  it("sets a nonzero exit code without printing startup error details", async () => {
+  it("sets a nonzero exit code and logs only the error's class name, never its message", async () => {
     const previousExitCode = process.exitCode;
     const error = new Error("secret-value");
     const connect = vi.fn().mockRejectedValue(error);
@@ -94,10 +95,45 @@ describe("workflow worker process", () => {
       expect(process.exitCode).toBe(1);
       expect(consoleError).toHaveBeenCalledWith(
         "workflow-worker failed to start or run",
+        "Error",
       );
-      expect(consoleError).not.toHaveBeenCalledWith(
-        expect.stringContaining("secret-value"),
+      const loggedArgs = consoleError.mock.calls.flat().map(String);
+      expect(loggedArgs.some((arg) => arg.includes("secret-value"))).toBe(false);
+    } finally {
+      process.exitCode = previousExitCode;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("logs only the offending env var names for a configuration validation failure, never the invalid values", async () => {
+    const previousExitCode = process.exitCode;
+    const schema = z.object({
+      CLERK_APP_SERVICE_AUDIENCE: z.string(),
+      CLERK_FOUNDRY_SERVICE_AUDIENCE: z.string(),
+    });
+    let zodError!: z.ZodError;
+    try {
+      schema.parse({ CLERK_APP_SERVICE_AUDIENCE: "super-secret-value-123" });
+    } catch (error) {
+      zodError = error as z.ZodError;
+    }
+    const connect = vi.fn().mockRejectedValue(zodError);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      process.exitCode = undefined;
+      await startWorkerProcess(config, {
+        connect,
+        create: vi.fn(),
+      } as unknown as WorkerFactories);
+
+      expect(process.exitCode).toBe(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        "workflow-worker failed to start or run",
+        expect.stringContaining("CLERK_FOUNDRY_SERVICE_AUDIENCE"),
       );
+      const loggedArgs = consoleError.mock.calls.flat().map(String);
+      expect(loggedArgs.some((arg) => arg.includes("super-secret-value-123"))).toBe(false);
     } finally {
       process.exitCode = previousExitCode;
       consoleError.mockRestore();
