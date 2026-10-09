@@ -83,14 +83,16 @@ describe("MailboxBrokerClient", () => {
   it("acquires and attaches a machine token with exact audience/subject app-api-mailbox", async () => {
     let capturedAuthorization: string | undefined;
     let capturedBody: unknown;
+    let mintBody: { claims?: { scope?: string } } | undefined;
     const fetchFake = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === MINT_ENDPOINT) {
+        mintBody = JSON.parse(String(init?.body)) as typeof mintBody;
         const token = await signedJwt({
           iss: ISSUER_URL,
           aud: [AUDIENCE],
           sub: SUBJECT,
-          scope: "mailbox:write",
+          scope: "oauth:start",
           jti: "token-id",
           nbf: Math.floor(Date.now() / 1_000) - 10,
           exp: Math.floor(Date.now() / 1_000) + 300,
@@ -124,6 +126,8 @@ describe("MailboxBrokerClient", () => {
     const { payload } = await (await import("jose")).jwtVerify(sentToken, keyResolver);
     expect(payload.aud).toEqual([AUDIENCE]);
     expect(payload.sub).toBe(SUBJECT);
+    // The broker's start route guard is createGuard("app-api", ["oauth:start"]).
+    expect(mintBody?.claims?.scope).toBe("oauth:start");
   });
 
   it("maps a broker 401 response to authentication_failed without leaking the token", async () => {
@@ -134,7 +138,7 @@ describe("MailboxBrokerClient", () => {
           iss: ISSUER_URL,
           aud: [AUDIENCE],
           sub: SUBJECT,
-          scope: "mailbox:write",
+          scope: "oauth:start",
           jti: "token-id",
           exp: Math.floor(Date.now() / 1_000) + 300,
         });
