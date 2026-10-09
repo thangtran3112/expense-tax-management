@@ -21,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  AttachmentQuerySchema,
   EXPENSE_ENRICHMENT_WORKFLOW_TYPE,
   MAILBOX_MATERIALIZE_RESULT_SCHEMA_VERSION,
   MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
@@ -248,8 +249,7 @@ describe("routes/mailbox-ingestion.ts -- attachment upload streaming", () => {
     expect(response.statusCode).toBe(400);
   });
 
-  it("fix round 7: AttachmentQuerySchema names all three missing fields (the exact detail the production logs showed)", async () => {
-    const { AttachmentQuerySchema } = await import("../src/routes/mailbox-ingestion.js");
+  it("fix round 7: AttachmentQuerySchema (@expense-tax/contracts) names all three missing fields (the exact detail the production logs showed)", () => {
     const result = AttachmentQuerySchema.safeParse({});
     expect(result.success).toBe(false);
     const paths = result.success ? [] : result.error.issues.map((issue) => issue.path.join("."));

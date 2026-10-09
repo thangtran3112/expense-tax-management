@@ -4,6 +4,7 @@
  * credential (App audience, "mailbox-broker-app" subject, "mailbox:write"
  * scope) and request shape per route.
  */
+import { AttachmentQuerySchema } from "@expense-tax/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMailboxAppClient, MailboxAppClientError } from "../src/app-client.js";
@@ -373,15 +374,14 @@ describe("app-client.ts createMailboxAppClient", () => {
     expect(capturedBytes).toEqual(pdfBytes);
   });
 
-  it("fix round 7: sends uploadGrantId/expectedCandidateVersion/idempotencyKey as querystring, not headers (production incident regression pin)", async () => {
-    // Mirrors services/app-api/src/routes/mailbox-ingestion.ts's exported
-    // AttachmentQuerySchema exactly (field names + that
-    // expectedCandidateVersion arrives as a querystring value, coerced to
-    // a number server-side) -- this monorepo's services only ever depend
-    // on @expense-tax/contracts, never on each other, so there is no
-    // cross-service import to pin this against directly; App API's own
-    // mailbox-ingestion.test.ts pins the receiving half of this same
-    // contract against the real (now-exported) schema.
+  it("fix round 7, fix round 1 (review Important #1): captured request URL parses against the REAL AttachmentQuerySchema from @expense-tax/contracts", async () => {
+    // Fix round 1: this no longer checks the captured URL against literal
+    // expected values -- it parses it with the SAME schema object
+    // services/app-api/src/routes/mailbox-ingestion.ts uses as its real
+    // `schema.querystring` (both import AttachmentQuerySchema from
+    // @expense-tax/contracts). A future edit to either side's field names
+    // without updating the other fails this test, not just a hand-copied
+    // literal that could silently drift from the real route.
     const { createClient } = await setup();
     const candidateId = "99999999-9999-4999-8999-999999999999";
     let capturedUrl: URL | undefined;
@@ -420,11 +420,14 @@ describe("app-client.ts createMailboxAppClient", () => {
       source(),
     );
 
-    expect(capturedUrl?.searchParams.get("uploadGrantId")).toBe(
-      "88888888-8888-4888-8888-888888888888",
+    const parsed = AttachmentQuerySchema.parse(
+      Object.fromEntries(capturedUrl?.searchParams.entries() ?? []),
     );
-    expect(capturedUrl?.searchParams.get("expectedCandidateVersion")).toBe("3");
-    expect(capturedUrl?.searchParams.get("idempotencyKey")).toBe("idem-upload-2");
+    expect(parsed).toEqual({
+      uploadGrantId: "88888888-8888-4888-8888-888888888888",
+      expectedCandidateVersion: 3,
+      idempotencyKey: "idem-upload-2",
+    });
     // Never as headers (the exact bug): only authorization/content-type.
     expect(Object.keys(capturedHeaders ?? {}).sort()).toEqual(["authorization", "content-type"]);
   });
