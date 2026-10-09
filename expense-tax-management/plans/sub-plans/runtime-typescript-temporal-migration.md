@@ -253,11 +253,13 @@ h. Only then does Stage C stop and remove `ai-worker`/Python.
 **Interfaces:**
 - Produces: TypeScript-only runtime with App API client and independent worker.
 
-- [ ] Delete `services/ai-worker/`, `common/python/expense-contracts/`, and Python subprocess integration paths.
-- [ ] Strip Python/uv/Ruff/Pytest lines from CI; update `check-workflow-worker-image.test.mjs` and `3c-auto-tagging` literals that assert Python-specific behavior.
-- [ ] Remove `ai-worker` from `deploy.sh`'s service array.
-- [ ] Run full contracts, services, frontends, worker, PostgreSQL integration, Compose, image, and production-boundary suites.
-- [ ] Record image tags and rollback procedure; request separate approval before production deployment.
+- [x] Delete `services/ai-worker/`, `common/python/expense-contracts/`, and Python subprocess integration paths.
+- [x] Strip Python/uv/Ruff/Pytest lines from CI; update `check-workflow-worker-image.test.mjs` and `3c-auto-tagging` literals that assert Python-specific behavior.
+- [x] Remove `ai-worker` from `deploy.sh`'s service array.
+- [x] Run full contracts, services, frontends, worker, PostgreSQL integration, Compose, image, and production-boundary suites.
+- [x] Record image tags and rollback procedure; request separate approval before production deployment.
+
+Stage C done 2026-10-07: #35 (dev `421c960`), #36 (`main` `f20c451`). Previous production tag `0a8831b`; a rollback cannot restore `ai-worker` (pre-flight proved zero generation-1 work, no `default` namespace workflows or schedules).
 
 ## Completion Evidence
 

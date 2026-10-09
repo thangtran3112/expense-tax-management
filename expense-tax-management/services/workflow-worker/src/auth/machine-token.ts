@@ -105,12 +105,15 @@ async function validateToken(
     if (payload.iss !== config.issuerUrl) {
       throw new Error("invalid issuer");
     }
-    const hasExactAudience =
+    // A worker M2M token legitimately carries every machine the caller is
+    // scoped to in `aud` (e.g. both App API and the mailbox broker), so
+    // membership -- standard JWT `aud` semantics, same as jose's own
+    // `audience` check above -- is correct here, not exact-match.
+    const hasExpectedAudience =
       payload.aud === config.credentials.audience ||
       (Array.isArray(payload.aud) &&
-        payload.aud.length === 1 &&
-        payload.aud[0] === config.credentials.audience);
-    if (!hasExactAudience) {
+        payload.aud.includes(config.credentials.audience));
+    if (!hasExpectedAudience) {
       throw new Error("invalid audience");
     }
     if (payload.sub !== config.credentials.subject) {
