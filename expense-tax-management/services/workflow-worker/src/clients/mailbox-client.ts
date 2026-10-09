@@ -322,10 +322,15 @@ export function createMailboxAppApiClient(
       return request(mailboxBrokerBaseUrl, brokerTokenProvider, input);
     },
     discoverPage(scanRunId) {
+      // The broker route requires `body: z.strictObject({})` -- an absent
+      // body (no content-type, no body sent at all) fails that schema
+      // with a 400. An empty object satisfies it; this route never takes
+      // real input (the broker resolves everything itself).
       return client.requestBroker({
         path: `/internal/v1/mailbox/scan-runs/${scanRunId}/discover`,
         method: "POST",
         responseSchema: DiscoveryPageV1Schema,
+        body: {},
       });
     },
     startScheduledScan({ tenantId, connectionId, requestId }) {
