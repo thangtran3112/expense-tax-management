@@ -17,6 +17,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { Writable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +39,9 @@ import {
 import type { Kysely } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { buildApp } from "../src/app.js";
 import type { AuthPrincipal } from "../src/auth/types.js";
+import { createAppConfig } from "../src/config.js";
 import { createAppDatabase } from "../src/database/client.js";
 import type { AppDatabase } from "../src/database/types.js";
 import { runMigrations } from "../src/database/migrate.js";
@@ -258,6 +261,103 @@ describe("routes/mailbox-ingestion.ts -- attachment upload streaming", () => {
     );
   });
 });
+// -------------------------------------------------------------------- //
+// Fix round 1 (review Important #2) -- uploadGrantId travels in the
+// request URL now, not a header, so App API's existing header-only/
+// field-name log redaction (app.ts's SENSITIVE_LOG_PATHS) never touches
+// it. Uses the real buildApp (not the bare-Fastify harness above) because
+// the redacting req serializer lives in app.ts's loggerWithRedaction, not
+// in routes/mailbox-ingestion.ts itself. No DB needed: mailboxIngestionDomain
+// is injected directly (buildApp's own "options always win, for tests"
+// convention), and an invalid bearer token is enough -- Fastify logs the
+// request URL on every request regardless of the eventual auth outcome.
+// -------------------------------------------------------------------- //
+
+const LOG_TEST_ENV = {
+  APP_TENANT_TOKEN_ISSUER: "https://identity.test",
+  APP_TENANT_TOKEN_AUDIENCE: "expense-app",
+  APP_TENANT_JWKS_URL: "https://identity.test/jwks",
+  APP_SERVICE_TOKEN_ISSUER: "https://services.test",
+  APP_SERVICE_TOKEN_AUDIENCE: "expense-app-internal",
+  APP_SERVICE_JWKS_URL: "https://services.test/jwks",
+  CLERK_ISSUER_URL: "https://clerk.test",
+  CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
+  CLERK_TENANT_AUDIENCE: "tenant-audience",
+  CLERK_PLATFORM_AUDIENCE: "platform-audience",
+  CLERK_APP_SERVICE_AUDIENCE: "app-service-audience",
+  CLERK_FOUNDRY_SERVICE_AUDIENCE: "foundry-service-audience",
+  CLERK_APP_SERVICE_SUBJECT: "ai-worker-app-machine",
+  CLERK_FOUNDRY_SERVICE_SUBJECT: "ai-worker-foundry-machine",
+  APP_DATABASE_URL: "postgresql://unused.test/app",
+  TEMPORAL_HOST: "127.0.0.1:7233",
+  TEMPORAL_NAMESPACE: "default",
+  STORAGE_BACKEND: "local",
+  LOCAL_STORAGE_DIR: "/tmp/mailbox-ingestion-log-redaction-test",
+  STORAGE_LOCAL_BASE_URL: "http://127.0.0.1:8100",
+  STORAGE_URL_SIGNING_KEY: "test-storage-key",
+  INBOUND_EMAIL_BASE_ADDRESS: "receipts@inbound.test",
+  INBOUND_WEBHOOK_SIGNING_KEY: "test-webhook-key",
+  INBOUND_ROUTING_TOKEN_SECRET: "test-routing-key",
+  INBOUND_CHALLENGE_DIR: "/tmp/mailbox-ingestion-log-redaction-challenges",
+};
+
+describe("app.ts -- redacts uploadGrantId from logged request URLs (fix round 1, review Important #2)", () => {
+  it("never logs the real uploadGrantId value, even though it travels in the URL", async () => {
+    const logLines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        logLines.push(String(chunk));
+        callback();
+      },
+    });
+    const mailboxIngestionDomain: MailboxIngestionDomain = {
+      issueUploadGrant: async () => {
+        throw new Error("not used in this test");
+      },
+      receiveAttachment: async () => {
+        throw new Error("not used in this test");
+      },
+      submitStructuredReceipt: async () => {
+        throw new Error("not used in this test");
+      },
+      recordConnectedMailboxEvidence: async () => {
+        throw new Error("not used in this test");
+      },
+    };
+    const app = buildApp({
+      config: createAppConfig({ env: LOG_TEST_ENV, version: "test" }),
+      logger: { stream },
+      mailboxIngestionDomain,
+    });
+
+    try {
+      await app.ready();
+      const secretGrantId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      const response = await app.inject({
+        method: "POST",
+        url:
+          `/internal/v1/mailbox/candidates/${randomUUID()}/attachments/0` +
+          `?uploadGrantId=${secretGrantId}&expectedCandidateVersion=1&idempotencyKey=${randomUUID()}`,
+        headers: {
+          authorization: "Bearer not-a-real-token",
+          "content-type": "application/octet-stream",
+        },
+        payload: Buffer.from("x"),
+      });
+
+      // Auth rejects this request (401/403) -- irrelevant to this test:
+      // Fastify logs the incoming request URL regardless of outcome, which
+      // is exactly how the real grant ID would otherwise reach the logs.
+      expect([401, 403]).toContain(response.statusCode);
+      const logged = logLines.join("");
+      expect(logged).not.toContain(secretGrantId);
+      expect(logged).toContain("[Redacted]");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 
 // -------------------------------------------------------------------- //
 // Real-PostgreSQL domain coverage.
