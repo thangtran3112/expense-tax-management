@@ -49,7 +49,13 @@ export type ExpenseSource = z.infer<typeof ExpenseSourceSchema>;
  * (non-null) only when `source === "connected_mailbox"`.
  */
 export const ExpenseMailboxProvenanceV1Schema = z.strictObject({
-  senderAddress: z.email().max(320),
+  // Fix round 6: same bounded-string contract as
+  // MailboxCandidateV1Schema.senderAddress (mailbox-discovery.ts) and for
+  // the same reason -- an external `From`-header-derived address can
+  // contain RFC-valid characters `z.email()` rejects. `mailboxAccountEmail`
+  // below is a different kind of value (the connection's own
+  // Google-OAuth-verified account) and keeps the strict format.
+  senderAddress: z.string().min(1).max(320),
   receivedAt: TimestampSchema,
   mailboxAccountEmail: z.email().max(320),
   pendingDuplicateReview: z.boolean(),

@@ -500,6 +500,39 @@ describe.skipIf(!requested)(
       expect(page2.counts).toEqual({ discovered: 1, staged: 1, review: 0, failed: 0 });
     });
 
+    it("fix round 6: stores a display-name From header as a bare address, never the raw header", async () => {
+      const domain = createDomain();
+      const connectionId = createActiveConnection();
+      const started = await domain.startManualScan({
+        actorUserId: OWNER_USER_ID, tenantId: TENANT_ID, connectionId, requestId: randomUUID(),
+      });
+      const binding = await domain.loadScanBinding(started.scanRun.id);
+
+      const page = await domain.recordCandidateMetadata(
+        stagingInput({
+          scanRunId: started.scanRun.id,
+          connectionId,
+          expectedConnectionVersion: binding.expectedConnectionVersion,
+          cursorBeforeDigest: binding.currentCursorDigest,
+          preFenceToken: binding.preFenceToken,
+          pageSequence: 1,
+          messages: [
+            {
+              ...stagingInput().messages[0]!,
+              senderAddress: "Merchant Billing <Merchant@EXAMPLE.COM>",
+              providerMessageId: `gmail-${randomUUID()}`,
+            },
+          ],
+        }),
+      );
+      expect(page.counts.staged).toBe(1);
+
+      const storedSenderAddress = runtimeSql(
+        `SELECT sender_address FROM app.mailbox_candidates WHERE id = '${page.candidateIds[0]}'`,
+      );
+      expect(storedSenderAddress).toBe("Merchant@example.com");
+    });
+
     it("fix round 2 (review Critical #1/#2): persists/clears pre_fence_history_id and history_page_token exactly as the broker reports them, surfaced back through loadScanBinding", async () => {
       const domain = createDomain();
       const connectionId = createActiveConnection();

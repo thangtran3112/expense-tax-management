@@ -184,6 +184,23 @@ describe("mailbox discovery contracts – MailboxCandidateV1 / MailboxCandidateR
       MailboxCandidateRecordV1Schema.safeParse({ ...candidate, providerThreadId: null }).success,
     ).toBe(false); // providerMessageId required
   });
+
+  it("fix round 6: serializes an RFC-5322-valid sender address zod's strict z.email() would have rejected", () => {
+    // Real production incident (2026-10-09): fastify-type-provider-zod's
+    // response serializer runs this exact schema against the handler's
+    // return value -- a field that fails to parse turns the WHOLE list
+    // response into a 500 (ResponseSerializationError), not just that one
+    // row. `+`/`=` are valid local-part characters under RFC 5322 that
+    // zod's `z.email()` regex rejects; senderAddress is a bounded string
+    // now, not a strict email format, specifically so one odd external
+    // sender can never take down the whole candidates list.
+    expect(
+      MailboxCandidateV1Schema.safeParse({
+        ...candidate,
+        senderAddress: "bounce+x=y@example.com",
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("mailbox discovery contracts – no provider metadata in execution/batch/count contracts", () => {
