@@ -112,6 +112,9 @@ jobs:
           files: |
             ai-trading/deploy/docker-bake.hcl
             ai-trading/deploy/docker-bake.ci.hcl
+          # Read CI caches but never block a production deploy on optional
+          # cache uploads (a MiroFish layer upload exhausted the 60m job budget).
+          set: '*.cache-to='
           load: true
       - name: Build MiroFish static frontend for smoke tests
         # smoke-test.sh all checks this export; same step as ai-trading-ci.yml.
@@ -123,6 +126,7 @@ jobs:
           files: |
             ai-trading/deploy/docker-bake.hcl
             ai-trading/deploy/docker-bake.ci.hcl
+          set: '*.cache-to='
           targets: mirofish-frontend
       - name: Smoke tests
         env:
