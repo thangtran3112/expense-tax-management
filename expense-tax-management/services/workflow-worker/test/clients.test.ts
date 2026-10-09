@@ -310,6 +310,29 @@ describe("machine token provider", () => {
     await expect(getToken()).resolves.toBe(token);
   });
 
+  it("accepts a multi-audience token that includes the expected audience (mailbox worker machine scoped to both App API and the broker)", async () => {
+    const token = await signedJwt(
+      validClaims({
+        aud: [config.clerk.app.audience, config.clerk.mailboxBroker!.audience],
+      }),
+    );
+    const getToken = createMachineTokenProvider(
+      {
+        issuerUrl: config.clerk.issuerUrl,
+        jwksUrl: config.clerk.jwksUrl,
+        credentials: config.clerk.app,
+        scopes: ["jobs:write", "files:read"],
+      },
+      {
+        fetch: vi.fn().mockResolvedValue(jsonResponse({ token })),
+        keyResolver,
+        nowSeconds: () => 1_000,
+      },
+    );
+
+    await expect(getToken()).resolves.toBe(token);
+  });
+
   it("rejects a token signed by an untrusted key", async () => {
     const attacker = await generateKeyPair("RS256");
     const token = await signedJwt(validClaims(), attacker.privateKey);
