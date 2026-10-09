@@ -57,6 +57,8 @@ Releases: release 1 (MVP) is a Trading Hub web app for four unmodified upstream 
 
 ## Release 1 Build Notes (2026-10-04)
 
+- **Verified follow-up rollout (PRs #53/#54 and #55/#57):** production images at `ee15c11` are healthy, including opt-in MiroFish. Vibe-Trading's hash-pinned native Anthropic adapter responds using the rotated shared Firestore key; all three app-container keys match the store, without being printed. The Account panel on public/staging hubs shows current Clerk name/email read-only; browser Sign out returns to login and new terminal requests return 401. Existing copied-cookie, cross-tab in-flight refresh, and open-stream expiry limits remain explicit in the runbook. Production smoke builds retain cache reads but disable optional cache uploads after a cache-export timeout blocked deployment. Public Worker cutover is still a separate approval gate.
+
 - Verification on the local stack:
   - all four images build with Bake;
   - `smoke-test.sh all` passes 23/23;
