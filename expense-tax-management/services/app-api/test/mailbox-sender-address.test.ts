@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeMailboxSenderAddress } from "../src/domain/mailbox-sender-address.js";
+import {
+  MAILBOX_SENDER_ADDRESS_DB_LIMIT,
+  normalizeMailboxSenderAddress,
+} from "../src/domain/mailbox-sender-address.js";
 
 describe("normalizeMailboxSenderAddress", () => {
   it("extracts the bare address from a display-name From header", () => {
@@ -53,5 +56,36 @@ describe("normalizeMailboxSenderAddress", () => {
     expect(normalizeMailboxSenderAddress("Billing <bounce+x=y@example.com>")).toBe(
       "bounce+x=y@example.com",
     );
+  });
+
+  it("fix round 1 (review Important): truncates an over-limit bare address to exactly the DB limit", () => {
+    const longLocal = "a".repeat(200);
+    const longDomain = `${"b".repeat(200)}.com`;
+    const input = `${longLocal}@${longDomain}`;
+    const result = normalizeMailboxSenderAddress(input);
+    expect(result.length).toBe(MAILBOX_SENDER_ADDRESS_DB_LIMIT);
+    expect(result).toBe(input.slice(0, MAILBOX_SENDER_ADDRESS_DB_LIMIT));
+  });
+
+  it("fix round 1 (review Important): truncates an over-limit address extracted from a display-name From to exactly the DB limit", () => {
+    const longLocal = "a".repeat(200);
+    const longDomain = `${"b".repeat(200)}.COM`;
+    const input = `Billing Department <${longLocal}@${longDomain}>`;
+    const result = normalizeMailboxSenderAddress(input);
+    const fullyNormalized = `${longLocal}@${longDomain.toLowerCase()}`;
+    expect(result.length).toBe(MAILBOX_SENDER_ADDRESS_DB_LIMIT);
+    expect(result).toBe(fullyNormalized.slice(0, MAILBOX_SENDER_ADDRESS_DB_LIMIT));
+  });
+
+  it("fix round 1 (review Important): never throws and still bounds output for a pathologically large garbage header", () => {
+    const huge = "x".repeat(2_000_000); // 2 MB, no @ and no angle brackets
+    expect(() => normalizeMailboxSenderAddress(huge)).not.toThrow();
+    expect(normalizeMailboxSenderAddress(huge).length).toBe(MAILBOX_SENDER_ADDRESS_DB_LIMIT);
+  });
+
+  it("fix round 1 (review Important): never throws for a pathologically large display-name From with a short trailing address", () => {
+    const huge = `${"Name ".repeat(1_000_000)}<user@example.com>`;
+    expect(() => normalizeMailboxSenderAddress(huge)).not.toThrow();
+    expect(normalizeMailboxSenderAddress(huge)).toBe("user@example.com");
   });
 });

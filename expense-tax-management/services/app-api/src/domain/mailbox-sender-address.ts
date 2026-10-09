@@ -21,7 +21,27 @@
  * is no nullable fallback available. When nothing address-like can be
  * extracted, the original trimmed value is kept as-is (never normalized,
  * never null) so the row still satisfies that constraint.
+ *
+ * Fix round 1 (review Important) -- output was unbounded: an oversized
+ * `From` header (garbage fallback OR a pathologically long address-like
+ * value) could exceed that same 320-character CHECK and abort the whole
+ * candidate page, not just one row. This field is display-only (never
+ * parsed as a real address downstream -- office-web only renders it), so
+ * the ruling is to always cap the stored value at the DB limit rather
+ * than ever let one sender fail page staging.
  */
+
+// Exact number from migration 019_mailbox_discovery.ts's
+// `mailbox_candidates_sender_address_check` CHECK constraint above --
+// keep these in sync if that constraint ever changes.
+export const MAILBOX_SENDER_ADDRESS_DB_LIMIT = 320;
+
+// Guards the regexes below against a pathological (multi-KB/MB) raw
+// header: the address-spec we care about is always at the very end of
+// the string (angle-bracket form) or short to begin with (a real address
+// is well under this window), so scanning only the last few KB keeps this
+// function O(n) and cheap regardless of how large `raw` is.
+const PARSE_WINDOW = 4096;
 
 // Matches a trailing `<...>` address-spec -- the common `Name <addr>` and
 // bare `<addr>` forms. Anchored at the end (`$`) so a display name that
@@ -41,19 +61,21 @@ const ADDRESS_LIKE_PATTERN = /^[^\s<>@]+@[^\s<>@]+$/;
  * Extracts and normalizes the bare address-spec from a raw `From` header
  * value. Returns the original, trimmed input unchanged when nothing
  * address-like can be extracted -- never throws, never returns an empty
- * string for a non-empty input.
+ * string for a non-empty input. Always bounded to
+ * `MAILBOX_SENDER_ADDRESS_DB_LIMIT` characters, regardless of path.
  */
 export function normalizeMailboxSenderAddress(raw: string): string {
   const trimmed = raw.trim();
-  const angleMatch = ANGLE_ADDRESS_PATTERN.exec(trimmed);
-  const candidate = (angleMatch?.[1] ?? trimmed).trim();
+  const scanWindow = trimmed.length > PARSE_WINDOW ? trimmed.slice(-PARSE_WINDOW) : trimmed;
+  const angleMatch = ANGLE_ADDRESS_PATTERN.exec(scanWindow);
+  const candidate = (angleMatch?.[1] ?? scanWindow).trim();
 
   if (!ADDRESS_LIKE_PATTERN.test(candidate)) {
-    return trimmed;
+    return trimmed.slice(0, MAILBOX_SENDER_ADDRESS_DB_LIMIT);
   }
 
   const atIndex = candidate.lastIndexOf("@");
   const localPart = candidate.slice(0, atIndex);
   const domainPart = candidate.slice(atIndex + 1);
-  return `${localPart}@${domainPart.toLowerCase()}`;
+  return `${localPart}@${domainPart.toLowerCase()}`.slice(0, MAILBOX_SENDER_ADDRESS_DB_LIMIT);
 }
