@@ -10,6 +10,7 @@ import {
   initialSessionGateState,
   resetForSession,
   safeReturnTo,
+  signOutTradingSession,
   SESSION_REFRESH_INTERVAL_MS,
   type SessionExchangeResult,
 } from "./auth.ts";
@@ -280,6 +281,81 @@ test("createSessionGatedTask: a task that is still current when its turn arrives
   const result = await createSessionGatedTask(getCurrentSessionId, "sess_a", async () => "tok-A", fetchImpl)();
   assert.equal(result, "ok");
   assert.equal(calls.length, 1);
+});
+
+test("a queued exchange is skipped when sign-out clears the current session pointer", async () => {
+  const queue = createSerialExchangeQueue();
+  const release = deferred<void>();
+  const calls: FakeCall[] = [];
+  let sessionId: string | null = "sess_a";
+  const blocker = queue(() => release.promise);
+  const exchange = queue(createSessionGatedTask(() => sessionId, "sess_a", async () => "tok", fakeFetch(204, calls)));
+  sessionId = null;
+  release.resolve();
+  await blocker;
+  assert.equal(await exchange, "error");
+  assert.equal(calls.length, 0);
+});
+
+test("an exchange without a Clerk session never acquires a token or issues a request", async () => {
+  const calls: FakeCall[] = [];
+  let acquired = false;
+  const task = createSessionGatedTask(() => null, null, async () => { acquired = true; return "tok"; }, fakeFetch(204, calls));
+  assert.equal(await task(), "error");
+  assert.equal(acquired, false);
+  assert.equal(calls.length, 0);
+});
+
+test("sign-out waits for an active exchange before clearing the cookie and ending Clerk", async () => {
+  const queue = createSerialExchangeQueue();
+  const started = deferred<void>();
+  const response = deferred<Response>();
+  const order: string[] = [];
+  let cookie = "old";
+  const active = queue(async () => {
+    started.resolve();
+    await response.promise;
+    cookie = "issued";
+    order.push("exchange");
+    return "ok";
+  });
+  await started.promise;
+  const calls: FakeCall[] = [];
+  const logoutFetch = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ input, init });
+    cookie = "";
+    order.push("logout");
+    return { status: 204 } as Response;
+  }) as typeof fetch;
+  const signOut = signOutTradingSession(queue, async () => { order.push("clerk"); }, logoutFetch);
+  await Promise.resolve();
+  assert.equal(calls.length, 0);
+  response.resolve({ status: 204 } as Response);
+  await active;
+  assert.equal(await signOut, "ok");
+  assert.equal(cookie, "");
+  assert.deepEqual(order, ["exchange", "logout", "clerk"]);
+  assert.equal(calls[0].input, "/__auth/logout");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.equal(calls[0].init?.credentials, "include");
+  assert.equal(calls[0].init?.body, undefined);
+});
+
+test("failed gateway logout does not report success or sign out Clerk", async () => {
+  for (const status of [401, 403, 500]) {
+    let signedOut = false;
+    const result = await signOutTradingSession(createSerialExchangeQueue(), async () => { signedOut = true; }, fakeFetch(status, []));
+    assert.equal(result, "error");
+    assert.equal(signedOut, false);
+  }
+});
+
+test("network and Clerk sign-out failures are retryable errors", async () => {
+  const down = (async () => { throw new Error("network down"); }) as typeof fetch;
+  assert.equal(await signOutTradingSession(createSerialExchangeQueue(), async () => {}, down), "error");
+  const queue = createSerialExchangeQueue();
+  assert.equal(await signOutTradingSession(queue, async () => { throw new Error("Clerk unavailable"); }, fakeFetch(204, [])), "error");
+  assert.equal(await signOutTradingSession(queue, async () => {}, fakeFetch(204, [])), "ok");
 });
 
 // --- session-tied gateway readiness: reset + stale-result rejection

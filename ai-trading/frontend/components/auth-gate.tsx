@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { SignIn, useAuth } from "@clerk/react";
 import type { ReactNode } from "react";
 import {
@@ -10,9 +10,19 @@ import {
   getGateState,
   initialSessionGateState,
   resetForSession,
+  signOutTradingSession,
   SESSION_REFRESH_INTERVAL_MS,
   type ExchangeQueue,
 } from "@/lib/auth";
+
+type SignOutStatus = "idle" | "pending" | "error";
+const TradingSignOutContext = createContext<(() => Promise<void>) | null>(null);
+
+export function useTradingSignOut() {
+  const signOut = useContext(TradingSignOutContext);
+  if (!signOut) throw new Error("Account controls require AuthGate");
+  return signOut;
+}
 
 // --- Known, operator-facing limitation: an indefinite liveness ceiling --
 //
@@ -43,7 +53,7 @@ import {
 // Combined with the stateless cookie's own up-to-3600-second post-signout
 // replay window (see `SESSION_REFRESH_INTERVAL_MS`'s comment in
 // `lib/auth.ts`), both ceilings are explicit tradeoffs of this MVP's
-// two-route, no-server-state design that the operator should accept
+// stateless design that the operator should accept
 // before production activation, not implementation gaps to silently
 // patch over with something that looks like a fix but reopens a race.
 
@@ -62,7 +72,7 @@ import {
 // "adjusting state when a prop changes" pattern), so there is no frame
 // where stale children are visible under a new session.
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { isLoaded, isSignedIn, sessionId, getToken } = useAuth();
+  const { isLoaded, isSignedIn, sessionId, getToken, signOut } = useAuth();
   const gateState = getGateState({ isLoaded, isSignedIn });
   const currentSessionId = sessionId ?? null;
 
@@ -71,6 +81,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (resetState !== sessionGateState) setSessionGateState(resetState);
 
   const [attempt, setAttempt] = useState(0);
+  const [signOutStatus, setSignOutStatus] = useState<SignOutStatus>("idle");
+  const signOutStatusRef = useRef<SignOutStatus>("idle");
 
   // One serializer for this gate's whole lifetime: every exchange it ever
   // issues -- across every session change and every refresh tick --
@@ -93,11 +105,28 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // latest write.
   const currentSessionIdRef = useRef(currentSessionId);
   useEffect(() => {
-    currentSessionIdRef.current = currentSessionId;
+    currentSessionIdRef.current = signOutStatusRef.current === "idle" ? currentSessionId : null;
   });
 
+  async function handleSignOut() {
+    if (signOutStatusRef.current === "pending") return;
+    const ownerSessionId = currentSessionId;
+    // Pause synchronously: already-queued refreshes must skip before their
+    // turn, and an active one must finish before logout clears its cookie.
+    signOutStatusRef.current = "pending";
+    currentSessionIdRef.current = null;
+    setSignOutStatus("pending");
+    const result = await signOutTradingSession(
+      queueRef.current!,
+      () => ownerSessionId ? signOut({ sessionId: ownerSessionId }) : Promise.resolve(),
+    );
+    const next = result === "ok" ? "idle" : "error";
+    signOutStatusRef.current = next;
+    setSignOutStatus(next);
+  }
+
   useEffect(() => {
-    if (gateState !== "ready") return;
+    if (gateState !== "ready" || signOutStatus !== "idle") return;
     const ownerSessionId = currentSessionId;
     let cancelled = false;
 
@@ -109,7 +138,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
       // once. createSessionGatedTask additionally skips this task with no
       // network call at all if `ownerSessionId` is already stale by the
       // time its turn comes up (i.e. it never got a chance to start).
-      const task = createSessionGatedTask(() => currentSessionIdRef.current, ownerSessionId, getToken, fetch);
+      const task = createSessionGatedTask(
+        () => signOutStatusRef.current === "idle" ? currentSessionIdRef.current : null,
+        ownerSessionId, getToken, fetch,
+      );
       const result = await queueRef.current!(task);
       if (cancelled) return;
       // A refresh failure (not just the initial exchange) applies here
@@ -135,7 +167,30 @@ export function AuthGate({ children }: { children: ReactNode }) {
       // session, and createSessionGatedTask is what skips a task that
       // hasn't started yet instead.
     };
-  }, [gateState, currentSessionId, getToken, attempt]);
+  }, [gateState, currentSessionId, getToken, attempt, signOutStatus]);
+
+  if (signOutStatus === "pending") {
+    return (
+      <main className="flex h-dvh flex-col items-center justify-center gap-2 px-4 text-center" role="status">
+        <p className="font-medium">Signing out…</p>
+        <p className="text-sm text-muted-foreground">Finishing your secure session.</p>
+      </main>
+    );
+  }
+  if (signOutStatus === "error") {
+    return (
+      <main className="flex h-dvh flex-col items-center justify-center gap-4 px-4 text-center">
+        <p role="alert">Could not finish signing out. Please retry.</p>
+        <button
+          type="button"
+          onClick={() => void handleSignOut()}
+          className="min-h-11 cursor-pointer rounded-md border border-border px-4 text-sm transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none"
+        >
+          Retry sign out
+        </button>
+      </main>
+    );
+  }
 
   if (gateState === "loading" || (gateState === "ready" && resetState.status === "pending")) {
     // Deliberately no manual recovery action here (see the module-level
@@ -172,12 +227,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <button
           type="button"
           onClick={() => setAttempt((n) => n + 1)}
-          className="rounded-md border border-border px-4 py-2 text-sm"
+          className="min-h-11 cursor-pointer rounded-md border border-border px-4 text-sm transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none"
         >
           Retry
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleSignOut()}
+          className="min-h-11 cursor-pointer rounded-md px-4 text-sm transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none"
+        >
+          Sign out
         </button>
       </main>
     );
   }
-  return children;
+  return <TradingSignOutContext.Provider value={handleSignOut}>{children}</TradingSignOutContext.Provider>;
 }
