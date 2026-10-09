@@ -645,23 +645,32 @@ export function createMailboxAppClient(
       const signal = AbortSignal.timeout(timeoutMs);
       try {
         const token = await withAbort(tokenProvider(), signal);
-        const fetchPromise = fetchImplementation(
+        // The App API route reads uploadGrantId/expectedCandidateVersion/
+        // idempotencyKey from the QUERYSTRING (AttachmentQuerySchema in
+        // routes/mailbox-ingestion.ts), not custom headers -- the body
+        // itself is the opaque attachment byte stream. Sending these as
+        // headers instead left the querystring empty, so App API rejected
+        // every real upload with a 400 naming all three as missing.
+        const uploadUrl = new URL(
           `${config.baseUrl}/internal/v1/mailbox/candidates/${input.candidateId}/attachments/${input.attachmentIndex}`,
-          {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${token}`,
-              "content-type": "application/octet-stream",
-              "x-mailbox-upload-grant-id": input.uploadGrantId,
-              "x-mailbox-expected-candidate-version": String(input.expectedCandidateVersion),
-              "x-mailbox-idempotency-key": input.idempotencyKey,
-            },
-            body: target.readable,
-            duplex: "half",
-            redirect: "error",
-            signal,
-          } as RequestInit,
         );
+        uploadUrl.searchParams.set("uploadGrantId", input.uploadGrantId);
+        uploadUrl.searchParams.set(
+          "expectedCandidateVersion",
+          String(input.expectedCandidateVersion),
+        );
+        uploadUrl.searchParams.set("idempotencyKey", input.idempotencyKey);
+        const fetchPromise = fetchImplementation(uploadUrl, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/octet-stream",
+          },
+          body: target.readable,
+          duplex: "half",
+          redirect: "error",
+          signal,
+        } as RequestInit);
         fetchPromise.catch(() => undefined);
 
         // Fix round 1 (review Important #1) -- race, don't

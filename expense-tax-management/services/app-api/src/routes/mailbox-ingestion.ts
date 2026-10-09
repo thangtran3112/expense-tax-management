@@ -35,6 +35,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  AttachmentQuerySchema,
   CurrencySchema,
   DateOnlySchema,
   DecimalMoneySchema,
@@ -64,7 +65,7 @@ const errors = {
 };
 
 const CandidateIdParamsSchema = z.strictObject({ candidateId: z.uuid() });
-const AttachmentParamsSchema = z.strictObject({
+export const AttachmentParamsSchema = z.strictObject({
   candidateId: z.uuid(),
   attachmentIndex: z.coerce.number().int().min(0),
 });
@@ -83,11 +84,11 @@ const UploadGrantResponseSchema = z.strictObject({
   maxAttachments: z.literal(5),
 });
 
-const AttachmentQuerySchema = z.strictObject({
-  uploadGrantId: z.uuid(),
-  expectedCandidateVersion: z.coerce.number().int(),
-  idempotencyKey: z.string().trim().min(1).max(500),
-});
+// Fix round 7, fix round 1 (review Important #1) -- AttachmentQuerySchema
+// now lives in @expense-tax/contracts (mailbox-ingestion.ts), the one
+// deliberate exception to that file's own plain-interfaces ruling, so this
+// route and the broker's outbound-request contract test import the exact
+// SAME schema object -- see that file's doc comment for why.
 
 const AttachmentResponseSchema = z.strictObject({
   candidateId: z.uuid(),

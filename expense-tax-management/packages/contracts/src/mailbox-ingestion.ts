@@ -97,6 +97,29 @@ export interface MailboxBrokerAttachmentUploadV1 {
   readonly idempotencyKey: string;
 }
 
+/**
+ * Fix round 7, fix round 1 (review Important #1) -- the one deliberate
+ * exception to this file's own "plain interfaces only" ruling above.
+ * `uploadGrantId`/`expectedCandidateVersion`/`idempotencyKey` travel as
+ * QUERYSTRING on the real route
+ * (`POST /internal/v1/mailbox/candidates/:candidateId/attachments/
+ * :attachmentIndex`, services/app-api/src/routes/mailbox-ingestion.ts),
+ * never headers -- the production incident this schema prevents a repeat
+ * of was exactly that mismatch. Both the App API route (as its
+ * `schema.querystring`) and the broker's own contract test (parsing the
+ * URL its real `uploadAttachment` client builds) import this SAME schema
+ * object, so a future edit to either side alone fails a test immediately.
+ * Internal to the package (not re-exported for external SDK consumers
+ * beyond this one cross-service pinning use) -- still ends up in the
+ * generated OpenAPI surface as a side effect of being the route's real
+ * querystring schema, which is unavoidable and harmless.
+ */
+export const AttachmentQuerySchema = z.strictObject({
+  uploadGrantId: z.uuid(),
+  expectedCandidateVersion: z.coerce.number().int(),
+  idempotencyKey: z.string().trim().min(1).max(500),
+});
+
 export const MailboxAttachmentUploadResultV1Schema = z.strictObject({
   candidateId: z.uuid(),
   attachmentIndex: z.int().min(0).max(MAX_CANDIDATE_ATTACHMENTS - 1),
