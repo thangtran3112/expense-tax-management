@@ -95,7 +95,7 @@
 | 1. Strategy core | Contracts package, backend scaffold, session calendar, indicators, levels, evaluator, intraday and swing templates (no I/O) | none; can run beside Phase 0 | `phase-1-strategy-core.md` | Next |
 | 2. Data foundation | Postgres schema, bar store and backfills, IBKR live adapter, futures roll, streaming slots, calendar/news/fundamentals adapters | 0, 1 | `phase-2-data.md` | Planned |
 | 3. Runtime and alerts | `api` and `scheduler`, live evaluation, alert outbox, Telegram/Slack, watchdog checks, compose services, Firestore profile, backups (deployed) | 2 | `phase-3-runtime.md` | Planned |
-| 4. Desk web and hostnames | Desk static app (Today, Strategies, Watchlists, Settings); hub to `trading-hub`, Desk to `trading` | 3 | `phase-4-web.md` | Planned |
+| 4. Desk web and hostnames | Desk static app (Today, Strategies, Watchlists, Settings); `trading.tobytran.dev` points at the Desk after the open-source lane moves the hub to `trading-hub` | 3, plus the hub move (open-source lane) | `phase-4-web.md` | Planned |
 | 5. Long-term | Fundamentals and persona-review blocks, covered-call and short-call templates, Flex and CSV import, Holdings page | 3 (UI after 4) | `phase-5-long-term.md` | Planned |
 | 6. Paper trading | Paper broker with guard, bracket orders, reconciliation, flat-by, limits, off switch, stats, Paper tab | 3 (UI after 4) | `phase-6-paper.md` | Planned |
 | 7. Ask | PydanticAI agent over AG-UI with market, strategy, and drafting tools; budgets | 5, 6 | `phase-7-ask.md` | Planned |
@@ -208,10 +208,8 @@ Each phase's task file turns its outline into complete, test-first tasks.
   - Charts with lightweight-charts.
   - Built from the Paper mockups.
 - **Infrastructure:**
-  - a GCS bucket and Worker routes for `trading.tobytran.dev` (static plus `/api/*`);
-  - the hub moves to `trading-hub`;
-  - `ALLOWED_ORIGINS` updated;
-  - Clerk and ttyd origin checks.
+  - The open-source lane moves the hub to `trading-hub` (AGENTS.md "Hostnames"). Phase 4 waits for that move and its staging checks; it does not redo them.
+  - Phase 4 then adds a GCS bucket and Worker routes for `trading.tobytran.dev` (static plus `/api/*`) and points `trading.tobytran.dev` at the Desk.
 - **Acceptance:**
   - a Playwright smoke test: Today → Strategies → create from template → save a version → its alert appears;
   - the 01h Task 10 staging checks repeated on `trading-hub`.

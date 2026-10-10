@@ -60,12 +60,19 @@ Paths below are relative to `ai-trading/` unless they start with `../`.
 
 ## Things the Next Session Should Know
 
+- **Two lanes** (`AGENTS.md` Scope, from PR #77):
+  - This is the Family Desk lane: `plans/subplans/02*.md`, the Paper mockups, and the Desk's own directories.
+  - The open-source lane owns the hub, the upstream apps, and the hub's move to `trading-hub`. Phase 4 waits for that move; it does not redo it.
+  - Do not edit the other lane's files. Keep edits to `plans/STATUS.md` and `AGENTS.md` small and additive.
+  - The open-source lane's newest handoff is `plans/handoffs/*trading-hub*`.
 - **Shared checkout.** Expense sessions' own `AGENTS.md` says they work on `feature/toby` in the main checkout, but the owner gave the main checkout to the ai-trading main session.
   - The root `../AGENTS.md` now tells every session to check `git status --short --branch` before switching or committing there.
   - Watch for commits on our branch that are not ours, and tell the owner.
   - Push often.
 - **Delivery.**
   - Pull requests to `dev` must pass the required "Contracts, services, workers, frontends" check, and auto-merge is disabled. Use `gh pr checks <n> --watch`, then `gh pr merge <n> --squash`. Never pass `--delete-branch`, `--admin`, or force pushes.
+  - The ruleset also requires the branch to be up to date with `dev`, and the expense CI takes about 15 minutes, so `dev` often moves during a run. When the merge says "not up to date", run `gh pr update-branch <n>`, wait for the checks again, then merge.
+  - Bundle a phase's commits into one pull request to save CI cycles.
   - Commit messages are a single line with no trailer.
   - AGENTS.md's standing delivery authorization covers routine commits, pull requests, merges, scoped `main` releases, and deploys of a requested phase.
 - **IBKR facts from the docs** (see 02d):

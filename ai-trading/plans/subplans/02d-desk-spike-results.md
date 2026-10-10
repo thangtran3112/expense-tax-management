@@ -89,6 +89,10 @@ Related:
   - `api`: 768 MiB
   - `scheduler`: 512 MiB
 - The main out-of-memory risk is MiroFish's 4 GiB limit with no swap, so MiroFish stays opt-in.
+- **Disk is the tighter limit.** `deploy.sh` refuses to deploy below 30 GiB free (added after the 2026-10-10 disk incident), and 35 GB was free at this check.
+  - Phase 3 must size the backend image and Desk Postgres to that margin.
+  - The 1-minute bar archive is capped at 90 days (02b §5).
+  - Database backups go to GCS, not the VPS disk.
 
 ### 7. Flex token for read-only holdings
 
