@@ -72,7 +72,7 @@ Every receipt processed since the TypeScript worker cutover has returned placeho
 
 - Firestore: add `OPENAI_API_KEY` to `shared/llm` (from the owner's shell, never printed), then link `OPENAI_API_KEY`, `OPENAI_API_KEY_1` and `OPENAI_API_KEY_2` into the `expense-tax-management/production` and `expense-tax-management/local` profiles with `family_config.py link <profile> <NAME> shared/llm <NAME>`. `ANTHROPIC_API_KEY` is not linked.
 - `workflow-worker` config reads the three variables, each optional. Compose passes them to `workflow-worker` only, in `deploy/production/docker-compose.yml` and the root `docker-compose.yml`. `deploy.sh` adds them to `KNOWN_ENV_KEYS` and requires at least one to be non-empty. `.env.example` gets placeholders.
-- `scripts/audit-credential-boundaries.mjs` and the boundary tests are updated so the OpenAI keys may reach `workflow-worker` and no other service.
+- The deployment boundary tests assert the OpenAI keys reach `workflow-worker` and no other service. `scripts/audit-credential-boundaries.mjs` audits database credentials only; it is run to confirm it still passes and is not otherwise changed.
 
 ### 5. Rollback
 
