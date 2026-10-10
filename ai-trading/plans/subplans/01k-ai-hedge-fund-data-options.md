@@ -4,6 +4,8 @@ Status: proposal for owner review (researched 2026-10-09, reconciled with the De
 
 Related: the Desk lane's `02a-desk-v1-strategies-design.md` §7 and `02b-desk-market-data-options.md` (the Desk's data layer; they land with the Desk design), [STATUS.md](../STATUS.md).
 
+**Decision (owner, 2026-10-10):** build the adapter now with Alpaca prices and SEC EDGAR fundamentals; IBKR later. Design: [01m](01m-market-data-adapter.md).
+
 ## 1. Goal and Scope
 
 - ai-hedge-fund runs without a Financial Datasets API key. Free or budget sources only.
