@@ -269,6 +269,123 @@ it("MailboxScheduledScanTriggerWorkflow does nothing on skipped_overlap", async 
 }, 60_000);
 
 /**
+ * Production bug fix — App API's own scan dispatch (temporal/
+ * mailbox-schedules.ts's createMailboxScanDispatch) already starts
+ * MailboxScanWorkflow under mailboxScanWorkflowId(scanRunId) for every
+ * "started" scan, scheduled scans included, so this trigger's own
+ * executeChild always collides with it. The SDK surfaces that collision
+ * as a raw WorkflowExecutionAlreadyStartedError (not wrapped in a
+ * ChildWorkflowFailure -- see @temporalio/workflow's startChild, which
+ * chains the start-failure rejection straight into the completion
+ * promise, confirmed by reading node_modules/@temporalio/workflow/lib/
+ * internals.js for this installed 1.23.0 SDK). The scan already running
+ * under that ID is the intended outcome -- the trigger must still
+ * complete successfully.
+ */
+it("MailboxScheduledScanTriggerWorkflow completes successfully when the scan workflow is already running under that ID", async () => {
+  const scanRunId = "scan-already-running";
+  const calls: unknown[] = [];
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const scanWorkflowId = `mailbox-scan-${scanRunId}`;
+  const triggerWorkflowId = "mailbox-schedule-trigger-already-started";
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let discoveringStarted!: () => void;
+  const discoveryStarted = new Promise<void>((resolve) => {
+    discoveringStarted = resolve;
+  });
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_start_scheduled_scan(input: unknown) {
+          calls.push(["start", input]);
+          return { status: "started", scanRunId };
+        },
+        async mailbox_discover_page(input: unknown) {
+          calls.push(["discover", input]);
+          discoveringStarted();
+          await gate;
+          return { scanRunId, pageSequence: 1, candidateCount: 0, retryCount: 0 };
+        },
+        async mailbox_finalize_scan(input: unknown) {
+          calls.push(["finalize", input]);
+        },
+      },
+    });
+    await worker.runUntil(async () => {
+      // Simulates App API's own createMailboxScanDispatch already having
+      // started the scan workflow under this ID before the trigger's
+      // own executeChild ever runs.
+      const existingScanHandle = await env.client.workflow.start("MailboxScanWorkflow", {
+        workflowId: scanWorkflowId,
+        taskQueue: TASK_QUEUE,
+        args: [{ schemaVersion: 1, scanRunId }],
+      });
+      await discoveryStarted;
+
+      await env.client.workflow.execute("MailboxScheduledScanTriggerWorkflow", {
+        workflowId: triggerWorkflowId,
+        taskQueue: TASK_QUEUE,
+        args: [{ tenantId: "tenant-1", connectionId: "connection-1" }],
+      });
+
+      releaseGate();
+      await existingScanHandle.result();
+    });
+    // "start" (the trigger's activity) and "discover" (the already-running
+    // scan workflow's activity) race concurrently -- only their relative
+    // order to "finalize" is guaranteed.
+    expect(calls.map(([name]) => name).sort()).toEqual(["discover", "finalize", "start"]);
+  } finally {
+    releaseGate();
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxScheduledScanTriggerWorkflow fails when the child workflow fails for a reason other than already-started", async () => {
+  const scanRunId = "scan-child-fails";
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const triggerWorkflowId = "mailbox-schedule-trigger-child-fails";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_start_scheduled_scan() {
+          return { status: "started", scanRunId };
+        },
+        async mailbox_discover_page() {
+          const { ApplicationFailure } = await import("@temporalio/activity");
+          throw ApplicationFailure.nonRetryable("discover failed", "MailboxDiscoverNonRetryable");
+        },
+        async mailbox_finalize_scan() {
+          // best-effort terminal callback on MailboxScanWorkflow's own failure path
+        },
+      },
+    });
+    await expect(
+      worker.runUntil(() =>
+        env.client.workflow.execute("MailboxScheduledScanTriggerWorkflow", {
+          workflowId: triggerWorkflowId,
+          taskQueue: TASK_QUEUE,
+          args: [{ tenantId: "tenant-1", connectionId: "connection-1" }],
+        }),
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+/**
  * Phase 3D-C Task 5 — MailboxOcrReceiptWorkflow. Proves mark_running then
  * the single combined mailbox_ocr_receipt activity, with ocr_mark_failed
  * as the best-effort terminal callback on failure -- and that no OCR

@@ -36,6 +36,7 @@ import {
   proxyActivities,
   workflowInfo,
 } from "@temporalio/workflow";
+import { WorkflowExecutionAlreadyStartedError } from "@temporalio/common";
 import {
   AI_WORKER_TASK_QUEUE,
   MAILBOX_MATERIALIZE_WORKFLOW_TYPE,
@@ -143,11 +144,26 @@ export async function MailboxScheduledScanTriggerWorkflow(
   });
   if (result.status !== "started") return;
 
-  await executeChild(MAILBOX_SCAN_WORKFLOW_TYPE, {
-    workflowId: mailboxScanWorkflowId(result.scanRunId),
-    taskQueue: AI_WORKER_TASK_QUEUE,
-    args: [{ schemaVersion: 1, scanRunId: result.scanRunId }],
-  });
+  try {
+    await executeChild(MAILBOX_SCAN_WORKFLOW_TYPE, {
+      workflowId: mailboxScanWorkflowId(result.scanRunId),
+      taskQueue: AI_WORKER_TASK_QUEUE,
+      args: [{ schemaVersion: 1, scanRunId: result.scanRunId }],
+    });
+  } catch (error) {
+    // App API's own scan dispatch (temporal/mailbox-schedules.ts's
+    // createMailboxScanDispatch) already starts MailboxScanWorkflow under
+    // this exact workflow ID for every "started" scan, scheduled scans
+    // included -- so this executeChild always collides with it. The SDK
+    // surfaces that as a raw WorkflowExecutionAlreadyStartedError (the
+    // child's `started` promise rejects before a ChildWorkflowFailure
+    // could ever wrap it; see @temporalio/workflow's startChild, which
+    // chains that rejection straight into the completion promise). The
+    // scan is already running under the intended ID, which is the
+    // intended outcome here -- treat it as success. Any other child
+    // failure still fails the trigger.
+    if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error;
+  }
 }
 
 /**
