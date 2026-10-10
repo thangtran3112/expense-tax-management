@@ -129,6 +129,17 @@ class MetricsTest(unittest.TestCase):
         metrics.add_valuation(rows, lambda day: 20.0)
         self.assertIsNone(rows[0]["price_to_earnings_ratio"])
 
+    def test_quarters_derived_from_year_to_date_cash_flow(self):
+        cf = company()
+        ocf = [dur("2023-01-01", "2023-03-31", 30, "2023-05-01"), dur("2023-01-01", "2023-06-30", 65, "2023-08-01"),
+               dur("2023-01-01", "2023-09-30", 100, "2023-11-01"), dur("2023-01-01", "2023-12-31", 140, "2024-02-15", "10-K"),
+               dur("2024-01-01", "2024-03-31", 40, "2024-05-01")]
+        capex = [dur(r["start"], r["end"], {30: 10, 65: 20, 100: 30, 140: 40, 40: 10}[r["val"]], r["filed"], r["form"]) for r in ocf]
+        cf["facts"]["us-gaap"]["NetCashProvidedByUsedInOperatingActivities"] = {"units": {"USD": ocf}}
+        cf["facts"]["us-gaap"]["PaymentsToAcquirePropertyPlantAndEquipment"] = {"units": {"USD": capex}}
+        row = metrics.ttm_rows(cf, "2024-05-01", 1)[0]
+        self.assertAlmostEqual(row["free_cash_flow_per_share"], ((35 + 35 + 40 + 40) - (10 + 10 + 10 + 10)) / 10)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -141,7 +152,18 @@ Fixture arithmetic, for the reviewer: NI quarters are revenue // 10 → 10, 11, 
 Run: `cd ai-trading/market-data && python3 -m unittest test_metrics -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'metrics'`.
 
-- [ ] **Step 3: Implement.** `errors.py` exists from Task 1. `metrics.py`:
+- [ ] **Step 3: Implement.** `errors.py`:
+
+```python
+class ProviderError(Exception):
+    """A data provider failed or is not configured: HTTP 502, never empty data."""
+
+
+class Unsupported(Exception):
+    """The request asks for data this service does not supply: HTTP 501."""
+```
+
+`metrics.py`:
 
 ```python
 """Point-in-time TTM metrics from SEC companyfacts (01m §5.4). Provider-independent."""
@@ -192,6 +214,17 @@ def _quarters(cf, concepts, as_of, unit="USD"):
         if not known:
             continue
         q = {end: (f["val"], f["filed"]) for (start, end), f in known.items() if start and 80 <= _days(start, end) <= 100}
+        # 10-Q cash-flow statements are year-to-date only: a quarter is the
+        # difference of two YTD values sharing a start and ending ~90 days apart.
+        by_start = {}
+        for (start, end), f in known.items():
+            if start:
+                by_start.setdefault(start, []).append(f)
+        for facts in by_start.values():
+            facts.sort(key=lambda f: f["end"])
+            for prev, cur in zip(facts, facts[1:]):
+                if cur["end"] not in q and 80 <= _days(prev["end"], cur["end"]) <= 100:
+                    q[cur["end"]] = (cur["val"] - prev["val"], max(prev["filed"], cur["filed"]))
         for (start, end), f in known.items():
             if start and 350 <= _days(start, end) <= 380 and end not in q:
                 inside = [v for e, v in q.items() if start < e < end]
