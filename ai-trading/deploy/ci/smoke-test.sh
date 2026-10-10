@@ -7,6 +7,10 @@ set -Eeuo pipefail
 REGISTRY="${REGISTRY:-ghcr.io/thangtran3112/family-app}"
 TAG="${TAG:-local}"
 ACCESS_HEADER="Cf-Access-Authenticated-User-Email: smoke@example.test"
+VIBE_OPENAI_ENV=(-e LANGCHAIN_PROVIDER=openai -e LANGCHAIN_MODEL_NAME=gpt-5.5
+  -e OPENAI_BASE_URL=https://api.openai.com/v1 -e OPENAI_API_KEY=sk-smoke-openai-dummy
+  -e LANGCHAIN_REASONING_EFFORT=none
+  -e VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS=1)
 containers=()
 
 cleanup() {
@@ -89,6 +93,9 @@ smoke_terminal() {
   docker run --rm --entrypoint "$cli" "$img" --help >/dev/null || fail "$cli --help failed"
   echo "ok   $cli --help"
   tmux_probe "$img"
+  docker run --rm --network none --entrypoint python \
+    -v "$PWD/ai-trading/deploy/upstream/terminal/test-session-lifecycle.py:/checks/test-session-lifecycle.py:ro" \
+    "$img" /checks/test-session-lifecycle.py || fail "terminal lifecycle failed for $service"
   start "smoke-$service" "$img" "$port" 7681
   expect_status 407 "http://127.0.0.1:${port}${base}/"
   expect_status 200 "http://127.0.0.1:${port}${base}/" -H "$ACCESS_HEADER"
@@ -96,7 +103,69 @@ smoke_terminal() {
 }
 
 smoke_vibe() {
-  # Native Anthropic is our deployed provider. Construct its actual adapter
+  docker run --rm --network none --entrypoint python "${VIBE_OPENAI_ENV[@]}" \
+    "$(image vibe-trading)" -c '
+from langchain_openai import ChatOpenAI
+from src.providers.llm import build_llm
+client=build_llm()
+assert isinstance(client, ChatOpenAI)
+assert client.openai_api_base=="https://api.openai.com/v1"
+' || fail "Vibe-Trading direct OpenAI adapter could not be constructed"
+  echo "ok   Vibe-Trading constructs its direct OpenAI adapter offline"
+  local rejected
+  # Value: protects=fail-closed boot for a complete direct OpenAI profile;
+  # fails_when=any required provider/model/key/secure-mode guard is removed;
+  # why_new=existing negative cases covered only provider and endpoint; seam=none.
+  for rejected in LANGCHAIN_PROVIDER=openrouter OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+    LANGCHAIN_MODEL_NAME= OPENAI_API_KEY= VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS=0; do
+    local rejection
+    if rejection="$(docker run --rm --network none --entrypoint python "${VIBE_OPENAI_ENV[@]}" \
+      -e "$rejected" "$(image vibe-trading)" /usr/local/bin/start-vibe.py \
+      python -c 'raise SystemExit(0)' 2>&1)"; then
+      fail "Vibe startup accepted an incomplete/non-OpenAI profile override ($rejected)"
+    fi
+    grep -qF 'Vibe requires the direct OpenAI family-config profile' <<<"$rejection" \
+      || fail "Vibe startup failed for a reason other than the provider policy ($rejected)"
+  done
+  echo "ok   Vibe startup refuses OpenRouter, missing model/key, and disabled secure-credentials overrides"
+  # Value: protects=stale provider credentials are cleared on a volume-backed redeploy;
+  # fails_when=settings upsert or stale credential clearing is removed;
+  # why_new=the normal boot test starts with an empty settings volume; seam=none.
+  docker run --rm --network none --entrypoint python "${VIBE_OPENAI_ENV[@]}" "$(image vibe-trading)" -c '
+import os, pathlib, sys
+d = pathlib.Path.home() / ".vibe-trading"
+d.mkdir(parents=True, exist_ok=True)
+(d / ".env").write_text(
+    "LANGCHAIN_PROVIDER=openrouter\n"
+    "LANGCHAIN_MODEL_NAME=deepseek/deepseek-v4-pro\n"
+    "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+    "OPENROUTER_API_KEY=sk-or-v1-stale-dummy-router-key\n"
+    "ANTHROPIC_API_KEY=sk-ant-stale-dummy-anthropic-key\n"
+    "TUSHARE_TOKEN=stale-dummy-tushare-token\n"
+    "LANGCHAIN_REASONING_EFFORT=high\n"
+    "LANGCHAIN_TEMPERATURE=0.9\n"
+    "MAX_RETRIES=9\n"
+)
+check = """
+import os, pathlib, stat
+from src.api.helpers import _read_env_values
+path = pathlib.Path.home() / ".vibe-trading" / ".env"
+values = _read_env_values(path)
+assert values["LANGCHAIN_PROVIDER"] == "openai"
+assert values["LANGCHAIN_MODEL_NAME"] == "gpt-5.5"
+assert values["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+assert values["LANGCHAIN_REASONING_EFFORT"] == "none"
+for name in ("OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "TUSHARE_TOKEN"):
+    assert values.get(name, "") == "", name + " was not cleared"
+assert values["LANGCHAIN_TEMPERATURE"] == "0.9"
+assert values["MAX_RETRIES"] == "9"
+assert stat.S_IMODE(path.stat().st_mode) == 0o600
+assert os.environ["OPENAI_API_KEY"] == "sk-smoke-openai-dummy"
+"""
+os.execvp(sys.executable, [sys.executable, "/usr/local/bin/start-vibe.py", sys.executable, "-c", check])
+' || fail "Vibe did not overwrite a stale persisted .env (old provider/keys/endpoint) while preserving unrelated settings"
+  echo "ok   Vibe overwrites a stale persisted .env without wiping its unrelated settings"
+  # Retain native Anthropic compatibility. Construct its actual adapter
   # with a fake key and no network; liveness alone misses absent extras.
   docker run --rm --network none --entrypoint python \
     -v "$PWD/ai-trading/packages/vibe-trading/requirements-lock.txt:/expected-base-requirements.txt:ro" \
@@ -125,10 +194,28 @@ assert isinstance(build_llm(), ChatAnthropic)
   local site=(-X POST -H "Origin: https://vibe.example.test" -H "Host: vibe.example.test")
   start smoke-vibe "$(image vibe-trading)" 18899 8899 \
     -e API_AUTH_KEY=smoke-key -e "FORWARDED_ALLOW_IPS=*" \
+    "${VIBE_OPENAI_ENV[@]}" \
     --read-only --tmpfs /tmp --tmpfs /home/vibe/.cache --tmpfs /home/vibe/.config \
     -v /app/agent/runs -v /app/agent/sessions -v /app/agent/uploads -v /app/agent/.swarm/runs -v /home/vibe/.vibe-trading \
     --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true
   WAIT_SECONDS=240 expect_status 200 http://127.0.0.1:18899/live
+  curl -fsS -H 'Authorization: Bearer smoke-key' http://127.0.0.1:18899/settings/llm | python3 -c '
+import json,sys
+settings=json.load(sys.stdin)
+assert settings["provider"]=="openai", "Settings fell back to the upstream example provider"
+assert settings["model_name"]=="gpt-5.5"
+assert settings["base_url"]=="https://api.openai.com/v1"
+assert settings["api_key_configured"] is True
+assert settings["reasoning_effort"]=="none"
+assert "sk-smoke-openai-dummy" not in json.dumps(settings)
+' || fail "Vibe settings do not reflect the injected OpenAI configuration"
+  docker exec smoke-vibe python -c '
+import pathlib,stat
+path=pathlib.Path.home()/".vibe-trading"/".env"
+assert stat.S_IMODE(path.stat().st_mode)==0o600
+assert "sk-smoke-openai-dummy" not in path.read_text(), "Provider key was copied into settings"
+' || fail "Vibe settings must be private and contain no copied provider key"
+  echo "ok   Vibe settings match direct OpenAI without copying/exposing its key"
   # Behind the TLS tunnel: its own UI's POST is accepted ...
   expect_status 200 "$url" "${site[@]}" -H "Authorization: Bearer smoke-key" -H "X-Forwarded-Proto: https"
   # ... without the forwarded scheme the same-site check rejects it ...
@@ -263,6 +350,7 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
 
   docker run -d --name smoke-vibe-gateway --network "$net" --network-alias vibe-trading \
     -e API_AUTH_KEY=smoke-key -e 'FORWARDED_ALLOW_IPS=*' \
+    "${VIBE_OPENAI_ENV[@]}" \
     --read-only --tmpfs /tmp --tmpfs /home/vibe/.cache --tmpfs /home/vibe/.config \
     -v /app/agent/runs -v /app/agent/sessions -v /app/agent/uploads -v /app/agent/.swarm/runs -v /home/vibe/.vibe-trading \
     --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true \

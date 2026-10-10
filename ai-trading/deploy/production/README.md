@@ -37,9 +37,11 @@ $CLI get ai-trading/clerk PUBLISHABLE_KEY   # prints one value exactly
 
 LLM keys are shared: every app profile links `ANTHROPIC_API_KEY` and an `OPENAI_API_KEY_*` from `shared/llm`. No provider spend limit is set (owner decision, 2026-10-08).
 
-Vibe-Trading's wrapper installs the native Anthropic adapter from `deploy/upstream/vibe-trading/requirements-anthropic.lock`, with exact versions and wheel hashes. It leaves upstream's pinned dependencies and source unchanged. The smoke test constructs the real adapter offline and checks installed upstream versions; on an upstream bump, regenerate the additions against that base image if compatibility changes. Do not install dependencies by hand on the running VPS.
+Vibe-Trading uses **direct OpenAI**, never OpenRouter: its Firestore profile sets `LANGCHAIN_PROVIDER=openai`, `LANGCHAIN_MODEL_NAME=gpt-5.5`, `OPENAI_BASE_URL=https://api.openai.com/v1`, and `VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS=1`; `OPENAI_API_KEY` remains linked to `shared/llm:OPENAI_API_KEY_1`. The wrapper refuses a different provider/endpoint at startup and seeds private, non-secret settings from the injected profile. Native secure-credential mode reads keys from the environment, so the UI cannot fall back to upstream's OpenRouter example and no key is copied into its settings file. Upstream's provider picker remains unmodified; switching it manually is unsupported for this deployment and the next startup restores the Firestore defaults.
 
-Rotate the shared Anthropic key with `family_config.py set shared/llm ANTHROPIC_API_KEY` (value on stdin), then redeploy so all three app containers receive it. The retired Secret Manager bundle is not used.
+The wrapper retains the optional native Anthropic adapter from `deploy/upstream/vibe-trading/requirements-anthropic.lock`, with exact versions and wheel hashes. It leaves upstream's pinned dependencies and source unchanged. The smoke test constructs both adapters offline, checks installed upstream versions, and checks that the API settings match the OpenAI environment without exposing/copying its key. On an upstream bump, regenerate the additions against that base image if compatibility changes. Do not install dependencies by hand on the running VPS.
+
+Rotate a shared provider key with `family_config.py set shared/llm <KEY_NAME>` (value on stdin), then redeploy the apps linked to it. The retired Secret Manager bundle is not used.
 
 ## Account and sign-out
 
@@ -48,6 +50,10 @@ The header's Account panel shows the signed-in Clerk user's name and email read-
 Sign out pauses new session exchanges, waits for an active exchange to settle, clears this browser's shared HttpOnly trading cookie through Origin-checked `POST /__auth/logout`, then ends the current Clerk session. The workspace is hidden during the action; a failed action offers Retry sign out instead of reporting success. Other family apps using that same Clerk session may also become signed out; this does not sign out the Google account itself.
 
 This is browser-cookie cleanup, not server-side revocation: copied stateless cookies can remain valid until their one-hour expiry, and already-open external WebSocket/SSE connections are not forcibly closed. The serializer is per tab; an already-started refresh in another tab can still repopulate the shared cookie. A genuinely stalled exchange can delay sign-out, because the existing serial queue never aborts an active request. Public Worker cutover still requires separate approval and review of these limits.
+
+## Terminal analyses
+
+TradingAgents is a one-analysis CLI, not a chat loop. The shared captive launcher keeps the tmux pane and output after normal completion, an app error, or Ctrl+C cancellation, then offers **Press Enter to start another analysis**. It never automatically retries a run or opens a shell. Reconnecting attaches to that same pane without launching another analysis; EOF closes it. The image smoke tests exercise this lifecycle for both terminal apps using dummy commands, without provider calls. Deploying new terminal images still interrupts existing panes, so wait for active analyses to finish before rollout.
 
 ## Deploy
 
