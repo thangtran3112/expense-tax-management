@@ -5,6 +5,8 @@ import { ApplicationFailure } from "@temporalio/activity";
 
 import { AppApiClientError, type AppApiClient } from "../clients/app-api.js";
 import { FoundryClientError, type FoundryClient } from "../clients/foundry.js";
+import { extractFakeReceipt } from "../providers/fake-ocr.js";
+import type { ReceiptExtractor } from "../providers/receipt-extractor.js";
 import { evaluateEnrichment } from "./enrichment.js";
 
 export { createMailboxActivities, type MailboxActivityDependencies } from "./mailbox.js";
@@ -27,13 +29,13 @@ async function downloadAndVerifyReceipt(
 }
 
 async function runExtraction(
-  extractReceipt: ActivityDependencies["extractReceipt"],
-  data: Uint8Array,
+  extract: () => OcrExtractionResultV1 | Promise<OcrExtractionResultV1>,
 ): Promise<OcrExtractionResultV1> {
   let extracted: OcrExtractionResultV1;
   try {
-    extracted = await extractReceipt(data);
-  } catch {
+    extracted = await extract();
+  } catch (error) {
+    if (error instanceof ApplicationFailure) throw error;
     throw ApplicationFailure.retryable("OCR extraction failed", "OcrExtractionTransient");
   }
   try {
@@ -46,9 +48,7 @@ async function runExtraction(
 export interface ActivityDependencies {
   readonly appApi: AppApiClient;
   readonly foundry: FoundryClient;
-  readonly extractReceipt: (
-    data: Uint8Array,
-  ) => OcrExtractionResultV1 | Promise<OcrExtractionResultV1>;
+  readonly extractReceipt: ReceiptExtractor;
 }
 
 export function createActivities({ appApi, foundry, extractReceipt }: ActivityDependencies) {
@@ -117,16 +117,27 @@ export function createActivities({ appApi, foundry, extractReceipt }: ActivityDe
       await foundry.markCallStarted(input.reservationId);
       return 1;
     },
+    // Legacy histories only: started before "ocr-receipt-bytes-in-activity"
+    // and before Task 3's route-aware extractor. Always the fake provider --
+    // these never carry a route and must keep replaying identically.
     async ocr_run_extraction(input: { data: Uint8Array }) {
-      return runExtraction(extractReceipt, input.data);
+      return runExtraction(() => extractFakeReceipt(input.data));
     },
     // Bug fix (2026-10-07): downloads and extracts in one activity call so
     // the receipt bytes stay in-process instead of round-tripping through
     // the workflow (and its Temporal history) as ocr_run_extraction's
     // input/output used to.
-    async ocr_extract_receipt(input: { fileId: string; expectedSha256: string | null }) {
+    async ocr_extract_receipt(input: {
+      fileId: string;
+      expectedSha256: string | null;
+      route?: { providerKind: string; providerModelId: string };
+    }) {
+      if (input.route === undefined) {
+        throw ApplicationFailure.nonRetryable("OCR route missing", "OcrRouteMissing");
+      }
+      const route = input.route;
       const data = await downloadAndVerifyReceipt(appApi, input);
-      return runExtraction(extractReceipt, data);
+      return runExtraction(() => extractReceipt(data, route));
     },
     async ocr_record_accepted(input: { reservationId: string }): Promise<void> {
       await foundry.recordOutcome(input.reservationId, 1, { outcome: "accepted" });
