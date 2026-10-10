@@ -328,6 +328,22 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   [[ "$body" == "smoke@example.test" ]] || fail "expected the upstream to see the verified email, got: $body"
   echo "ok   Caddy replaced a spoofed Cf-Access-Authenticated-User-Email header with the verified one"
 
+  # Terminal hostnames (01l): same gate, `/` rewritten onto ttyd's base path,
+  # signed-out navigations sent to the hub login, everything else 401.
+  local ta_host=(-H 'Host: tradingagents.tobytran.dev')
+  local nav
+  nav="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "${ta_host[@]}" -H 'Sec-Fetch-Mode: navigate' http://127.0.0.1:18080/)"
+  [[ "$nav" == "302 https://trading-hub.tobytran.dev/login?returnTo=https%3A%2F%2Ftradingagents.tobytran.dev%2F" ]] \
+    || fail "signed-out navigation on the terminal hostname should redirect to the hub login, got: $nav"
+  echo "ok   signed-out navigation on a terminal hostname redirects to the hub login"
+  expect_status 401 http://127.0.0.1:18080/token "${ta_host[@]}"
+  expect_status 401 http://127.0.0.1:18080/u/tradingagents/ "${ta_host[@]}"
+  expect_status 401 http://127.0.0.1:18080/ "${ta_host[@]}" --cookie "$expired_cookie" -H 'Sec-Fetch-Mode: websocket'
+  body="$(curl -s --cookie "$cookie" -H 'Cf-Access-Authenticated-User-Email: attacker@evil.com' "${ta_host[@]}" http://127.0.0.1:18080/)"
+  [[ "$body" == "smoke@example.test" ]] || fail "terminal hostname: expected the verified email upstream, got: $body"
+  echo "ok   terminal hostname replaces a spoofed identity header with the verified one"
+  expect_status 401 http://127.0.0.1:18080/token -H 'Host: ai-hedge-fund.tobytran.dev'
+
   # Swap the header-echo stand-in for a real ttyd to prove the WebSocket
   # handshake actually reaches a real upstream through forward_auth + reverse_proxy.
   # "smoke-ta-terminal" also names smoke_terminal's own container (started
@@ -347,6 +363,13 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
     http://127.0.0.1:18080/u/tradingagents/)"
   [[ "$ws_status" == "101" ]] || fail "expected 101 Switching Protocols through Caddy to a real ttyd, got $ws_status"
   echo "ok   WebSocket handshake reaches a real ttyd through Caddy with a valid cookie"
+  ws_status="$(curl -s -o /dev/null -w '%{http_code}' --cookie "$cookie" -H 'Host: tradingagents.tobytran.dev' \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    -H 'Origin: http://tradingagents.tobytran.dev' \
+    http://127.0.0.1:18080/ws)"
+  [[ "$ws_status" == "101" ]] || fail "expected 101 from a real ttyd at /ws on the terminal hostname, got $ws_status"
+  echo "ok   WebSocket handshake reaches a real ttyd at /ws on the terminal hostname"
 
   docker run -d --name smoke-vibe-gateway --network "$net" --network-alias vibe-trading \
     -e API_AUTH_KEY=smoke-key -e 'FORWARDED_ALLOW_IPS=*' \

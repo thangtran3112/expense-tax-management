@@ -4,7 +4,9 @@ Terraform for the ai-trading tunnel, staging Workers, and DNS. Caddy/Clerk prote
 
 | Hostname | Routes |
 |---|---|
-| `trading.tobytran.dev` | `/u/*` and `/__auth/*` to Caddy `gateway:8080`; static hub paths to `web:3000` until the separately approved Worker cutover |
+| `trading-hub.tobytran.dev` | The hub: `ai-trading-hub-router` Worker serves the static export from GCS and proxies `/u/*` and `/__auth/*` to `trading-origin.tobytran.dev` (tunnel → Caddy `gateway:8080`) (01l) |
+| `tradingagents.tobytran.dev`, `ai-hedge-fund.tobytran.dev` | Whole hostname to Caddy `gateway:8080`, whose host block checks the Clerk-backed cookie and serves the terminal at `/` (01l) |
+| `trading.tobytran.dev` | Interim hub host until Desk Phase 4: `/u/*` and `/__auth/*` to Caddy `gateway:8080`; static hub paths to `web:3000` |
 | `vibe-trading.tobytran.dev` | Caddy `gateway:8080` checks the Clerk-backed cookie, then proxies all paths to `vibe-trading:8899`; Vibe's own API key remains required. |
 
 ## Token policy

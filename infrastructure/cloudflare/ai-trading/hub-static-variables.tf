@@ -5,8 +5,8 @@
 
 variable "hub_static_hostname" {
   type        = string
-  description = "Staging hostname for the Worker-served static hub, proven before trading.tobytran.dev is cut over (Task 10)."
-  default     = "trading-static.tobytran.dev"
+  description = "Public Trading Hub hostname, served by the hub-router Worker from GCS (01l; formerly the trading-static staging hostname)."
+  default     = "trading-hub.tobytran.dev"
 }
 
 variable "hub_origin_hostname" {

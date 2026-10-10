@@ -33,7 +33,12 @@ type BaseApp = {
 };
 
 export type PlannedApp = BaseApp & { kind: "planned"; status: "planned"; release: string };
-export type TerminalApp = BaseApp & { kind: "terminal"; status: "live"; terminalPath: `/u/${string}/` };
+export type TerminalApp = BaseApp & {
+  kind: "terminal";
+  status: "live";
+  terminalPath: `/u/${string}/`;
+  hostUrl: `https://${string}/`;
+};
 export type ExternalApp = BaseApp & {
   kind: "external";
   status: "live";
@@ -58,6 +63,7 @@ export const hubApps: readonly HubApp[] = [
     kind: "terminal",
     status: "live",
     terminalPath: "/u/tradingagents/",
+    hostUrl: "https://tradingagents.tobytran.dev/",
     name: "TradingAgents",
     category: "research",
     tags: ["Multi-agent debate", "Single ticker", "Written report"],
@@ -72,6 +78,7 @@ export const hubApps: readonly HubApp[] = [
     kind: "terminal",
     status: "live",
     terminalPath: "/u/ai-hedge-fund/",
+    hostUrl: "https://ai-hedge-fund.tobytran.dev/",
     name: "AI Hedge Fund",
     category: "funds",
     tags: ["Investor personas", "Backtests", "Paid data key"],

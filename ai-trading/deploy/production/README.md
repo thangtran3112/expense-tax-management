@@ -4,9 +4,10 @@ Release 1 runs the Trading Hub and three unmodified upstream apps on one host be
 
 | Service | Reached at | Notes |
 |---|---|---|
-| `web` | `https://trading.tobytran.dev/` | Hub |
-| `ta-terminal` | `https://trading.tobytran.dev/u/tradingagents/` | TradingAgents in ttyd + tmux |
-| `ahf-terminal` | `https://trading.tobytran.dev/u/ai-hedge-fund/` | ai-hedge-fund in ttyd + tmux |
+| hub (Worker + GCS) | `https://trading-hub.tobytran.dev/` | Static hub from GCS; `/u/*` and `/__auth/*` through `trading-origin` to Caddy (01l) |
+| `web` | `https://trading.tobytran.dev/` | The same hub, interim host until Desk Phase 4 takes it |
+| `ta-terminal` | `https://tradingagents.tobytran.dev/` | TradingAgents in ttyd + tmux; also `/u/tradingagents/` on the hub |
+| `ahf-terminal` | `https://ai-hedge-fund.tobytran.dev/` | ai-hedge-fund in ttyd + tmux; also `/u/ai-hedge-fund/` on the hub |
 | `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Caddy-verified hub session, then upstream API key and hardening |
 | `cloudflared` | outbound only | Tunnel connector |
 
@@ -105,7 +106,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 ## Acceptance checklist (Mac and iPad)
 
 1. Clerk login on the hub grants a session cookie for both hostnames; without it both terminal routes and Vibe-Trading return 401 (including the direct origin hostname). Opening Vibe-Trading directly before signing in through the hub returns 401.
-2. The hub home page and navigation work.
+2. The hub home page and navigation work. `tradingagents.` and `ai-hedge-fund.tobytran.dev` send a signed-out browser to the hub login and open the terminal full-screen after sign-in.
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
 5. ai-hedge-fund opens its terminal UI and reaches a backtest screen (with a data key) or its missing-key prompt.

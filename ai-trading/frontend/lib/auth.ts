@@ -224,10 +224,13 @@ const HUB_FALLBACK = "/";
 // public and staging MiroFish hostnames over HTTPS with no port/userinfo").
 // Both are exact, family-owned hostnames; nothing else matches, including
 // a hostname that merely starts with or contains one of these as a
-// substring.
+// substring. The two terminal hostnames (01l) join them: their Caddy gate
+// sends a signed-out navigation to /login with returnTo set to the terminal root.
 const ALLOWED_RETURN_TO_HOSTS: ReadonlySet<string> = new Set([
   "mirofish.tobytran.dev",
   "mirofish-static.tobytran.dev",
+  "tradingagents.tobytran.dev",
+  "ai-hedge-fund.tobytran.dev",
 ]);
 
 // `URL` silently normalizes away an explicit port that matches the
