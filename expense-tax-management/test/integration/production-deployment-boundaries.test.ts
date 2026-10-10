@@ -408,6 +408,18 @@ esac
         { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" },
       );
 
+    // Fix round 2: `base` deliberately carries none of the three OpenAI
+    // keys, and `run`'s spawned env is exactly `{ PATH, ...env }` -- not
+    // merged with process.env -- so this exercises truly absent
+    // variables (unset, not set-to-empty-string), the case the all-empty
+    // assertion below doesn't cover.
+    const allUnset = run(base);
+    expect(allUnset.status).not.toBe(0);
+    expect(allUnset.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+    expect(allUnset.stderr).not.toContain("test-key");
+
     const none = run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "", OPENAI_API_KEY_2: "" });
     expect(none.status).not.toBe(0);
     expect(none.stderr).toContain(
