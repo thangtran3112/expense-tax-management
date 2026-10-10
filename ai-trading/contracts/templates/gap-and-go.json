@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "Gap and go (08:30 scan)",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "extended", "runOn": "premarket_0830" },
+  "when": {
+    "all": [
+      {
+        "any": [
+          { "op": "gte", "left": { "series": "gap_pct" }, "right": { "value": 3 } },
+          { "op": "lte", "left": { "series": "gap_pct" }, "right": { "value": -3 } }
+        ]
+      },
+      { "op": "gte", "left": { "series": "rvol", "lookbackDays": 10 }, "right": { "value": 2 } }
+    ]
+  },
+  "then": { "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" } }
+}

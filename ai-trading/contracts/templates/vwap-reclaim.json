@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "name": "VWAP reclaim",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "op": "crosses_above", "left": { "series": "close" }, "right": { "series": "vwap" } },
+      { "op": "time_between", "start": "09:45", "end": "15:30" }
+    ]
+  },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 200 }, "stop": { "atrMultiple": 2 }, "target": { "r": 2 } }
+  },
+  "limits": { "maxTradesPerDay": 2, "maxOpenPositions": 1, "flatBy": "15:55", "cooldownMinutes": 30 }
+}

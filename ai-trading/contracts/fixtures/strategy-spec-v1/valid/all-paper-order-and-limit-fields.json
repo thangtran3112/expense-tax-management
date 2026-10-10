@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "Fixture",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "daily_close" },
+  "when": { "op": "gte", "left": { "series": "atr", "length": 14 }, "right": { "value": 2.5 } },
+  "then": {
+    "alert": { "channels": ["telegram"] },
+    "paperOrder": { "side": "sell", "size": { "contracts": 1 }, "stop": { "level": "n_day_high", "days": 10 }, "target": { "level": "prior_day_low" } }
+  },
+  "limits": { "maxTradesPerDay": 12, "maxOpenPositions": 1, "maxPositionUsd": 5000.5, "flatBy": "00:00", "pauseAfterDailyLossUsd": 250, "cooldownMinutes": 0 }
+}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "name": "VWAP loss",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "op": "crosses_below", "left": { "series": "close" }, "right": { "series": "vwap" } },
+      { "op": "time_between", "start": "09:45", "end": "15:30" }
+    ]
+  },
+  "then": { "alert": { "channels": ["inbox", "telegram"], "severity": "risk" } },
+  "limits": { "cooldownMinutes": 30 }
+}

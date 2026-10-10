@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "Volume spike",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "op": "gte", "left": { "series": "rvol", "lookbackDays": 10 }, "right": { "value": 3 } },
+      { "op": "time_between", "start": "09:45", "end": "15:45" }
+    ]
+  },
+  "then": { "alert": { "channels": ["inbox"], "severity": "info" } }
+}
