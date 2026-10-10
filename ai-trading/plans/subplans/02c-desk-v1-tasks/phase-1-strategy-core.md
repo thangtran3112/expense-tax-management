@@ -1501,6 +1501,19 @@ def test_crosses_fires_once_on_the_crossing_bar():
     assert times(run(make_spec(above(100.5, "crosses_above")), bars)) == ["10-06 10:00"]
 
 
+def test_a_level_on_the_left_crosses_like_on_the_right():
+    # Close crosses the opening-range high on the bar the range itself first becomes known
+    # (09:45): the level has no earlier known value either, so a left-side fallback is required.
+    bars = minute_bars("stock", DAY)
+    set_bar(bars, DAY, "09:35", high=101.0)
+    set_bar(bars, DAY, "09:45", close=101.5)
+    orb_high = {"level": "opening_range_high", "minutes": 15}
+    below = make_spec({"op": "crosses_below", "left": orb_high, "right": CLOSE})
+    above_the_orb = make_spec({"op": "crosses_above", "left": CLOSE, "right": orb_high})
+    assert times(run(below, bars)) == ["10-06 09:45"]
+    assert times(run(above_the_orb, bars)) == ["10-06 09:45"]
+
+
 def test_a_rule_that_stays_true_fires_on_each_rising_edge():
     bars = minute_bars("stock", DAY)
     closes(bars, DAY, "10:00", "10:10", 101.0)
@@ -1528,6 +1541,15 @@ def test_missing_data_is_unknown_even_under_not():
     bars = minute_bars("stock", DAY)
     spec = make_spec({"not": {"op": "gt", "left": CLOSE, "right": {"series": "vwap"}}}, session="extended")
     assert times(run(spec, bars))[0] == "10-06 09:30"  # no VWAP before the open
+
+
+def test_evidence_holds_only_known_values():
+    bars = minute_bars("stock", DAY)
+    closes(bars, DAY, "05:00", "16:00", 101.0)
+    when = {"any": [above(100.5), {"op": "gt", "left": {"series": "vwap"}, "right": {"value": 100}}]}
+    found = run(make_spec(when, session="extended"), bars)
+    assert times(found)[0] == "10-06 05:00"
+    assert found[0].evidence == {"close": 101.0}
 
 
 def test_time_between_can_wrap_past_midnight():
@@ -1649,6 +1671,8 @@ _COMPARE = {"gt": np.greater, "gte": np.greater_equal, "lt": np.less, "lte": np.
 
 @dataclass(frozen=True)
 class SignalCandidate:
+    """`evidence` holds only the operands known at `bar_time` (JSON/jsonb has no NaN)."""
+
     symbol: str
     bar_time: pd.Timestamp
     evidence: dict[str, float]
@@ -1672,8 +1696,8 @@ def _operands(condition: dict[str, Any]):
 def label(operand: dict[str, Any]) -> str:
     """Evidence key, e.g. "close", "sma(20)", "opening_range_high(15)"."""
     name = operand.get("series") or operand["level"]
-    arg = operand.get("length") or operand.get("lookbackDays") or operand.get("minutes") or operand.get("days")
-    return f"{name}({arg})" if arg else name
+    arg = next((operand[key] for key in ("length", "lookbackDays", "minutes", "days") if key in operand), None)
+    return f"{name}({arg})" if arg is not None else name
 
 
 def check(spec: StrategySpecV1) -> list[str]:
@@ -1777,17 +1801,22 @@ def _condition(node: dict[str, Any], frame: _Frame) -> pd.Series:
         near = (left - right).abs().to_numpy() <= node["pct"] / 100 * right.abs().to_numpy()
         return _truth(near, known)
     # crosses: now beyond, and the previous bar at or behind. A level or a constant that only
-    # became known on this bar is compared with its current value; a series needs its own known
-    # previous value, so it joins the known mask below instead of falling back.
-    before_right = right.shift(1)
-    if "series" not in node["right"]:
-        before_right = before_right.fillna(right)
-    before_left = left.shift(1)
+    # became known on this bar is compared with its current value, on either side; a series needs
+    # its own known previous value, so it joins the known mask below instead of falling back.
+    before_left = _before_cross(left, node["left"])
+    before_right = _before_cross(right, node["right"])
     if op == "crosses_above":
         now, before = left > right, before_left <= before_right
     else:
         now, before = left < right, before_left >= before_right
     return _truth((now & before).to_numpy(), known & before_left.notna() & before_right.notna())
+
+
+def _before_cross(value: pd.Series, operand: dict[str, Any]) -> pd.Series:
+    """The previous bar's value for a crosses operand: a level or a constant that only became
+    known on this bar falls back to its current value; a series needs its own known value."""
+    shifted = value.shift(1)
+    return shifted if "series" in operand else shifted.fillna(value)
 
 
 def _points(run_on: str, frame: _Frame, session_name: str, as_of: pd.Timestamp) -> pd.Series:
@@ -1870,7 +1899,9 @@ def evaluate(
     evidence = {label(op): _series(op, frame).reindex(rows).to_numpy() for op in _operands(when)}
     out = []
     for position in np.flatnonzero(fired.to_numpy()):
-        values = {key: round(float(series[position]), 6) for key, series in evidence.items()}
+        values = {
+            key: round(float(series[position]), 6) for key, series in evidence.items() if not np.isnan(series[position])
+        }
         out.append(SignalCandidate(symbol, points.index[position], values))
     return out
 ```
@@ -1878,7 +1909,7 @@ def evaluate(
 - [ ] **Step 4: Run the tests.**
 
 Run: `cd ai-trading/backend && uv run pytest -q tests/test_evaluate.py && uv run ruff check . && uv run ruff format --check .`
-Expected: `15 passed`; ruff clean.
+Expected: `17 passed`; ruff clean.
 
 - [ ] **Step 5: Commit.**
 
@@ -2307,7 +2338,7 @@ Expected: `test_every_template_has_a_golden_case` fails (no templates yet), and 
 - [ ] **Step 4: Run every suite.**
 
 Run: `cd ai-trading/backend && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
-Expected: `105 passed` in about 15 seconds; ruff clean.
+Expected: `107 passed` in about 15 seconds; ruff clean.
 
 Run: `cd ai-trading/contracts && pnpm test`
 Expected: `# pass 38`, `# fail 0` (the ten templates are now validated too).
@@ -2379,7 +2410,7 @@ Expected: no output.
 
 Run: `cd ai-trading/contracts && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`
 Run: `cd ai-trading/backend && uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q`
-Expected: `# pass 38`, `105 passed`, everything else clean.
+Expected: `# pass 38`, `107 passed`, everything else clean.
 
 - [ ] **Step 5: Commit.**
 

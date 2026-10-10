@@ -49,6 +49,19 @@ def test_crosses_fires_once_on_the_crossing_bar():
     assert times(run(make_spec(above(100.5, "crosses_above")), bars)) == ["10-06 10:00"]
 
 
+def test_a_level_on_the_left_crosses_like_on_the_right():
+    # Close crosses the opening-range high on the bar the range itself first becomes known
+    # (09:45): the level has no earlier known value either, so a left-side fallback is required.
+    bars = minute_bars("stock", DAY)
+    set_bar(bars, DAY, "09:35", high=101.0)
+    set_bar(bars, DAY, "09:45", close=101.5)
+    orb_high = {"level": "opening_range_high", "minutes": 15}
+    below = make_spec({"op": "crosses_below", "left": orb_high, "right": CLOSE})
+    above_the_orb = make_spec({"op": "crosses_above", "left": CLOSE, "right": orb_high})
+    assert times(run(below, bars)) == ["10-06 09:45"]
+    assert times(run(above_the_orb, bars)) == ["10-06 09:45"]
+
+
 def test_a_rule_that_stays_true_fires_on_each_rising_edge():
     bars = minute_bars("stock", DAY)
     closes(bars, DAY, "10:00", "10:10", 101.0)
@@ -76,6 +89,15 @@ def test_missing_data_is_unknown_even_under_not():
     bars = minute_bars("stock", DAY)
     spec = make_spec({"not": {"op": "gt", "left": CLOSE, "right": {"series": "vwap"}}}, session="extended")
     assert times(run(spec, bars))[0] == "10-06 09:30"  # no VWAP before the open
+
+
+def test_evidence_holds_only_known_values():
+    bars = minute_bars("stock", DAY)
+    closes(bars, DAY, "05:00", "16:00", 101.0)
+    when = {"any": [above(100.5), {"op": "gt", "left": {"series": "vwap"}, "right": {"value": 100}}]}
+    found = run(make_spec(when, session="extended"), bars)
+    assert times(found)[0] == "10-06 05:00"
+    assert found[0].evidence == {"close": 101.0}
 
 
 def test_time_between_can_wrap_past_midnight():

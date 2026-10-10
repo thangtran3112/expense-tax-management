@@ -28,6 +28,8 @@ _COMPARE = {"gt": np.greater, "gte": np.greater_equal, "lt": np.less, "lte": np.
 
 @dataclass(frozen=True)
 class SignalCandidate:
+    """`evidence` holds only the operands known at `bar_time` (JSON/jsonb has no NaN)."""
+
     symbol: str
     bar_time: pd.Timestamp
     evidence: dict[str, float]
@@ -51,8 +53,8 @@ def _operands(condition: dict[str, Any]):
 def label(operand: dict[str, Any]) -> str:
     """Evidence key, e.g. "close", "sma(20)", "opening_range_high(15)"."""
     name = operand.get("series") or operand["level"]
-    arg = operand.get("length") or operand.get("lookbackDays") or operand.get("minutes") or operand.get("days")
-    return f"{name}({arg})" if arg else name
+    arg = next((operand[key] for key in ("length", "lookbackDays", "minutes", "days") if key in operand), None)
+    return f"{name}({arg})" if arg is not None else name
 
 
 def check(spec: StrategySpecV1) -> list[str]:
@@ -156,17 +158,22 @@ def _condition(node: dict[str, Any], frame: _Frame) -> pd.Series:
         near = (left - right).abs().to_numpy() <= node["pct"] / 100 * right.abs().to_numpy()
         return _truth(near, known)
     # crosses: now beyond, and the previous bar at or behind. A level or a constant that only
-    # became known on this bar is compared with its current value; a series needs its own known
-    # previous value, so it joins the known mask below instead of falling back.
-    before_right = right.shift(1)
-    if "series" not in node["right"]:
-        before_right = before_right.fillna(right)
-    before_left = left.shift(1)
+    # became known on this bar is compared with its current value, on either side; a series needs
+    # its own known previous value, so it joins the known mask below instead of falling back.
+    before_left = _before_cross(left, node["left"])
+    before_right = _before_cross(right, node["right"])
     if op == "crosses_above":
         now, before = left > right, before_left <= before_right
     else:
         now, before = left < right, before_left >= before_right
     return _truth((now & before).to_numpy(), known & before_left.notna() & before_right.notna())
+
+
+def _before_cross(value: pd.Series, operand: dict[str, Any]) -> pd.Series:
+    """The previous bar's value for a crosses operand: a level or a constant that only became
+    known on this bar falls back to its current value; a series needs its own known value."""
+    shifted = value.shift(1)
+    return shifted if "series" in operand else shifted.fillna(value)
 
 
 def _points(run_on: str, frame: _Frame, session_name: str, as_of: pd.Timestamp) -> pd.Series:
@@ -249,6 +256,8 @@ def evaluate(
     evidence = {label(op): _series(op, frame).reindex(rows).to_numpy() for op in _operands(when)}
     out = []
     for position in np.flatnonzero(fired.to_numpy()):
-        values = {key: round(float(series[position]), 6) for key, series in evidence.items()}
+        values = {
+            key: round(float(series[position]), 6) for key, series in evidence.items() if not np.isnan(series[position])
+        }
         out.append(SignalCandidate(symbol, points.index[position], values))
     return out
