@@ -45,13 +45,17 @@
 
 - Never edit `packages/trading-agents`, `packages/ai-hedge-fund`, `packages/vibe-trading`, or `packages/mirofish` (git submodules). Wrapper Dockerfiles live in `deploy/upstream/`.
 - Vibe's wrapper installs hash-pinned Anthropic additions without upgrading upstream's locked packages. Provider smoke must construct the actual native adapter offline; a 200 liveness response alone does not prove optional providers are installed.
+- Vibe uses direct OpenAI only (`LANGCHAIN_PROVIDER=openai`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `OPENAI_API_KEY -> shared/llm:OPENAI_API_KEY_1`). Do not configure OpenRouter for any ai-trading app. Its startup wrapper seeds non-secret LLM settings from Firestore-injected environment values, refuses other providers/endpoints, and requires native `VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS=1` so the settings API reads keys from the environment instead of upstream's misleading example file. Upstream sources and provider pickers stay unmodified.
 - Upstream updates arrive as a weekly grouped Dependabot pull request.
 
 ## Git
 
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
 - Another session resets `feature/toby` in the main checkout. Do ai-trading work in a worktree under `.worktrees/` on a `feature/*` branch, and open pull requests to `dev`.
-- Releases to `main` carry ai-trading paths only (a branch from `origin/main`), with explicit user approval at that moment. Merging all of `dev` into `main` would also release undeployed expense phases.
+- **Standing delivery authorization (personal project, 2026-10-10):** after completing each requested implementation phase, run verification/review, commit and push, create and merge its PR to `dev`, then release and deploy it immediately without asking for routine approval. Do not stop at a branch-choice menu, an unmerged PR, or a "ready to deploy" handoff. Monitor CI/deployment and verify the live result before reporting the phase complete.
+- Releases to `main` carry only the completed phase's ai-trading paths (and its app-specific workflow changes when needed), on a branch from `origin/main`. The standing authorization above covers that scoped release; it replaces the old per-release approval gate. Never merge all of `dev` into `main`, which would also release unrelated expense phases.
+- Preserve MiroFish activation on deployments when it is enabled: use the existing `deploy_app=true`, `activate_mirofish=true` dispatch, and coordinate any automatic push deployment so it does not silently disable MiroFish. Upload static assets only when that phase changes them.
+- Standing delivery authorization does not waive failing checks, secret-handling rules, destructive-operation safeguards, or scope boundaries. Report genuine blockers and fix them; do not request permission again for routine commits, PRs, merges, or deployment of the requested phase. It does not authorize unrelated features or paid-provider purchases.
 
 ## Verification
 
