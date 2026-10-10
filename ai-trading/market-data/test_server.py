@@ -84,6 +84,11 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertIn("Alpaca is not configured", body["error"])
 
+    def test_unexpected_error_is_json_500_not_a_dropped_connection(self):
+        status, body = get(self.start(prices=FakePrices(error=AttributeError("boom"))), "/prices/?ticker=AAPL&start_date=2024-01-01&end_date=2024-01-31")
+        self.assertEqual(status, 500)
+        self.assertIn("error", body)
+
     def test_missing_param_or_bad_ticker_is_400(self):
         port = self.start()
         self.assertEqual(get(port, "/prices/?ticker=AAPL")[0], 400)

@@ -73,6 +73,11 @@ class SecTest(unittest.TestCase):
         sec, _ = self.make(r)
         self.assertEqual(sec.companyfacts("BRK.B"), {"facts": {"x": 1}})
 
+    def test_invalid_json_is_provider_error(self):
+        sec = SecFundamentals("ua", fetch=lambda url, headers: (200, b"not json"), sleep=lambda s: None)
+        with self.assertRaises(ProviderError):
+            sec.companyfacts("AAPL")
+
 
 if __name__ == "__main__":
     unittest.main()

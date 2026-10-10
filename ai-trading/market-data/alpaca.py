@@ -56,4 +56,7 @@ class AlpacaPrices:
                 continue
             if status != 200:
                 raise ProviderError(f"Alpaca returned {status}")
-            return json.loads(body)
+            try:
+                return json.loads(body)
+            except ValueError as e:
+                raise ProviderError("Alpaca returned invalid JSON") from e

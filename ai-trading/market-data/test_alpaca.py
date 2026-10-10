@@ -65,6 +65,11 @@ class AlpacaTest(unittest.TestCase):
         with self.assertRaises(ProviderError):
             AlpacaPrices("", "").daily_bars("AAPL", "2024-01-01", "2024-01-31", "split")
 
+    def test_invalid_json_is_provider_error(self):
+        prices = AlpacaPrices("kid", "sec", fetch=lambda url, headers: (200, b"<html>maintenance</html>"), today=lambda: date(2024, 2, 1))
+        with self.assertRaises(ProviderError):
+            prices.daily_bars("AAPL", "2024-01-01", "2024-01-31", "split")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,6 +95,39 @@ class MetricsTest(unittest.TestCase):
         row = metrics.ttm_rows(cf, "2024-05-01", 1)[0]
         self.assertAlmostEqual(row["free_cash_flow_per_share"], ((35 + 35 + 40 + 40) - (10 + 10 + 10 + 10)) / 10)
 
+    def test_revenue_concept_switch_is_merged_per_period(self):
+        cf = company()
+        g = cf["facts"]["us-gaap"]
+        rev = g.pop("Revenues")["units"]["USD"]
+        g["SalesRevenueNet"] = {"units": {"USD": [r for r in rev if r["end"] < "2024-01-01"]}}
+        g["RevenueFromContractWithCustomerExcludingAssessedTax"] = {"units": {"USD": [r for r in rev if r["end"] >= "2024-01-01"]}}
+        rows = metrics.ttm_rows(cf, "2024-05-01", 10)
+        self.assertEqual([r["report_period"] for r in rows], ["2024-03-31", "2023-12-31"])
+        self.assertAlmostEqual(rows[0]["net_margin"], 50 / 500)
+
+    def test_comparative_refiled_later_keeps_first_filing_date(self):
+        cf = company()
+        cf["facts"]["us-gaap"]["Revenues"]["units"]["USD"].append(dur("2023-01-01", "2023-03-31", 100, "2024-05-01"))
+        rows = metrics.ttm_rows(cf, "2024-05-01", 10)
+        self.assertEqual(rows[1]["report_period"], "2023-12-31")
+        self.assertEqual(rows[1]["filing_date"], "2024-02-15")
+
+    def test_rows_continue_on_net_income_when_revenue_stops(self):
+        cf = company()
+        rev = cf["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
+        cf["facts"]["us-gaap"]["Revenues"]["units"]["USD"] = [r for r in rev if r["end"] < "2023-12-31"]
+        rows = metrics.ttm_rows(cf, "2024-05-01", 10)
+        self.assertEqual([r["report_period"] for r in rows], ["2024-03-31", "2023-12-31"])
+        self.assertIsNone(rows[0]["net_margin"])                    # never NI / NI
+        self.assertAlmostEqual(rows[0]["return_on_equity"], 50 / 520)
+        self.assertEqual(rows[0]["filing_date"], "2024-05-01")
+
+    def test_bank_revenue_concept(self):
+        cf = company()
+        g = cf["facts"]["us-gaap"]
+        g["RevenuesNetOfInterestExpense"] = g.pop("Revenues")
+        self.assertAlmostEqual(metrics.ttm_rows(cf, "2024-05-01", 1)[0]["net_margin"], 50 / 500)
+
 
 if __name__ == "__main__":
     unittest.main()

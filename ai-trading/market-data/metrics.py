@@ -3,7 +3,7 @@ from bisect import bisect_right
 from datetime import date
 
 DURATION = {
-    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "RevenuesNetOfInterestExpense"],
     "gross_profit": ["GrossProfit"],
     "cost_of_revenue": ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
     "operating_income": ["OperatingIncomeLoss"],
@@ -28,42 +28,55 @@ def _facts(cf, concept, unit="USD", taxonomy="us-gaap"):
 
 
 def _known(facts, as_of):
-    """Latest-filed value per period key, using only filings on or before as_of."""
+    """Per period key: the latest-filed value on or before as_of (restatements
+    count once public), with "first" = when that period was first made public
+    (a later comparative re-report must not move the row's filing date)."""
     best = {}
     for f in facts:
         if f["filed"] > as_of:
             continue
         key = (f.get("start"), f["end"])
-        if key not in best or f["filed"] > best[key]["filed"]:
-            best[key] = f
+        cur = best.get(key)
+        if cur is None:
+            best[key] = {**f, "first": f["filed"]}
+        else:
+            first = min(cur["first"], f["filed"])
+            best[key] = {**(f if f["filed"] > cur["filed"] else cur), "first": first}
     return best
 
 
+def _concept_quarters(known):
+    """{quarter_end: (value, first_public)} for one concept, with quarters
+    derived from year-to-date pairs and Q4 from the fiscal year when missing."""
+    q = {end: (f["val"], f["first"]) for (start, end), f in known.items() if start and 80 <= _days(start, end) <= 100}
+    # 10-Q cash-flow statements are year-to-date only: a quarter is the
+    # difference of two YTD values sharing a start and ending ~90 days apart.
+    by_start = {}
+    for (start, end), f in known.items():
+        if start:
+            by_start.setdefault(start, []).append(f)
+    for facts in by_start.values():
+        facts.sort(key=lambda f: f["end"])
+        for prev, cur in zip(facts, facts[1:]):
+            if cur["end"] not in q and 80 <= _days(prev["end"], cur["end"]) <= 100:
+                q[cur["end"]] = (cur["val"] - prev["val"], max(prev["first"], cur["first"]))
+    for (start, end), f in known.items():
+        if start and 350 <= _days(start, end) <= 380 and end not in q:
+            inside = [v for e, v in q.items() if start < e < end]
+            if len(inside) == 3:
+                q[end] = (f["val"] - sum(v for v, _ in inside), max([f["first"]] + [d for _, d in inside]))
+    return q
+
+
 def _quarters(cf, concepts, as_of, unit="USD"):
-    """{quarter_end: (value, filed)} with Q4 derived from the fiscal year when missing."""
+    """Quarters merged across concepts per period (filers switch concepts over
+    time, e.g. Revenues -> RevenueFromContractWithCustomer... in 2018); the
+    earlier concept in the list wins a period both report."""
+    merged = {}
     for concept in concepts:
-        known = _known(_facts(cf, concept, unit), as_of)
-        if not known:
-            continue
-        q = {end: (f["val"], f["filed"]) for (start, end), f in known.items() if start and 80 <= _days(start, end) <= 100}
-        # 10-Q cash-flow statements are year-to-date only: a quarter is the
-        # difference of two YTD values sharing a start and ending ~90 days apart.
-        by_start = {}
-        for (start, end), f in known.items():
-            if start:
-                by_start.setdefault(start, []).append(f)
-        for facts in by_start.values():
-            facts.sort(key=lambda f: f["end"])
-            for prev, cur in zip(facts, facts[1:]):
-                if cur["end"] not in q and 80 <= _days(prev["end"], cur["end"]) <= 100:
-                    q[cur["end"]] = (cur["val"] - prev["val"], max(prev["filed"], cur["filed"]))
-        for (start, end), f in known.items():
-            if start and 350 <= _days(start, end) <= 380 and end not in q:
-                inside = [v for e, v in q.items() if start < e < end]
-                if len(inside) == 3:
-                    q[end] = (f["val"] - sum(v for v, _ in inside), f["filed"])
-        return q
-    return {}
+        for end, value in _concept_quarters(_known(_facts(cf, concept, unit), as_of)).items():
+            merged.setdefault(end, value)
+    return merged
 
 
 def _instant(cf, concepts, end, as_of):
@@ -96,13 +109,15 @@ def _shares(cf, end, as_of):
 def ttm_rows(cf, as_of, limit):
     q = {name: _quarters(cf, concepts, as_of) for name, concepts in DURATION.items()}
     eps = _quarters(cf, ["EarningsPerShareDiluted"], as_of, "USD/shares")
-    anchor = q["revenue"] or q["net_income"]
+    anchor = set(q["revenue"]) | set(q["net_income"])
     rows = []
     for end in sorted(anchor, reverse=True):
         ttm = {name: _ttm(series, end) for name, series in q.items()}
-        revenue, filed = ttm["revenue"] if ttm["revenue"][0] is not None else ttm["net_income"]
-        if filed is None:
+        revenue = ttm["revenue"][0]
+        dates = [d for _, d in (ttm["revenue"], ttm["net_income"]) if d is not None]
+        if not dates:
             continue
+        filed = max(dates)
         gross = ttm["gross_profit"][0]
         if gross is None and revenue is not None and ttm["cost_of_revenue"][0] is not None:
             gross = revenue - ttm["cost_of_revenue"][0]

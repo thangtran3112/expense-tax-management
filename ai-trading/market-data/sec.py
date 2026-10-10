@@ -55,7 +55,10 @@ class SecFundamentals:
             elif status != 200:
                 raise ProviderError(f"SEC returned {status} for {url}")
             else:
-                data = json.loads(body)
+                try:
+                    data = json.loads(body)
+                except ValueError as e:
+                    raise ProviderError(f"SEC returned invalid JSON for {url}") from e
             self._cache[url] = (self.now(), data)
             return data
 

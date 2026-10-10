@@ -77,6 +77,8 @@ def make_server(port, token, prices, fundamentals):
                 return self._send(502, {"error": str(e)})
             except (KeyError, ValueError) as e:
                 return self._send(400, {"error": f"bad request: {e}"})
+            except Exception as e:  # never drop the connection: FDClient must see a status
+                return self._send(500, {"error": f"internal error: {type(e).__name__}"})
             self._send(200, body)
 
         def _send(self, status, body):
