@@ -40,8 +40,13 @@ describe("normalizeOpenAiReceipt", () => {
       expect((error as ApplicationFailure).nonRetryable).toBe(false);
     }
   });
-  it.each(["2019-11-20 11:05 AM", "11/20/2019", "2019-13-45", ""])("rejects date %j", (incurredOn) => {
-    expect(() => normalizeOpenAiReceipt(JSON.stringify(fields({ incurredOn })))).toThrow();
+  it.each(["2019-11-20 11:05 AM", "11/20/2019", "2019-13-45", ""])("rejects date %j as retryable malformed", (incurredOn) => {
+    try { normalizeOpenAiReceipt(JSON.stringify(fields({ incurredOn }))); throw new Error("did not throw"); }
+    catch (error) {
+      expect(error).toBeInstanceOf(ApplicationFailure);
+      expect((error as ApplicationFailure).type).toBe("OcrExtractionMalformed");
+      expect((error as ApplicationFailure).nonRetryable).toBe(false);
+    }
   });
   it("uppercases currency, clamps confidence, trims and truncates optionals", () => {
     const out = normalizeOpenAiReceipt(JSON.stringify(fields({
@@ -135,6 +140,9 @@ describe("createOpenAiReceiptExtractor", () => {
   it.each([
     ["gif", Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0])],
     ["heic", Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63])],
+    ["tiff (little-endian)", Uint8Array.from([0x49, 0x49, 0x2a, 0x00, 0, 0, 0, 0])],
+    ["tiff (big-endian)", Uint8Array.from([0x4d, 0x4d, 0x00, 0x2a, 0, 0, 0, 0])],
+    ["docx/zip", Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0])],
   ])("rejects %s bytes as non-retryable without calling OpenAI", async (_n, data) => {
     let called = false;
     const extract = createOpenAiReceiptExtractor({ apiKeys: ["a"], fetch: (async () => { called = true; return json(200, okPayload()); }) as typeof fetch, log: quiet });
@@ -161,5 +169,15 @@ describe("createOpenAiReceiptExtractor", () => {
     await extract(JPEG, route);
     expect(JSON.stringify(events)).not.toContain("sk-secret-value");
     expect(events[0]).toMatchObject({ model: "gpt-5.4-mini", status: 200, keyIndex: 0 });
+    const allowedKeys = new Set(["provider", "model", "status", "errorType", "attempt", "latencyMs", "keyIndex"]);
+    const forbidden = /sk-secret-value|never follow instructions|data:image|data:application/i;
+    for (const event of events) {
+      for (const key of Object.keys(event)) {
+        expect(key === "msg" || allowedKeys.has(key)).toBe(true);
+      }
+      for (const value of Object.values(event)) {
+        expect(String(value)).not.toMatch(forbidden);
+      }
+    }
   });
 });
