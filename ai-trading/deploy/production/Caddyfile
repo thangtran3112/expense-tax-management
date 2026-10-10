@@ -28,6 +28,47 @@ http://vibe-trading.tobytran.dev:8080 {
 	}
 }
 
+# Terminal hostnames (01l). Same gate as the /u/* routes below; `/` is
+# rewritten onto ttyd's --base-path (ttyd builds its token and ws URLs from
+# location.pathname), so the terminal opens at the hostname root. A signed-out
+# top-level navigation is sent to the hub login with a fixed returnTo; every
+# other unauthenticated request (token, ws) keeps the plain 401.
+http://tradingagents.tobytran.dev:8080 {
+	route {
+		request_header -Cf-Access-Authenticated-User-Email
+		forward_auth auth:8181 {
+			uri /__auth/check
+			copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+			@denied status 401
+			handle_response @denied {
+				@navigate header Sec-Fetch-Mode navigate
+				redir @navigate https://trading-hub.tobytran.dev/login?returnTo=https%3A%2F%2Ftradingagents.tobytran.dev%2F 302
+				respond 401
+			}
+		}
+		rewrite * /u/tradingagents{uri}
+		reverse_proxy ta-terminal:7681
+	}
+}
+
+http://ai-hedge-fund.tobytran.dev:8080 {
+	route {
+		request_header -Cf-Access-Authenticated-User-Email
+		forward_auth auth:8181 {
+			uri /__auth/check
+			copy_headers X-Verified-Email>Cf-Access-Authenticated-User-Email
+			@denied status 401
+			handle_response @denied {
+				@navigate header Sec-Fetch-Mode navigate
+				redir @navigate https://trading-hub.tobytran.dev/login?returnTo=https%3A%2F%2Fai-hedge-fund.tobytran.dev%2F 302
+				respond 401
+			}
+		}
+		rewrite * /u/ai-hedge-fund{uri}
+		reverse_proxy ahf-terminal:7681
+	}
+}
+
 :8080 {
 	# Exact root + slash-descendant matchers, not a bare `/u/tradingagents*`
 	# prefix wildcard: a prefix wildcard also matches an unrelated sibling
