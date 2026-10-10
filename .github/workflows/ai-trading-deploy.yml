@@ -22,11 +22,16 @@ on:
         default: false
       activate_mirofish:
         description: >-
-          Opt in to MiroFish on this deploy by passing MIROFISH_ACTIVATE=1 to
-          deploy.sh's existing fail-safe opt-in (ai-trading/deploy/production/
-          deploy.sh). Only takes effect when deploy_app is also true; a push
-          to main or any dispatch without deploy_app=true never activates
-          MiroFish, matching deploy.sh's own fail-closed default.
+          Turn MiroFish on for this deploy (MIROFISH_ACTIVATE=1 to deploy.sh's
+          fail-safe opt-in). Only takes effect when deploy_app is also true.
+          Without it (and on every push to main) deploy.sh gets
+          MIROFISH_ACTIVATE=keep: MiroFish stays on only if it is running now.
+        type: boolean
+        default: false
+      stop_mirofish:
+        description: >-
+          Turn MiroFish off for this deploy (MIROFISH_ACTIVATE=0). Wins over
+          activate_mirofish. Only takes effect when deploy_app is also true.
         type: boolean
         default: false
       upload_hub_static:
@@ -207,14 +212,12 @@ jobs:
           SSH_KEY_FILE: ${{ runner.temp }}/ssh-key
           KNOWN_HOSTS_FILE: ${{ runner.temp }}/ai-trading-known-hosts
           ENV_DIR: ${{ runner.temp }}/ai-trading-env
-          # F1: '1' only on a manual dispatch with BOTH deploy_app=true (this
-          # job's own run condition) AND activate_mirofish=true; a push to
-          # main always evaluates false here (inputs.activate_mirofish is
-          # unset on a push event). deploy.sh's activate_mirofish() treats
-          # any other value, including '0' or absent, as disabled and never
-          # fails the other three apps' deploy -- this only ever widens that
-          # existing fail-safe opt-in, never bypasses it.
-          MIROFISH_ACTIVATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.activate_mirofish == true) && '1' || '0' }}
+          # '0' on a dispatch with stop_mirofish=true, else '1' with
+          # activate_mirofish=true, else 'keep' (every push to main):
+          # deploy.sh keeps MiroFish on only if a mirofish container is
+          # running now and its profile still renders valid. A failed
+          # activation never fails the other three apps' deploy.
+          MIROFISH_ACTIVATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.stop_mirofish == true) && '0' || ((github.event_name == 'workflow_dispatch' && inputs.activate_mirofish == true) && '1' || 'keep') }}
         run: |
           set -euo pipefail
           echo "::add-mask::$GITHUB_TOKEN"

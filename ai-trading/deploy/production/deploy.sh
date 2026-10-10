@@ -21,8 +21,9 @@
 #                             set this in production.
 #   MIROFISH_ACTIVATE        operator opt-in: set to 1 to render the optional
 #                             ai-trading/mirofish Firestore profile and enable its Compose
-#                             profile for this deploy. Unset/any other value (the default)
-#                             leaves MiroFish disabled; the other three apps are unaffected
+#                             profile for this deploy; `keep` (push deploys) does the same
+#                             only if a mirofish container is running right now. Unset/any
+#                             other value leaves MiroFish disabled; the other three apps are unaffected
 #                             either way. A missing profile, missing required key, or render
 #                             failure never fails this deploy -- it only leaves MiroFish
 #                             disabled and logs why.
@@ -325,7 +326,8 @@ restore_or_remove_mirofish() {
   fi
 }
 
-# activate_mirofish: operator opt-in only (MIROFISH_ACTIVATE=1). Renders the
+# activate_mirofish: operator opt-in (MIROFISH_ACTIVATE=1, or =keep while a
+# mirofish container is already running). Renders the
 # optional ai-trading/mirofish Firestore profile into a root-only scratch
 # directory, validates it holds every MIROFISH_REQUIRED_KEYS name (never
 # printing a value), backs up any mirofish.env this install is about to
@@ -353,7 +355,14 @@ restore_or_remove_mirofish() {
 # only a confirmed-good activation below ever re-sets it.
 activate_mirofish() {
   unset COMPOSE_PROFILES
-  [[ "${MIROFISH_ACTIVATE:-}" == 1 ]] || return 0
+  case "${MIROFISH_ACTIVATE:-}" in
+    1) ;;
+    keep)
+      [[ -n "$(compose ps -q --status running mirofish 2>/dev/null)" ]] || return 0
+      echo "deploy: mirofish: running; keeping it enabled for this deploy" >&2
+      ;;
+    *) return 0 ;;
+  esac
   local family_config="$APP_DIR/family_config.py" scratch
   if [[ ! -x "$family_config" ]]; then
     echo "deploy: mirofish: missing $family_config; leaving MiroFish disabled" >&2
