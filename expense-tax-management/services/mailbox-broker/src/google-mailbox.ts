@@ -158,17 +158,42 @@ function parseRetryAfterMs(error: unknown): number | undefined {
   return seconds !== undefined && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
 }
 
+/**
+ * Gmail answers an exhausted per-user quota with a 403 (not a 429) whose
+ * reason is one of these -- production scans failed as `unknown` on it.
+ */
+const GMAIL_QUOTA_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded"]);
+
+/** Logged on failures, so only ever a plain identifier (a Google reason like `rateLimitExceeded`, a Node code like `ECONNRESET`), never free text. */
+function plainIdentifier(value: unknown): string | undefined {
+  return typeof value === "string" && /^\w{1,64}$/.test(value) ? value : undefined;
+}
+
+function googleErrorReason(error: unknown): string | undefined {
+  const failure = error as
+    | { errors?: { reason?: unknown }[]; response?: { data?: { error?: { errors?: { reason?: unknown }[] } } } }
+    | undefined;
+  return plainIdentifier(failure?.response?.data?.error?.errors?.[0]?.reason ?? failure?.errors?.[0]?.reason);
+}
+
 function mapGoogleApiError(error: unknown): never {
-  const status = (error as { code?: number; response?: { status?: number } } | undefined)?.response
-    ?.status ?? (error as { code?: number } | undefined)?.code;
+  const failure = error as { code?: unknown; response?: { status?: number } } | undefined;
+  const status = failure?.response?.status ?? failure?.code;
+  const reason = googleErrorReason(error);
+  const upstream = {
+    status: typeof status === "number" ? status : undefined,
+    reason: reason ?? plainIdentifier(failure?.code),
+  };
   const retryAfterMs = parseRetryAfterMs(error);
   if (status === 404) throw new GmailApiError("not_found");
   if (status === 401) throw new GmailApiError("reauth_required");
-  if (status === 429) throw new GmailApiError("rate_limited", "Gmail API request failed: rate_limited", retryAfterMs);
-  if (typeof status === "number" && status >= 500) {
-    throw new GmailApiError("unavailable", "Gmail API request failed: unavailable", retryAfterMs);
+  if (status === 429 || (status === 403 && GMAIL_QUOTA_REASONS.has(reason ?? ""))) {
+    throw new GmailApiError("rate_limited", "Gmail API request failed: rate_limited", retryAfterMs, upstream);
   }
-  throw new GmailApiError("unknown");
+  if (typeof status === "number" && status >= 500) {
+    throw new GmailApiError("unavailable", "Gmail API request failed: unavailable", retryAfterMs, upstream);
+  }
+  throw new GmailApiError("unknown", undefined, undefined, upstream);
 }
 
 /**

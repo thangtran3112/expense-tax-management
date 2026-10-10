@@ -114,6 +114,12 @@ const ACCEPTED_ATTACHMENT_MIME_TYPES = new Set<string>([
 
 export type GmailApiErrorCode = "not_found" | "reauth_required" | "rate_limited" | "unavailable" | "unknown";
 
+/** Gmail's HTTP status and error reason (static identifiers, never the message/body), kept only so an `unknown` failure can be diagnosed from the log. */
+export interface GmailUpstreamDetail {
+  readonly status?: number | undefined;
+  readonly reason?: string | undefined;
+}
+
 /**
  * Typed Gmail API failure. `not_found` drives 404 full-sync recovery;
  * `reauth_required` is never retried. Fix round 1 (review Important #6):
@@ -127,12 +133,19 @@ export type GmailApiErrorCode = "not_found" | "reauth_required" | "rate_limited"
 export class GmailApiError extends Error {
   readonly code: GmailApiErrorCode;
   readonly retryAfterMs: number | undefined;
+  readonly upstream: GmailUpstreamDetail | undefined;
 
-  constructor(code: GmailApiErrorCode, message = `Gmail API request failed: ${code}`, retryAfterMs?: number) {
+  constructor(
+    code: GmailApiErrorCode,
+    message = `Gmail API request failed: ${code}`,
+    retryAfterMs?: number,
+    upstream?: GmailUpstreamDetail,
+  ) {
     super(message);
     this.name = "GmailApiError";
     this.code = code;
     this.retryAfterMs = retryAfterMs;
+    this.upstream = upstream;
   }
 }
 
@@ -228,6 +241,8 @@ export interface RetryOptions {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_MAX_RETRY_AFTER_MS = 60_000;
+/** Gmail's per-user quota is a 60 s sliding window: retrying a rate limit after milliseconds only hits the same wall. */
+const RATE_LIMIT_BASE_DELAY_MS = 1_000;
 
 /**
  * Bounded exponential backoff for 429/5xx only; every other GmailApiError
@@ -235,10 +250,12 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 60_000;
  * Fix round 1 (review Important #6): when the error carries a Gmail
  * `Retry-After` hint, waits that long instead of the exponential delay
  * (clamped to `maxRetryAfterMs`, default 60s, so a malformed/huge header
- * value can never stall a page indefinitely).
+ * value can never stall a page indefinitely). Rate limits back off in
+ * seconds (1 s doubling; the six default retries wait 63 s in total, more
+ * than Gmail's 60 s quota window); 5xx keep the short `baseDelayMs`.
  */
 export async function withGoogleRetry<T>(operation: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
-  const retries = options.retries ?? 3;
+  const retries = options.retries ?? 6;
   const baseDelayMs = options.baseDelayMs ?? 50;
   const maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
   const sleep = options.sleep ?? defaultSleep;
@@ -256,7 +273,7 @@ export async function withGoogleRetry<T>(operation: () => Promise<T>, options: R
       const delayMs =
         error.retryAfterMs !== undefined
           ? Math.min(Math.max(error.retryAfterMs, 0), maxRetryAfterMs)
-          : baseDelayMs * 2 ** (attempt - 1);
+          : (error.code === "rate_limited" ? RATE_LIMIT_BASE_DELAY_MS : baseDelayMs) * 2 ** (attempt - 1);
       await sleep(delayMs);
     }
   }
