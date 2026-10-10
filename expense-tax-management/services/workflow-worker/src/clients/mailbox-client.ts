@@ -72,7 +72,19 @@ export interface MailboxApiRequestInput<T> {
   readonly method: "GET" | "POST";
   readonly responseSchema: z.ZodType<T>;
   readonly body?: unknown;
+  /** Overrides the client's default request timeout for this call. */
+  readonly timeoutMs?: number;
 }
+
+/**
+ * One discovery page fetches up to 100 Gmail messages (~12 s) and waits out
+ * Gmail's per-minute quota (up to ~60 s more), so it needs far more than the
+ * default timeout: aborting it only makes Temporal start a second page walk
+ * while the broker is still running the first. Must stay below the
+ * `mailbox_discover_page` activity's startToCloseTimeout and the broker's
+ * connection timeout.
+ */
+export const MAILBOX_DISCOVER_TIMEOUT_MS = 240_000;
 
 /**
  * Phase 3D-B Task 3. `DiscoveryPageV1` is a plain interface in
@@ -267,7 +279,7 @@ export function createMailboxAppApiClient(
     token: TokenProvider,
     input: MailboxApiRequestInput<T>,
   ): Promise<T> {
-    const signal = AbortSignal.timeout(timeoutMs);
+    const signal = AbortSignal.timeout(input.timeoutMs ?? timeoutMs);
     let response: Response;
     try {
       const bearer = await withAbort(token(), signal);
@@ -331,6 +343,7 @@ export function createMailboxAppApiClient(
         method: "POST",
         responseSchema: DiscoveryPageV1Schema,
         body: {},
+        timeoutMs: MAILBOX_DISCOVER_TIMEOUT_MS,
       });
     },
     startScheduledScan({ tenantId, connectionId, requestId }) {
