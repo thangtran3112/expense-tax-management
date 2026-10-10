@@ -1,9 +1,22 @@
 # ai-trading Agent Rules
 
+Applies to work under `ai-trading/`. Paths below are relative to the repository root, not to this directory.
+
 ## Scope
 
 - ai-trading is a private family Trading Hub. Release 1 runs four unmodified upstream apps: TradingAgents, ai-hedge-fund, and Vibe-Trading always on; MiroFish is operator opt-in (`MIROFISH_ACTIVATE=1` at deploy time, plus its own Firestore profile — see "Secrets and Environment Values"), disabled by default. Release 2 adds our own Family Desk.
 - Tracker: `plans/STATUS.md`. Detailed designs and plans: `plans/subplans/`. Scratch: `temp/` (gitignored).
+- Two lanes run in parallel: the open-source lane (the hub, the four upstream apps, their wrapper images, deploy, pins, sync skills) and the Family Desk lane (the Desk's design, Paper mockups, plan, and code: `plans/subplans/02*.md` and the Desk's own directories). Follow the Desk plan for anything about the Desk, including hostnames, and do not edit the other lane's files. `plans/STATUS.md` and this file are shared: keep edits small and additive, and rebase before pushing. Each lane has its own handoffs in `plans/handoffs/`: read the newest `*trading-hub*` file for the open-source lane and the newest `*desk*` file for the Desk lane.
+
+## Hostnames
+
+Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-design.md` §8):
+
+- `trading-hub.tobytran.dev`: the Trading Hub. It carries the registry (`/apps/*`) and the TradingAgents and ai-hedge-fund terminals (`/u/*`).
+- `trading.tobytran.dev`: the Family Desk, our own solution (Release 2).
+- `vibe-trading.tobytran.dev` stays a separate hostname for now. Upstream Vibe-Trading cannot run under a path prefix unmodified: its SPA and API are root-relative (`/api`, `/auth`, `/settings`, ...; the API base is a hard-coded `""`), its router has no base path, and it sends `X-Frame-Options: DENY`, so it cannot be a hub route or be framed. Making it a route would need patched upstream code or a rewriting proxy, which is the owner's decision (see `plans/STATUS.md`), not a default.
+- MiroFish's public hostname is still open (`mirofish-static.tobytran.dev` is staging today). TradingAgents and ai-hedge-fund have no hostnames of their own; they are terminal routes on the hub.
+- The hub has not moved yet and still answers on `trading.tobytran.dev`. Do not hard-code that hostname for the hub in new code, and do not put anything else there. The move is this lane's work: bring up `trading-hub`, pass the existing staging checks on it, then switch `trading.tobytran.dev` to the Desk. It touches Cloudflare Terraform (DNS, Worker routes), the Clerk allowed origins and `aud` claim (`auth/src/clerk.js`), the `ai-trading/gateway` profile's `ALLOWED_ORIGINS`, ttyd origin checks, the MiroFish static Worker's login redirect, and the registry's Desk card. The public Worker cutover still needs the separate approval recorded in `plans/STATUS.md`.
 
 ## Secrets and Environment Values
 
@@ -39,6 +52,7 @@
   | `infrastructure/vps/bootstrap.sh` | Host bootstrap |
 
 - Application deployment artifacts (compose file, deploy and health scripts) live in `ai-trading/deploy/`.
+- The VPS is shared with the expense stack. Touch only ai-trading's own containers, images, and volumes; never run a global `docker system prune` or remove images you did not build. `deploy.sh` prunes only commit-tagged `ai-trading-*` images, and refuses to deploy below 30 GiB free.
 - The only manual steps are those with no API: Anthropic and OpenAI spend limits, interactive logins, and owner-approved broadening of the shared Cloudflare token's own permission scope in the dashboard ("Cloudflare API Token" above — the token's permissions only, never DNS/Tunnel/Worker settings). Cloudflare Access onboarding requires a separate owner-approved exception and is not part of Release 1.
 - GCP commands from the operator machine must use the personal gcloud configuration: prefix them with `CLOUDSDK_ACTIVE_CONFIG_NAME=personal`. The default active configuration (`chartflow`) is a work account; never touch it.
 
