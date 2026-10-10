@@ -38,6 +38,13 @@
 #                             compose()/ensure_mirofish_stopped() code at a disposable,
 #                             uniquely-named scratch Compose project instead of the real
 #                             one. Never set this in production.
+#   AI_TRADING_MIN_FREE_GB    free GiB required (after old images are pruned) before this
+#                             release is pulled; a whole number 0-999999, default 30. One
+#                             release unpacks to ~17 GB and needs ~5 GB more of compressed
+#                             layers while pulling.
+#   AI_TRADING_DOCKER_DATA_DIR directory whose filesystem that free space is read from
+#                             (default /var/lib/docker; on this single-disk VPS Docker's
+#                             data and containerd's image store share it).
 set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/opt/family-app/ai-trading}"
@@ -55,6 +62,8 @@ MIROFISH_REQUIRED_KEYS=(ZEP_API_KEY LLM_API_KEY)
 MIROFISH_RUNTIME_ENV_FILE=""
 MIROFISH_PRIOR_EXISTED=0
 MIROFISH_INSTALLED_THIS_RUN=0
+MIN_FREE_GB="${AI_TRADING_MIN_FREE_GB:-30}"
+DOCKER_DATA_DIR="${AI_TRADING_DOCKER_DATA_DIR:-/var/lib/docker}"
 STATE_FILE="$APP_DIR/last-good-tag"
 IMAGES_ENV="$APP_DIR/images.env"
 SECRET_FILES=(tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env)
@@ -65,13 +74,15 @@ declare -A PRIOR_EXISTED=()
 # tradingagents.env/ai-hedge-fund.env/vibe-trading.env/auth.env into, straight from
 # Firestore. Empty until render_profiles runs; cleanup_render_dir removes it on every exit.
 RENDER_SRC_DIR=""
+# A full commit SHA: the only shape a deployed image tag (and last-good-tag) ever has.
+SHA_RE='^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$'
 
 die() {
   echo "deploy: $*" >&2
   exit 1
 }
 
-[[ "${IMAGE_TAG:-}" =~ ^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$ ]] || die "IMAGE_TAG must be a full commit SHA"
+[[ "${IMAGE_TAG:-}" =~ $SHA_RE ]] || die "IMAGE_TAG must be a full commit SHA"
 
 # validate_staged_file FILE: blank lines, # comments, or KEY=value with a
 # non-empty value; never a NUL or CR byte anywhere in the file.
@@ -457,6 +468,52 @@ ensure_mirofish_stopped() {
   [[ -z "$(compose ps -q mirofish 2>/dev/null)" ]] || die "mirofish: a mirofish container is still present after stop/remove; aborting this deploy -- the previously-deployed tag stays running"
 }
 
+# prune_old_images: image retention. Every release unpacks to ~17 GB (MiroFish's
+# backend alone is ~12 GB and shares no layers between tags), so unpruned tags
+# filled the VPS disk on 2026-10-10: the pull died with ENOSPC and the rollback
+# could not even restore the env files. Keeps only this release, the rollback
+# target (last-good-tag), and whatever a container still uses -- `docker rmi`
+# without -f refuses an image any container, running or stopped, still
+# references, which is the safety net. Only commit-SHA-tagged images in this
+# registry's ai-trading-* repos are ever considered; other apps' images,
+# third-party images, and non-SHA tags are never touched. If last-good-tag
+# exists but is not exactly one commit SHA, the rollback target is unknown, so
+# nothing is pruned. Best-effort: a failure here surfaces through
+# require_free_space, not by aborting on one stale tag.
+prune_old_images() {
+  local last_good="" ref tag
+  if [[ -f "$STATE_FILE" ]]; then
+    last_good="$(cat "$STATE_FILE")"
+    if [[ ! "$last_good" =~ $SHA_RE ]]; then
+      echo "deploy: $STATE_FILE is not a single commit SHA; skipping image pruning so the rollback target is never removed" >&2
+      return 0
+    fi
+  fi
+  while IFS= read -r ref; do
+    case "$ref" in
+      "$REGISTRY"/ai-trading-*:*) ;;
+      *) continue ;;
+    esac
+    tag="${ref##*:}"
+    [[ "$tag" =~ $SHA_RE ]] || continue
+    [[ "$tag" == "$IMAGE_TAG" || "$tag" == "$last_good" ]] && continue
+    docker rmi "$ref" >/dev/null 2>&1 || true
+  done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+}
+
+# require_free_space: stop before any secret, container, or tag changes unless
+# this release's pull is likely to fit. Fails closed: a malformed threshold or
+# free space that cannot be read is an error, never a pass (bash arithmetic
+# would read an empty, negative, or overflowed threshold as "enough"). 10# keeps
+# a leading zero decimal instead of octal.
+require_free_space() {
+  local free_kb
+  [[ "$MIN_FREE_GB" =~ ^[0-9]{1,6}$ ]] || die "AI_TRADING_MIN_FREE_GB must be a whole number of GiB (0-999999), got: $MIN_FREE_GB"
+  free_kb="$(df -Pk "$DOCKER_DATA_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
+  [[ "$free_kb" =~ ^[0-9]+$ ]] || die "cannot read free disk space for $DOCKER_DATA_DIR"
+  ((free_kb >= 10#$MIN_FREE_GB * 1024 * 1024)) || die "only $((free_kb / 1024 / 1024)) GiB free on $DOCKER_DATA_DIR after pruning old ai-trading images; need $MIN_FREE_GB GiB to pull this release -- free space and re-run (the running release is untouched)"
+}
+
 deploy_tag() {
   local tag="$1" tmp
   tmp="$(mktemp "$APP_DIR/images.env.XXXXXX")"
@@ -545,6 +602,10 @@ stage_secrets() {
 # rather than let a manual/misconfigured run quietly skip rendering.
 [[ -n "$ENV_STAGING_DIR" ]] || die "ENV_STAGING_DIR is required: CI must stage cloudflared.env first"
 [[ -f "$ENV_STAGING_DIR/cloudflared.env" ]] || die "missing $ENV_STAGING_DIR/cloudflared.env; CI must stage it first"
+# Make room, then prove the pull fits, before Firestore, any container, or any
+# secret file is touched (a failed pull on a full disk also breaks rollback).
+prune_old_images
+require_free_space
 render_profiles
 # Opt-in only; a failed/absent MiroFish activation must not fail this
 # deploy of the other three apps, and must run before stage_secrets touches
