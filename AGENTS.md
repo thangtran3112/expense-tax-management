@@ -30,6 +30,7 @@ Start a session inside the package you are changing. Each package's `AGENTS.md` 
 - Infrastructure is code under `infrastructure/`; no console edits. GCP commands use `CLOUDSDK_ACTIVE_CONFIG_NAME=personal`. One shared Cloudflare token (`shared/cloudflare`): never create another.
 - One shared VPS: touch only your own app's containers, images, and volumes; never run a global `docker system prune`.
 - Never commit to or force-push `dev` or `main`; work reaches `dev` by pull request; `main` releases carry only the owning package's paths. Delivery authorization is per package.
+- **Conserve GitHub Actions minutes (owner rule, 2026-10-10; every package):** open a pull request only when a phase is finished or a batch of work is meaningful on its own, never for a single small task or a docs fix. Stack commits on `feature/toby` and let small changes ride along with the next phase's pull request. Push to an open pull request only when its CI fails, because every push re-runs CI.
 
 ## Parallel sessions
 
