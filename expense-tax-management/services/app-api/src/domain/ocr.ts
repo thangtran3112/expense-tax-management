@@ -1,5 +1,6 @@
 import {
   FORWARDED_RECEIPT_WORKFLOW_TYPE,
+  MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
   OCR_EXTRACTION_RESULT_SCHEMA_VERSION,
   OCR_RECEIPT_WORKFLOW_TYPE,
   OcrModeKeySchema,
@@ -339,9 +340,11 @@ export function createOcrJobsDomain(
           .executeTakeFirst();
         if (
           !job ||
-          ![OCR_RECEIPT_WORKFLOW_TYPE, "ForwardedReceiptWorkflow"].includes(
-            job.workflow_type,
-          )
+          ![
+            OCR_RECEIPT_WORKFLOW_TYPE,
+            FORWARDED_RECEIPT_WORKFLOW_TYPE,
+            MAILBOX_OCR_RECEIPT_WORKFLOW_TYPE,
+          ].includes(job.workflow_type)
         ) {
           throw DomainError.notFound();
         }

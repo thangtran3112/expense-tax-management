@@ -6,7 +6,7 @@
 	url = https://github.com/virattt/ai-hedge-fund.git
 [submodule "ai-trading/packages/vibe-trading"]
 	path = ai-trading/packages/vibe-trading
-	url = https://github.com/HKUDS/Vibe-Trading.git
+	url = https://github.com/thangtran3112/Vibe-Trading.git
 [submodule "ai-trading/packages/mirofish"]
 	path = ai-trading/packages/mirofish
 	url = https://github.com/666ghj/MiroFish.git
