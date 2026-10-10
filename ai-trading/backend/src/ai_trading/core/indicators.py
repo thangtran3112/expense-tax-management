@@ -15,7 +15,17 @@ def ema(values: pd.Series, length: int) -> pd.Series:
 
 
 def _wilder(values: pd.Series, length: int) -> pd.Series:
-    return values.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    """Wilder's smoothing, seeded by the mean of the first `length` valid values:
+    avg_t = (avg_{t-1} * (length - 1) + x_t) / length for every later value."""
+    valid = values.notna().to_numpy()
+    if valid.sum() < length:
+        return pd.Series(np.nan, index=values.index)
+    start = valid.argmax()
+    seed_at = start + length - 1
+    seeded = values.copy()
+    seeded.iloc[:seed_at] = np.nan
+    seeded.iloc[seed_at] = values.iloc[start : seed_at + 1].mean()
+    return seeded.ewm(alpha=1 / length, adjust=False).mean()
 
 
 def rsi(close: pd.Series, length: int) -> pd.Series:

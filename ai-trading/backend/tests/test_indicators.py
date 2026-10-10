@@ -25,11 +25,16 @@ def test_rsi_wilder_values_and_extremes():
     assert indicators.rsi(series(*range(1, 20)), 14).iloc[-1] == 100
     assert indicators.rsi(series(*range(20, 1, -1)), 14).iloc[-1] == 0
     assert indicators.rsi(series(*[5.0] * 20), 14).iloc[-1] == 50
+    # Wilder seeds with the first-period mean, not the first delta
+    np.testing.assert_allclose(indicators.rsi(series(10, 11, 10, 10), 3), [np.nan, np.nan, np.nan, 50])
 
 
 def test_atr_uses_the_previous_close():
     bars = pd.DataFrame({"high": [10.0, 12.0], "low": [9.0, 11.0], "close": [9.5, 11.5]})
     np.testing.assert_allclose(indicators.atr(bars, 1), [1.0, 2.5])
+    # length 2: true ranges [1.0, 2.5, 1.0], seeded with the mean of the first two
+    bars3 = pd.DataFrame({"high": [10.0, 12.0, 12.0], "low": [9.0, 11.0, 11.0], "close": [9.5, 11.5, 11.5]})
+    np.testing.assert_allclose(indicators.atr(bars3, 2), [np.nan, 1.75, 1.375])
 
 
 def test_session_vwap_covers_the_regular_session_and_resets_daily():
