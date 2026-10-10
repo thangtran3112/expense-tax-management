@@ -1,0 +1,1 @@
+{ "schemaVersion": 1, "name": "Fixture", "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" }, "when": { "op": "gt", "left": { "series": "close" }, "right": { "value": 1e400 } }, "then": { "alert": { "channels": ["inbox"] } } }
