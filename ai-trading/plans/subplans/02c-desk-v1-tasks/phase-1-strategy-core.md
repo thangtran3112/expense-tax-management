@@ -2,6 +2,8 @@
 
 Part of [02c-desk-v1-implementation-plan.md](../02c-desk-v1-implementation-plan.md). Read its Global Constraints, Review Focus, and Shared Interfaces first.
 
+> **Moved after this phase (owner, 2026-10-10):** the Desk now lives in `ai-trading/packages/family-desk/`. Read `ai-trading/contracts` as `ai-trading/packages/family-desk/contracts` and `ai-trading/backend` as `ai-trading/packages/family-desk/backend`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Subagents work in a `.worktrees/` worktree on their own `feature/*` branch; the main session merges that branch into `feature/toby` (root `AGENTS.md`).
 
 **Goal:** Ship the Desk's strategy core with no I/O: the versioned strategy-spec contract (Zod, JSON Schema, Pydantic), the session calendar, indicators, levels, the closed-bar evaluator, and ten intraday and swing templates with golden tests.

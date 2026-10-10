@@ -74,19 +74,19 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: ai-trading/contracts/pnpm-lock.yaml
+          cache-dependency-path: ai-trading/packages/family-desk/contracts/pnpm-lock.yaml
       - uses: astral-sh/setup-uv@v10.3.0  # no floating major tag; Dependabot bumps it
         with:
           enable-cache: true
-          cache-dependency-glob: ai-trading/backend/uv.lock
+          cache-dependency-glob: ai-trading/packages/family-desk/backend/uv.lock
       - name: Contracts (Zod, fixtures, JSON Schema drift)
-        working-directory: ai-trading/contracts
+        working-directory: ai-trading/packages/family-desk/contracts
         run: |
           pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
       - name: Backend (Pydantic parity and drift, core, templates)
-        working-directory: ai-trading/backend
+        working-directory: ai-trading/packages/family-desk/backend
         run: |
           uv sync --locked
           uv run ruff check .

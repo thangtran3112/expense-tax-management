@@ -343,7 +343,7 @@ Skipped:
 - Vibe-Trading's LLM-written strategy code and its sandbox (documented escape gaps; unacceptable once strategies place orders)
 - anything from MiroFish (AGPL-3.0)
 
-All adapted code carries attribution headers and is listed in `ai-trading/THIRD_PARTY_NOTICES.md`.
+All adapted code carries attribution headers and is listed in the receiving package's `THIRD_PARTY_NOTICES.md` (the Desk's is `ai-trading/packages/family-desk/THIRD_PARTY_NOTICES.md`).
 
 ## 12. Verification Spike (First Implementation Task)
 

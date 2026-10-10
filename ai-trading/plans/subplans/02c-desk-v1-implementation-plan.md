@@ -53,7 +53,8 @@
   - No `.env` files inside `ai-trading/`.
   - Never print values.
 - **Public repository (02a §10):** no balances, positions, account numbers, emails, or VPS addresses in commits. Mockups and fixtures use made-up numbers.
-- **Upstream code:** never edit `ai-trading/packages/*` (upstream submodules).
+- **Layout (owner, 2026-10-10):** the Desk lives in `ai-trading/packages/family-desk/` (`contracts/`, `backend/`, and `frontend/` from Phase 4). It never imports another package. Code shared by two or more ai-trading packages (provider clients such as Alpaca and IBKR, a shared database schema, shared types) lives in `ai-trading/common/`. Code adapted from an upstream app is copied in with attribution.
+- **Upstream code:** never edit the upstream submodules under `ai-trading/packages/` (`vibe-trading` only through its fork rules in AGENTS.md).
 - **Git (AGENTS.md):**
   - The main session works in the main checkout on `feature/toby`, merged up to `origin/dev` before new work. A worktree for the main session is opt-in: only with the owner's explicit instruction or approval.
   - Subagents work in `.worktrees/` worktrees, and the main session merges their branches into `feature/toby`.
@@ -122,10 +123,14 @@ These names are fixed for every phase. A task file may add names but must not re
 
 | Thing | Name |
 |---|---|
-| Contracts package | `ai-trading/contracts`, pnpm name `@ai-trading/contracts`, schema export `StrategySpecV1Schema` |
-| Generated JSON Schema | `ai-trading/contracts/generated/strategy-spec-v1.schema.json` |
-| Shared spec fixtures | `ai-trading/contracts/fixtures/strategy-spec-v1/{valid,invalid}/*.json` (both test suites read them) |
-| Backend project | `ai-trading/backend`, uv project `ai-trading-desk`, import package `ai_trading` under `src/` |
+| Contracts package | `ai-trading/packages/family-desk/contracts`, pnpm name `@ai-trading/contracts`, schema export `StrategySpecV1Schema` |
+| Generated JSON Schema | `ai-trading/packages/family-desk/contracts/generated/strategy-spec-v1.schema.json` |
+| Shared spec fixtures | `ai-trading/packages/family-desk/contracts/fixtures/strategy-spec-v1/{valid,invalid}/*.json` (both test suites read them) |
+| Strategy templates | `ai-trading/packages/family-desk/contracts/templates/*.json` |
+| Backend project | `ai-trading/packages/family-desk/backend`, uv project `ai-trading-desk`, import package `ai_trading` under `src/` |
+| Desk frontend | `ai-trading/packages/family-desk/frontend` (Phase 4) |
+| Shared ai-trading code | `ai-trading/common/` (provider clients, shared schema, cross-package types; created by Phase 2) |
+| Attribution | each package's own `THIRD_PARTY_NOTICES.md` |
 | Generated Pydantic models | `ai_trading.contracts.strategy_spec_v1` (generated; never hand-edited) |
 | Backend modules | `ai_trading.core` (pure), `ai_trading.data`, `ai_trading.db`, `ai_trading.engine`, `ai_trading.notify`, `ai_trading.broker`, `ai_trading.agent`, `ai_trading.api`, `ai_trading.jobs` |
 | Services | `api` (port 8000), `scheduler`, `ib-gateway` (paper API 4004 via the image's socat), `desk-postgres` (5432); all internal, no host ports |
