@@ -21,7 +21,7 @@ IMAGE_TAG="${IMAGE_TAG:-${1:-}}"
 # Allowlist is deliberately narrower than a shell environment. Values are data
 # only; no line is ever evaluated as shell syntax.
 KNOWN_ENV_KEYS=(
-  OPENAI_API_KEY OPENROUTER_API_KEY AUTH_PROVIDER
+  OPENAI_API_KEY OPENAI_API_KEY_1 OPENAI_API_KEY_2 OPENROUTER_API_KEY AUTH_PROVIDER
   APP_TENANT_TOKEN_ISSUER APP_TENANT_TOKEN_AUDIENCE APP_TENANT_JWKS_URL
   APP_SERVICE_TOKEN_ISSUER APP_SERVICE_TOKEN_AUDIENCE APP_SERVICE_JWKS_URL
   APP_DATABASE_URL APP_MIGRATION_DATABASE_URL
@@ -149,7 +149,7 @@ validate_auth_values() {
 # match what App API and the workflow worker mint against.
 validate_required_values() {
   local key
-  for key in OPENAI_API_KEY OPENROUTER_API_KEY \
+  for key in OPENROUTER_API_KEY \
     APP_DATABASE_URL APP_MIGRATION_DATABASE_URL FOUNDRY_DATABASE_URL FOUNDRY_MIGRATION_DATABASE_URL \
     CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET; do
     [[ -n "${!key:-}" ]] || die "$key is required"
@@ -157,6 +157,10 @@ validate_required_values() {
   for key in STORAGE_URL_SIGNING_KEY INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET; do
     [[ "${!key:-}" =~ ^[0-9a-f]{64}$ ]] || die "$key must be 64 lowercase hex characters"
   done
+  # Real receipt OCR via OpenAI, Task 4: workflow-worker is the only
+  # consumer; any one of the three keys is enough, never print a value.
+  [[ -n "${OPENAI_API_KEY:-}${OPENAI_API_KEY_1:-}${OPENAI_API_KEY_2:-}" ]] || \
+    die "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required"
   [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]] || return 0
   for key in CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY \
     MAILBOX_VAULT_KEYS MAILBOX_VAULT_ACTIVE_KEY_ID MAILBOX_BROKER_PUBLIC_BASE_URL MAILBOX_ALLOWED_REDIRECT_ORIGINS \

@@ -346,7 +346,9 @@ esac
       );
 
     expect(run(base).status).toBe(0);
-    expect(run({ ...base, OPENAI_API_KEY: "" }).stderr).toContain("OPENAI_API_KEY is required");
+    expect(run({ ...base, OPENAI_API_KEY: "" }).stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
     expect(run({ ...base, STORAGE_URL_SIGNING_KEY: "not-hex" }).stderr).toContain(
       "STORAGE_URL_SIGNING_KEY must be 64 lowercase hex characters",
     );
@@ -357,6 +359,66 @@ esac
     expect(run({ ...base, MAILBOX_FEATURE_ENABLED: "true" }).stderr).toContain(
       "is required when MAILBOX_FEATURE_ENABLED=true",
     );
+  });
+
+  it("passes the OpenAI API keys to workflow-worker only, and fails closed without at least one (never printing a value)", () => {
+    const deploy = readProductionFile("deploy.sh");
+    const allowlist = deploy.match(/KNOWN_ENV_KEYS=\(([^)]*)\)/s)?.[1] ?? "";
+    const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const mailboxOverlayText = readProductionFile("docker-compose.mailbox.yml");
+    const openAiKeys = ["OPENAI_API_KEY", "OPENAI_API_KEY_1", "OPENAI_API_KEY_2"];
+
+    for (const key of openAiKeys) {
+      expect(allowlist).toContain(key);
+      expect(compose.services["workflow-worker"].environment?.[key]).toBe(`\${${key}:-}`);
+    }
+    for (const [serviceName, service] of Object.entries(compose.services)) {
+      if (serviceName === "workflow-worker") continue;
+      expect(
+        Object.keys(service.environment ?? {}).some((key) => key.startsWith("OPENAI_")),
+      ).toBe(false);
+    }
+    expect(mailboxOverlayText).not.toContain("OPENAI_");
+
+    const fn = (name: string): string => {
+      const match = deploy.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "mu"));
+      if (!match) throw new Error(`could not extract function: ${name}`);
+      return match[0];
+    };
+    const hex = "a".repeat(64);
+    const base: Record<string, string> = {
+      OPENROUTER_API_KEY: "or-test",
+      APP_DATABASE_URL: "postgresql://app-runtime@postgres:5432/app",
+      APP_MIGRATION_DATABASE_URL: "postgresql://app-migrator@postgres:5432/app",
+      FOUNDRY_DATABASE_URL: "postgresql://foundry-runtime@postgres:5432/foundry",
+      FOUNDRY_MIGRATION_DATABASE_URL: "postgresql://foundry-migrator@postgres:5432/foundry",
+      CLERK_APP_MACHINE_SECRET_KEY: "ak_app",
+      CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_foundry",
+      CLERK_WEBHOOK_SIGNING_SECRET: "whsec_test",
+      STORAGE_URL_SIGNING_KEY: hex,
+      INBOUND_WEBHOOK_SIGNING_KEY: hex,
+      INBOUND_ROUTING_TOKEN_SECRET: hex,
+    };
+    const run = (env: Record<string, string>) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -Eeuo pipefail\n${fn("die")}\n${fn("validate_required_values")}\nvalidate_required_values`],
+        { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" },
+      );
+
+    const none = run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "", OPENAI_API_KEY_2: "" });
+    expect(none.status).not.toBe(0);
+    expect(none.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+    expect(none.stderr).not.toContain("test-key");
+
+    expect(
+      run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "test-key-1", OPENAI_API_KEY_2: "" }).status,
+    ).toBe(0);
+    expect(run({ ...base, OPENAI_API_KEY: "test-key-2" }).status).toBe(0);
   });
 
   it("deploys migrations before services and rolls back to recorded prior tag", () => {
