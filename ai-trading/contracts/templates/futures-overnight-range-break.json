@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "name": "Futures overnight-range break",
+  "watch": { "universe": { "symbols": ["/ES", "/NQ"] }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "any": [
+      { "op": "crosses_above", "left": { "series": "close" }, "right": { "level": "overnight_high" } },
+      { "op": "crosses_below", "left": { "series": "close" }, "right": { "level": "overnight_low" } }
+    ]
+  },
+  "then": { "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" } },
+  "limits": { "cooldownMinutes": 15 }
+}

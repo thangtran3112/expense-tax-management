@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "Pullback to the 20/50-day average in an uptrend",
+  "watch": { "universe": { "watchlist": "Swing" }, "session": "regular", "runOn": "daily_close" },
+  "when": {
+    "all": [
+      { "op": "gt", "left": { "series": "sma", "length": 20 }, "right": { "series": "sma", "length": 50 } },
+      {
+        "any": [
+          { "op": "within_pct", "left": { "series": "close" }, "right": { "series": "sma", "length": 20 }, "pct": 1 },
+          { "op": "within_pct", "left": { "series": "close" }, "right": { "series": "sma", "length": 50 }, "pct": 1 }
+        ]
+      }
+    ]
+  },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 300 }, "stop": { "atrMultiple": 2 }, "target": { "r": 2 } }
+  },
+  "limits": { "maxOpenPositions": 3 }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "name": "20-day breakout on volume",
+  "watch": { "universe": { "watchlist": "Swing" }, "session": "regular", "runOn": "daily_close" },
+  "when": {
+    "all": [
+      { "op": "crosses_above", "left": { "series": "close" }, "right": { "level": "n_day_high", "days": 20 } },
+      { "op": "gte", "left": { "series": "rvol", "lookbackDays": 20 }, "right": { "value": 1.5 } }
+    ]
+  },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 300 }, "stop": { "atrMultiple": 2 }, "target": { "r": 3 } }
+  },
+  "limits": { "maxOpenPositions": 3 }
+}
