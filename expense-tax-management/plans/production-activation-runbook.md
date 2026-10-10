@@ -269,6 +269,8 @@ health-check only; no Temporal swap, no new migrations listed in Stage C).
 
 Re-run a scan (VPS): `docker exec family-temporal temporal schedule trigger --address temporal:7233 --namespace expense-tax --schedule-id mailbox-schedule-<connectionId>`; check `app.mailbox_scan_runs` for `completed`.
 
+**Attachment OCR finding (2026-10-10).** The first Gmail attachment to reach OCR failed with `OCR_EXTRACTION_FAILED`: the worker reads its input through the generic `GET /internal/v1/jobs/:id/ocr-input`, and that route's workflow-type allowlist lacked `MailboxOcrReceiptWorkflow` (404). Fixed. A candidate that failed this way recovers with the `retry` review action, then `ingest` again (a fresh upload and OCR job).
+
 **Precise requirement finding (code-verified, corrects any assumption that
 `advance`/drain gates this phase):** mailbox workflows
 (`MailboxScanWorkflow`, `MailboxOcrReceiptWorkflow`,
