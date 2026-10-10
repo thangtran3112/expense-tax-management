@@ -260,6 +260,15 @@ health-check only; no Temporal swap, no new migrations listed in Stage C).
 
 **Status:** Live 2026-10-08/09 (`main` `be7af1e`). The real Gmail e2e passed through the resolve step. The first receipt's materialization hit the attachment-query bug, which #67/#68 fixed; a re-proof needs a fresh receipt email. Fixes found by the first real run: #56/#59, #60/#62, #63/#64, #65/#66, #67/#68. Ops steps beyond the table: enable the Gmail API, and add an entitlement override for `connected_mailbox_scan`.
 
+**Nightly-scan findings (2026-10-10).** The first scan of a real mailbox (~100 new messages) failed for four stacked reasons, fixed in #78, #80/#82 and the quota-handling PR:
+
+- Gmail messages deleted after listing broke the page (404 on fetch); an unparseable `Date` header broke it too (#78, #80/#82).
+- The worker's `/discover` call aborted at its default 10 s, but a 100-message page takes ~12 s; Temporal's retry then started a second page walk beside the first. The broker's 15 s socket timeout would also have cut the call. Now: worker timeout 240 s, activity `startToCloseTimeout` 5 min, broker `connectionTimeout` 300 s.
+- Gmail's per-user quota is 6,000 units per rolling minute and a full message fetch costs ~30-60 units, so one 100-message page uses most of it. Gmail answers an exhausted quota with **403 `rateLimitExceeded`** (not 429); the broker mapped it to `unknown` and never retried. Now it is `rate_limited`, retried with a 1 s doubling backoff (63 s in total, longer than the 60 s window).
+- Broker logs for a failed Gmail call now carry `upstreamStatus`/`upstreamReason` (Gmail's HTTP status and reason, plain identifiers only).
+
+Re-run a scan (VPS): `docker exec family-temporal temporal schedule trigger --address temporal:7233 --namespace expense-tax --schedule-id mailbox-schedule-<connectionId>`; check `app.mailbox_scan_runs` for `completed`.
+
 **Precise requirement finding (code-verified, corrects any assumption that
 `advance`/drain gates this phase):** mailbox workflows
 (`MailboxScanWorkflow`, `MailboxOcrReceiptWorkflow`,

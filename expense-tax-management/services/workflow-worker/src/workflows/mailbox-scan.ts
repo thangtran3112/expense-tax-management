@@ -74,8 +74,9 @@ interface MailboxFinalizeActivities {
   }): Promise<void>;
 }
 
+// Longer than the client's MAILBOX_DISCOVER_TIMEOUT_MS (a page walk is paced by Gmail's quota).
 const { mailbox_discover_page } = proxyActivities<MailboxDiscoveryActivities>({
-  startToCloseTimeout: "30 seconds",
+  startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 5 },
 });
 

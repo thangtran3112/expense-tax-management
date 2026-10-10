@@ -18,6 +18,8 @@ import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import { expect, it } from "vitest";
 
+import { MAILBOX_DISCOVER_TIMEOUT_MS } from "../src/clients/mailbox-client.js";
+
 const TASK_QUEUE = "expense-tax-processing";
 const workflowsPath = fileURLToPath(new URL("../src/workflows/index.ts", import.meta.url));
 
@@ -88,6 +90,42 @@ it("MailboxScanWorkflow calls discover with only scanRunId until a page is exhau
       ["finalize", { scanRunId: "scan-1", outcome: "succeeded" }],
     ]);
     expect(await forbiddenFieldsInHistory(env, workflowId)).toBe(false);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("MailboxScanWorkflow gives each discovery page longer than the client's request timeout, so Temporal never retries a page the broker is still walking", async () => {
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  const workflowId = "mailbox-scan-discover-timeout";
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace,
+      taskQueue: TASK_QUEUE,
+      workflowsPath,
+      activities: {
+        async mailbox_discover_page() {
+          return { scanRunId: "scan-t", pageSequence: 1, candidateCount: 0, retryCount: 0 };
+        },
+        async mailbox_finalize_scan() {
+          /* no-op */
+        },
+      },
+    });
+    await worker.runUntil(() =>
+      env.client.workflow.execute("MailboxScanWorkflow", {
+        workflowId,
+        taskQueue: TASK_QUEUE,
+        args: [{ schemaVersion: 1, scanRunId: "scan-t" }],
+      }),
+    );
+    const history = await env.client.workflow.getHandle(workflowId).fetchHistory();
+    const discover = history.events?.find(
+      (event) => event.activityTaskScheduledEventAttributes?.activityType?.name === "mailbox_discover_page",
+    );
+    const startToCloseMs = Number(discover?.activityTaskScheduledEventAttributes?.startToCloseTimeout?.seconds) * 1000;
+    expect(startToCloseMs).toBeGreaterThan(MAILBOX_DISCOVER_TIMEOUT_MS);
   } finally {
     await env.teardown();
   }

@@ -13,10 +13,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GmailApiError } from "../src/discovery.js";
 
-const { messagesGet, attachmentsGet, getProfile } = vi.hoisted(() => ({
+const { messagesGet, attachmentsGet, getProfile, historyList } = vi.hoisted(() => ({
   messagesGet: vi.fn(),
   attachmentsGet: vi.fn(),
   getProfile: vi.fn(),
+  historyList: vi.fn(),
 }));
 
 // vi.mock calls are hoisted above every import in this file (including the
@@ -27,6 +28,7 @@ vi.mock("googleapis", () => ({
     gmail: () => ({
       users: {
         messages: { get: messagesGet, attachments: { get: attachmentsGet } },
+        history: { list: historyList },
         getProfile,
       },
     }),
@@ -46,6 +48,7 @@ describe("createRealGmailDiscoveryClient", () => {
     messagesGet.mockReset();
     attachmentsGet.mockReset();
     getProfile.mockReset();
+    historyList.mockReset();
   });
 
   it("getMessage: the poison-message bug -- an unparseable Date header no longer fails the whole message", async () => {
@@ -76,6 +79,48 @@ describe("createRealGmailDiscoveryClient", () => {
     const client = createRealGmailDiscoveryClient(fakeOAuth2Client());
 
     await expect(client.getMessage("broken")).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("getMessage: Gmail's per-user quota answers 403 rateLimitExceeded; it maps to rate_limited so the retry wrapper waits it out instead of failing the whole page", async () => {
+    messagesGet.mockRejectedValue({
+      response: { status: 403, data: { error: { errors: [{ reason: "rateLimitExceeded", domain: "usageLimits" }] } } },
+    });
+    const client = createRealGmailDiscoveryClient(fakeOAuth2Client());
+
+    await expect(client.getMessage("busy")).rejects.toMatchObject({ code: "rate_limited" });
+  });
+
+  it("listHistory: a 403 userRateLimitExceeded also maps to rate_limited", async () => {
+    historyList.mockRejectedValue({
+      response: { status: 403, data: { error: { errors: [{ reason: "userRateLimitExceeded" }] } } },
+    });
+    const client = createRealGmailDiscoveryClient(fakeOAuth2Client());
+
+    await expect(client.listHistory({ startHistoryId: "1", maxResults: 100 })).rejects.toMatchObject({
+      code: "rate_limited",
+    });
+  });
+
+  it("getMessage: a 403 that is not a rate limit stays unknown, and keeps the upstream status and reason so the log can say why", async () => {
+    messagesGet.mockRejectedValue({
+      response: { status: 403, data: { error: { errors: [{ reason: "insufficientPermissions" }] } } },
+    });
+    const client = createRealGmailDiscoveryClient(fakeOAuth2Client());
+
+    await expect(client.getMessage("denied")).rejects.toMatchObject({
+      code: "unknown",
+      upstream: { status: 403, reason: "insufficientPermissions" },
+    });
+  });
+
+  it("getMessage: a network failure with no HTTP response is unknown, keeping the system error code", async () => {
+    messagesGet.mockRejectedValue(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }));
+    const client = createRealGmailDiscoveryClient(fakeOAuth2Client());
+
+    await expect(client.getMessage("dropped")).rejects.toMatchObject({
+      code: "unknown",
+      upstream: { reason: "ECONNRESET" },
+    });
   });
 
   it("getMessage: a parsing bug AFTER a successful Gmail call is never turned into a GmailApiError", async () => {
