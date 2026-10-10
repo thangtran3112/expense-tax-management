@@ -2,6 +2,10 @@
 
 Status: Designed and approved in conversation on 2026-10-04 (sections 1-3, decisions D1-D7) as the first release, then moved to release 2 the same day when the Trading Hub MVP became release 1. Revisit after the MVP ships: confirm the scope, review this spec, then write its implementation plan.
 
+Revised on 2026-10-10 by two addenda; where they conflict with this file, they win:
+- [02a-desk-v1-strategies-design.md](02a-desk-v1-strategies-design.md): strategy-first Desk v1, automatic strategy alerts, IBKR paper trading.
+- [02b-desk-market-data-options.md](02b-desk-market-data-options.md): the market-data decision.
+
 Related: [STATUS.md](../STATUS.md) (decisions log), [01-release-1-hub-design.md](01-release-1-hub-design.md) (the hub this app joins), [00-upstream-evaluation.md](00-upstream-evaluation.md), [00b-app-shell-evaluation.md](00b-app-shell-evaluation.md).
 
 ## 1. Purpose and Users
