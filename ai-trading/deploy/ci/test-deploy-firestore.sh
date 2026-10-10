@@ -56,6 +56,14 @@
 # from (an already-running profile-gated container survives
 # `up -d --remove-orphans` alone).
 #
+# Cases 33-38 (2026-10-10 disk-full deploy failure) cover image retention and
+# the free-disk guard: old ai-trading tags are pruned before the pull while
+# this release, the last-good tag, and everything outside the registry's
+# ai-trading-* repos survive (and nothing is pruned when the last-good tag is
+# not a single commit SHA); too little free disk, an unreadable Docker data
+# directory, or a malformed threshold fails the deploy before any secret,
+# container, or tag is touched; the 30 GiB default is checked at its boundary.
+#
 # Usage: ai-trading/deploy/ci/test-deploy-firestore.sh
 set -Eeuo pipefail
 
@@ -78,6 +86,12 @@ trap cleanup EXIT
 
 FAIL_COUNT=0
 CASE_COUNT=0
+
+# deploy.sh's disk guard is exercised only by Cases 34-37; every other
+# scenario must not depend on this machine's free disk (or on the Docker data
+# directory existing at all).
+export AI_TRADING_MIN_FREE_GB=0
+export AI_TRADING_DOCKER_DATA_DIR="$TEST_ROOT"
 
 fail() {
   FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -439,6 +453,10 @@ status9=0
   docker() {
     if [[ "${1:-}" == compose ]]; then
       echo "fake docker $*" >>"$APP_DIR/docker.log"
+      return 0
+    fi
+    # prune_old_images must never reach a real daemon (or its images).
+    if [[ "${1:-}" == images || "${1:-}" == rmi ]]; then
       return 0
     fi
     command docker "$@"
@@ -942,6 +960,10 @@ status27=0
       echo "fake docker $*" >>"$APP_DIR/docker.log"
       return 0
     fi
+    # prune_old_images must never reach a real daemon (or its images).
+    if [[ "${1:-}" == images || "${1:-}" == rmi ]]; then
+      return 0
+    fi
     command docker "$@"
   }
   export -f docker
@@ -1101,6 +1123,10 @@ status30=0
         *) return 0 ;;
       esac
     fi
+    # prune_old_images must never reach a real daemon (or its images).
+    if [[ "${1:-}" == images || "${1:-}" == rmi ]]; then
+      return 0
+    fi
     command docker "$@"
   }
   export -f docker
@@ -1212,6 +1238,279 @@ shopt -u nullglob
 [[ ${#installed[@]} -eq 0 ]] || fail "case32: files installed despite a missing API_AUTH_KEY: ${installed[*]}"
 [[ ${#leftover[@]} -eq 0 ]] || fail "case32: render scratch not cleaned: ${leftover[*]}"
 echo "    exit=$status"
+
+# stat shim shared by Cases 33-35's process-level runs: same BSD/macOS-vs-GNU
+# `stat -c '%u:%a'` shim Case 9 documents (fake uid 0, real mode).
+# shellcheck disable=SC2329
+fake_stat() {
+  if [[ "${1:-}" == -c && "${2:-}" == '%u:%a' ]]; then
+    local mode
+    mode="$(command stat -c '%a' "$3" 2>/dev/null || command stat -f '%Lp' "$3" 2>/dev/null)"
+    printf '0:%s\n' "$mode"
+  else
+    command stat "$@"
+  fi
+}
+
+echo "=== Case 33 (GREEN, process-level, fake Docker): old ai-trading image tags are pruned BEFORE the pull -- only this release, the last-good tag, non-SHA tags, and anything outside the registry's ai-trading-* repos survive; an image a container still uses (rmi refuses) never fails the deploy ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s33="$(new_scratch case33)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s33/ci-staging/cloudflared.env"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$s33/app/health-check.sh"
+chmod +x "$s33/app/health-check.sh"
+new33=5555555555555555555555555555555555555555
+good33=6666666666666666666666666666666666666666
+old33=7777777777777777777777777777777777777777
+busy33=8888888888888888888888888888888888888888
+reg33=registry.invalid/family-app
+printf '%s\n' "$good33" >"$s33/app/last-good-tag"
+cat >"$s33/app/fake-images.txt" <<EOF
+$reg33/ai-trading-web:$new33
+$reg33/ai-trading-web:$good33
+$reg33/ai-trading-web:$old33
+$reg33/ai-trading-mirofish-backend:$old33
+$reg33/ai-trading-vibe-trading:$busy33
+$reg33/ai-trading-web:latest
+$reg33/ai-trading-web:<none>
+$reg33/expense-api:$old33
+registry.invalid/other/ai-trading-web:$old33
+caddy:2
+EOF
+status33=0
+(
+  APP_DIR="$s33/app"
+  AI_TRADING_SECRETS_DIR="$s33/secrets"
+  ENV_STAGING_DIR="$s33/ci-staging"
+  FAMILY_CONFIG_CREDENTIALS="$s33/fake-reader-key.json"
+  DEPLOY_SH_SKIP_CHOWN=1
+  IMAGE_TAG=$new33
+  AI_TRADING_REGISTRY=$reg33
+  FAKE_RMI_FAIL_TAG=$busy33
+  export APP_DIR AI_TRADING_SECRETS_DIR ENV_STAGING_DIR FAMILY_CONFIG_CREDENTIALS DEPLOY_SH_SKIP_CHOWN IMAGE_TAG AI_TRADING_REGISTRY FAKE_RMI_FAIL_TAG
+
+  # shellcheck disable=SC2329
+  docker() {
+    echo "fake docker $*" >>"$APP_DIR/docker.log"
+    case "${1:-}" in
+      compose) return 0 ;;
+      images)
+        cat "$APP_DIR/fake-images.txt"
+        return 0
+        ;;
+      rmi)
+        # An image a container still uses: the real daemon refuses to remove it.
+        [[ "${2:-}" == *":$FAKE_RMI_FAIL_TAG" ]] && return 1
+        return 0
+        ;;
+    esac
+    command docker "$@"
+  }
+  export -f docker fake_stat
+  # shellcheck disable=SC2329
+  stat() { fake_stat "$@"; }
+  export -f stat
+
+  bash "$DEPLOY_SH" >"$s33/stdout.log" 2>"$s33/stderr.log"
+) || status33=$?
+if [[ "$status33" != 0 ]]; then
+  fail "case33: expected exit 0 (a refused rmi must not fail the deploy), got $status33: $(cat "$s33/stderr.log" 2>/dev/null)"
+else
+  log33="$s33/app/docker.log"
+  for gone in "$reg33/ai-trading-web:$old33" "$reg33/ai-trading-mirofish-backend:$old33" "$reg33/ai-trading-vibe-trading:$busy33"; do
+    grep -qxF "fake docker rmi $gone" "$log33" || fail "case33: expected a plain 'docker rmi $gone'"
+  done
+  [[ "$(grep -c '^fake docker rmi ' "$log33")" == 3 ]] || fail "case33: expected exactly the three stale ai-trading tags to be removed, got: $(grep '^fake docker rmi ' "$log33")"
+  first_rmi33="$(grep -n '^fake docker rmi ' "$log33" | head -1 | cut -d: -f1 || true)"
+  pull33="$(grep -n 'pull$' "$log33" | head -1 | cut -d: -f1 || true)"
+  [[ -n "$first_rmi33" && -n "$pull33" && "$first_rmi33" -lt "$pull33" ]] || fail "case33: stale images must be removed before 'compose pull' (first rmi at line '$first_rmi33', pull at line '$pull33')"
+  [[ "$(cat "$s33/app/last-good-tag" 2>/dev/null)" == "$new33" ]] || fail "case33: last-good-tag should now be the new release"
+fi
+echo "    exit=$status33"
+
+echo "=== Case 34 (RED, process-level, fake Docker): too little free disk fails the deploy BEFORE any secret, container, or tag is touched ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s34="$(new_scratch case34)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s34/ci-staging/cloudflared.env"
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
+  printf 'OLD_VALUE=old-%s\n' "$name" >"$s34/secrets/$name"
+  chmod 0600 "$s34/secrets/$name"
+done
+printf '%s\n' 6666666666666666666666666666666666666666 >"$s34/app/last-good-tag"
+status34=0
+(
+  APP_DIR="$s34/app"
+  AI_TRADING_SECRETS_DIR="$s34/secrets"
+  ENV_STAGING_DIR="$s34/ci-staging"
+  FAMILY_CONFIG_CREDENTIALS="$s34/fake-reader-key.json"
+  DEPLOY_SH_SKIP_CHOWN=1
+  IMAGE_TAG=9999999999999999999999999999999999999999
+  AI_TRADING_MIN_FREE_GB=999999
+  AI_TRADING_DOCKER_DATA_DIR="$s34/app"
+  export APP_DIR AI_TRADING_SECRETS_DIR ENV_STAGING_DIR FAMILY_CONFIG_CREDENTIALS DEPLOY_SH_SKIP_CHOWN IMAGE_TAG AI_TRADING_MIN_FREE_GB AI_TRADING_DOCKER_DATA_DIR
+
+  # shellcheck disable=SC2329
+  docker() {
+    echo "fake docker $*" >>"$APP_DIR/docker.log"
+    case "${1:-}" in
+      compose | images | rmi) return 0 ;;
+    esac
+    command docker "$@"
+  }
+  export -f docker
+
+  bash "$DEPLOY_SH" >"$s34/stdout.log" 2>"$s34/stderr.log"
+) || status34=$?
+if [[ "$status34" == 0 ]]; then
+  fail "case34: expected non-zero exit when the disk is too small, got 0"
+fi
+grep -q 'GiB free' "$s34/stderr.log" 2>/dev/null || fail "case34: expected a clear free-space message: $(cat "$s34/stderr.log" 2>/dev/null)"
+grep -qE ' pull$| up -d' "$s34/app/docker.log" 2>/dev/null && fail "case34: deploy_tag must never run -- found a pull/up call: $(cat "$s34/app/docker.log")"
+for name in tradingagents.env ai-hedge-fund.env vibe-trading.env vibe-gateway.env auth.env cloudflared.env; do
+  grep -q "old-$name" "$s34/secrets/$name" 2>/dev/null || fail "case34: $name must stay completely untouched -- stage_secrets must never have run"
+done
+[[ -d "$s34/secrets/.previous" ]] && fail "case34: stage_secrets must never have run (.previous backup directory exists)"
+shopt -s nullglob
+leftover34=("$s34/secrets"/.render-*)
+shopt -u nullglob
+[[ ${#leftover34[@]} -eq 0 ]] || fail "case34: nothing should have been rendered before the disk check: ${leftover34[*]}"
+[[ "$(cat "$s34/app/last-good-tag" 2>/dev/null)" == 6666666666666666666666666666666666666666 ]] || fail "case34: last-good-tag must be left alone"
+echo "    exit=$status34"
+
+echo "=== Case 35 (RED, process-level, fake Docker): an unreadable Docker data directory fails closed with a clear message, never a silent pass ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s35="$(new_scratch case35)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s35/ci-staging/cloudflared.env"
+status35=0
+(
+  APP_DIR="$s35/app"
+  AI_TRADING_SECRETS_DIR="$s35/secrets"
+  ENV_STAGING_DIR="$s35/ci-staging"
+  FAMILY_CONFIG_CREDENTIALS="$s35/fake-reader-key.json"
+  DEPLOY_SH_SKIP_CHOWN=1
+  IMAGE_TAG=9999999999999999999999999999999999999999
+  AI_TRADING_DOCKER_DATA_DIR="$s35/does-not-exist"
+  export APP_DIR AI_TRADING_SECRETS_DIR ENV_STAGING_DIR FAMILY_CONFIG_CREDENTIALS DEPLOY_SH_SKIP_CHOWN IMAGE_TAG AI_TRADING_DOCKER_DATA_DIR
+
+  # shellcheck disable=SC2329
+  docker() {
+    echo "fake docker $*" >>"$APP_DIR/docker.log"
+    case "${1:-}" in
+      compose | images | rmi) return 0 ;;
+    esac
+    command docker "$@"
+  }
+  export -f docker
+
+  bash "$DEPLOY_SH" >"$s35/stdout.log" 2>"$s35/stderr.log"
+) || status35=$?
+if [[ "$status35" == 0 ]]; then
+  fail "case35: expected non-zero exit when free disk space cannot be read, got 0"
+fi
+grep -q 'cannot read free disk space' "$s35/stderr.log" 2>/dev/null || fail "case35: expected the specific 'cannot read free disk space' message: $(cat "$s35/stderr.log" 2>/dev/null)"
+grep -qE ' pull$| up -d' "$s35/app/docker.log" 2>/dev/null && fail "case35: deploy_tag must never run -- found a pull/up call"
+[[ -f "$s35/app/last-good-tag" ]] && fail "case35: last-good-tag must never be written"
+echo "    exit=$status35"
+
+# fake_df_gib GIB: prints the POSIX two-line `df -Pk` table with GIB available,
+# so a case can drive require_free_space() without a real disk.
+# shellcheck disable=SC2329
+fake_df_gib() {
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/fake 999999999 1 %s 1%% /\n' "$(($1 * 1024 * 1024))"
+}
+
+echo "=== Case 36 (GREEN x2, unit-level, fake df): with AI_TRADING_MIN_FREE_GB unset the guard uses its 30 GiB default -- 29 GiB free blocks, 30 GiB free passes ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+for avail36 in 29 30; do
+  out36="$(
+    (
+      IMAGE_TAG=0000000000000000000000000000000000000000
+      export IMAGE_TAG
+      unset AI_TRADING_MIN_FREE_GB
+      # shellcheck source=/dev/null
+      source "$LIB_FILE"
+      # shellcheck disable=SC2329
+      df() { fake_df_gib "$avail36"; }
+      require_free_space
+      echo ENOUGH
+    ) 2>&1 || true
+  )"
+  if [[ "$avail36" == 29 ]]; then
+    [[ "$out36" == *"only 29 GiB free"* && "$out36" != *ENOUGH* ]] || fail "case36: 29 GiB free must block at the 30 GiB default, got: $out36"
+  else
+    [[ "$out36" == ENOUGH ]] || fail "case36: 30 GiB free must pass at the 30 GiB default, got: $out36"
+  fi
+done
+echo "    ok"
+
+echo "=== Case 37 (RED x4 + GREEN, unit-level, fake df): a malformed AI_TRADING_MIN_FREE_GB fails closed instead of bash arithmetic reading it as 'enough'; a leading zero is decimal, never octal ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+for bad37 in -1 abc 1e3 99999999999999999999; do
+  out37="$(
+    (
+      IMAGE_TAG=0000000000000000000000000000000000000000
+      AI_TRADING_MIN_FREE_GB="$bad37"
+      export IMAGE_TAG AI_TRADING_MIN_FREE_GB
+      # shellcheck source=/dev/null
+      source "$LIB_FILE"
+      # shellcheck disable=SC2329
+      df() { fake_df_gib 1000; }
+      require_free_space
+      echo ENOUGH
+    ) 2>&1 || true
+  )"
+  [[ "$out37" == *"must be a whole number"* && "$out37" != *ENOUGH* ]] || fail "case37: AI_TRADING_MIN_FREE_GB='$bad37' must be rejected, got: $out37"
+done
+# 030 is thirty GiB; octal would read it as 24 and let 29 GiB through.
+out37="$(
+  (
+    IMAGE_TAG=0000000000000000000000000000000000000000
+    AI_TRADING_MIN_FREE_GB=030
+    export IMAGE_TAG AI_TRADING_MIN_FREE_GB
+    # shellcheck source=/dev/null
+    source "$LIB_FILE"
+    # shellcheck disable=SC2329
+    df() { fake_df_gib 29; }
+    require_free_space
+    echo ENOUGH
+  ) 2>&1 || true
+)"
+[[ "$out37" == *"only 29 GiB free"* && "$out37" != *ENOUGH* ]] || fail "case37: AI_TRADING_MIN_FREE_GB=030 must mean 30 GiB (decimal), got: $out37"
+echo "    ok"
+
+echo "=== Case 38 (GREEN x3, unit-level, fake Docker): a last-good-tag that is not exactly one commit SHA means the rollback target is unknown -- prune_old_images removes nothing and says so ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+for variant38 in multi-line empty junk; do
+  s38="$(new_scratch "case38-$variant38")"
+  case "$variant38" in
+    multi-line) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnot-a-tag\n' >"$s38/app/last-good-tag" ;;
+    empty) : >"$s38/app/last-good-tag" ;;
+    junk) printf 'latest\n' >"$s38/app/last-good-tag" ;;
+  esac
+  (
+    IMAGE_TAG=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    APP_DIR="$s38/app"
+    AI_TRADING_REGISTRY=registry.invalid/family-app
+    export IMAGE_TAG APP_DIR AI_TRADING_REGISTRY
+    # shellcheck source=/dev/null
+    source "$LIB_FILE"
+    # shellcheck disable=SC2329
+    docker() {
+      echo "fake docker $*" >>"$APP_DIR/docker.log"
+      if [[ "${1:-}" == images ]]; then
+        printf '%s\n' \
+          registry.invalid/family-app/ai-trading-web:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+          registry.invalid/family-app/ai-trading-web:cccccccccccccccccccccccccccccccccccccccc
+      fi
+      return 0
+    }
+    prune_old_images
+  ) 2>"$s38/stderr.log"
+  if grep -q '^fake docker rmi ' "$s38/app/docker.log" 2>/dev/null; then
+    fail "case38 ($variant38): no image may be removed while the rollback target is unknown: $(grep '^fake docker rmi ' "$s38/app/docker.log")"
+  fi
+  grep -q 'skipping image pruning' "$s38/stderr.log" 2>/dev/null || fail "case38 ($variant38): expected the skip to be logged: $(cat "$s38/stderr.log" 2>/dev/null)"
+done
+echo "    ok"
 
 echo
 cleanup
