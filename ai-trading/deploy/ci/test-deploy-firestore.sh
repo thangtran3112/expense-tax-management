@@ -1556,6 +1556,28 @@ status="$(FAKE_RUNNING_ID=abc123 FAKE_FC_MISSING_PROFILE=ai-trading/mirofish run
 [[ "$(cat "$s41/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case41: keep with a missing profile must leave COMPOSE_PROFILES unset"
 echo "    exit=$status"
 
+echo "=== Case 42 (GREEN): compose() passes the Caddyfile's sha256, so a changed Caddyfile recreates the gateway (the single-file bind mount keeps the old inode otherwise) ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s42="$(new_scratch case42)"
+printf 'http://example.test:8080 {\n\trespond 200\n}\n' >"$s42/app/Caddyfile"
+got42="$(
+  APP_DIR="$s42/app"
+  IMAGE_TAG=0000000000000000000000000000000000000000
+  export APP_DIR IMAGE_TAG
+  # shellcheck source=/dev/null
+  source "$LIB_FILE"
+  # shellcheck disable=SC2329
+  docker() { printf '%s\n' "${AI_TRADING_CADDYFILE_SHA256:-missing}"; }
+  compose ps -q
+)"
+want42="$(sha256sum "$s42/app/Caddyfile")"
+want42="${want42%% *}"
+[[ "$got42" == "$want42" ]] || fail "case42: compose() should export AI_TRADING_CADDYFILE_SHA256=$want42, got $got42"
+# shellcheck disable=SC2016 # literal compose interpolation, not a shell expansion
+grep -q 'caddyfile-sha256: \${AI_TRADING_CADDYFILE_SHA256' "$(dirname "$DEPLOY_SH")/docker-compose.yml" \
+  || fail "case42: the gateway service must carry the Caddyfile sha256 as a label"
+echo "    got=$got42"
+
 echo
 cleanup
 if [[ "$FAIL_COUNT" -eq 0 ]]; then

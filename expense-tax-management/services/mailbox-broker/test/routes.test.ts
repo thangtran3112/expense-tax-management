@@ -848,6 +848,80 @@ describe("mailbox-broker routes", () => {
       expect(gmailErrorLine).toMatchObject({ gmailErrorCode: "unavailable", statusCode: 503 });
       expect(lines.join("\n")).not.toContain(secretLookingMessage);
     });
+
+    it("also logs Gmail's HTTP status and reason (static identifiers) behind an unknown error, so the next 503 is not a black box", async () => {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const secretLookingMessage = "token=ya29.SUPER_SECRET_VALUE_SHOULD_NEVER_BE_LOGGED";
+      const discoveryProviderAdapter = {
+        discover: vi.fn(async () => {
+          throw new GmailApiError("unknown", secretLookingMessage, undefined, {
+            status: 403,
+            reason: "insufficientPermissions",
+          });
+        }),
+      };
+      const lines: string[] = [];
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: { level: "warn", stream: { write: (msg: string) => lines.push(msg) } },
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+        discoveryProviderAdapter,
+        discoveryAppClient: { loadScanBinding: vi.fn(), stageCandidateMetadata: vi.fn() },
+      });
+      apps.add(app);
+      const token = await issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes: ["mailbox:discover"] });
+
+      await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+
+      const gmailErrorLine = lines.map((line) => JSON.parse(line)).find((entry) => entry.msg === "gmail api error");
+      expect(gmailErrorLine).toMatchObject({
+        gmailErrorCode: "unknown",
+        upstreamStatus: 403,
+        upstreamReason: "insufficientPermissions",
+      });
+      expect(lines.join("\n")).not.toContain(secretLookingMessage);
+    });
+
+    it("keeps connections open well past the 15 s the worker's /discover call used to be cut off at (a quota-paced page walk can take minutes)", () => {
+      const issuer = { issuerUrl: "https://clerk.test", jwksUrl: "https://clerk.test/.well-known/jwks.json" };
+      const app = buildApp({
+        config: fakeConfig(
+          {
+            issuer: issuer.issuerUrl,
+            audience: AUDIENCE,
+            jwksUrl: issuer.jwksUrl,
+            appApiSubject: APP_API_SUBJECT,
+            workerSubject: WORKER_SUBJECT,
+          },
+          createVaultKeyMap(),
+        ),
+        logger: false,
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+      });
+      apps.add(app);
+
+      expect(app.server.timeout).toBeGreaterThanOrEqual(240_000);
+    });
   });
 
   // ------------------------------------------------------------------ //

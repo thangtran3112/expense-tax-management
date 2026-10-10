@@ -1,10 +1,9 @@
 // Serves the pre-built `out/` directory with the same route-resolution rule
 // the Cloudflare Worker (infrastructure/cloudflare/ai-trading/worker/hub-router.js)
-// implements for the GCS-backed path: this is the hub's first production
-// serving path (no deployment of any kind exists yet) and 01e's documented
-// fallback if the Worker/GCS path does not pass Task 9's spike. Task 10
-// repoints trading.tobytran.dev's tunnel ingress from this container to the
-// Worker once that spike passes. No framework, stdlib only.
+// implements for the GCS-backed path. The public hub is the Worker on
+// trading-hub.tobytran.dev (01l); this container serves the interim
+// trading.tobytran.dev until Desk Phase 4 takes that hostname, and stays
+// 01e's documented fallback. No framework, stdlib only.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";

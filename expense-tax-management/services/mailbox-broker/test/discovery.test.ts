@@ -168,6 +168,39 @@ describe("discovery.ts withGoogleRetry", () => {
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  it("waits seconds, doubling each time, when Gmail's per-minute quota is exhausted: a 50 ms retry only hits the same wall", async () => {
+    let attempts = 0;
+    const sleep = vi.fn(async () => undefined);
+    await withGoogleRetry(async () => {
+      attempts += 1;
+      if (attempts < 4) throw new GmailApiError("rate_limited");
+      return "ok";
+    }, { sleep });
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000]);
+  });
+
+  it("keeps the short millisecond backoff for a 5xx", async () => {
+    let attempts = 0;
+    const sleep = vi.fn(async () => undefined);
+    await withGoogleRetry(async () => {
+      attempts += 1;
+      if (attempts < 4) throw new GmailApiError("unavailable");
+      return "ok";
+    }, { sleep });
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([50, 100, 200]);
+  });
+
+  it("keeps retrying a rate limit for over a minute by default: Gmail's quota is a 60 s sliding window, so a shorter budget can never recover", async () => {
+    const sleep = vi.fn(async () => undefined);
+    await expect(
+      withGoogleRetry(async () => {
+        throw new GmailApiError("rate_limited");
+      }, { sleep }),
+    ).rejects.toMatchObject({ code: "rate_limited" });
+    const waitedMs = sleep.mock.calls.reduce((total, [ms]) => total + ms, 0);
+    expect(waitedMs).toBeGreaterThanOrEqual(60_000);
+  });
+
   it("exhausts retries and rethrows the last GmailApiError", async () => {
     const sleep = vi.fn(async () => undefined);
     await expect(

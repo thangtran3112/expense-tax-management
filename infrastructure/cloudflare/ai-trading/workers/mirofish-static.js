@@ -56,7 +56,7 @@ async function fetchBucketPath(bucket, path, method) {
   return withHeaders(res);
 }
 
-const HUB_LOGIN_URL = "https://trading.tobytran.dev/login";
+const HUB_LOGIN_URL = "https://trading-hub.tobytran.dev/login";
 
 // The redirect target's host/path are a fixed literal, never derived from
 // the request; only the `returnTo` value is attacker-influenced, and it is

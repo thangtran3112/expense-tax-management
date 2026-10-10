@@ -197,7 +197,7 @@ test("GET / with no session (non-204 from /__auth/check) relays the gate respons
       if (url === "https://mirofish-origin.tobytran.dev/__auth/check") {
         return new Response(null, {
           status: 302,
-          headers: { location: "https://trading.tobytran.dev/login?returnTo=%2F" },
+          headers: { location: "https://trading-hub.tobytran.dev/login?returnTo=%2F" },
         });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -206,7 +206,7 @@ test("GET / with no session (non-204 from /__auth/check) relays the gate respons
       const req = new Request("https://mirofish-static.tobytran.dev/");
       const res = await worker.fetch(req, ENV);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), "https://trading.tobytran.dev/login?returnTo=%2F");
+      assert.equal(res.headers.get("location"), "https://trading-hub.tobytran.dev/login?returnTo=%2F");
       assert.equal(calls.length, 1); // auth check only, bucket never touched without a session
     },
   );
@@ -233,7 +233,7 @@ test("RED/GREEN: GET / with 401 from /__auth/check synthesizes a 302 to the hub 
       assert.equal(res.status, 302);
       assert.equal(
         res.headers.get("location"),
-        `https://trading.tobytran.dev/login?returnTo=${encodeURIComponent("https://mirofish-static.tobytran.dev/")}`,
+        `https://trading-hub.tobytran.dev/login?returnTo=${encodeURIComponent("https://mirofish-static.tobytran.dev/")}`,
       );
       assert.equal(calls.length, 1); // auth check only, bucket never touched on a 401
     },
@@ -254,7 +254,7 @@ test("401 returnTo encodes the exact original path and query (deep link, multipl
       const res = await worker.fetch(req, ENV);
       assert.equal(res.status, 302);
       const location = res.headers.get("location");
-      assert.equal(location, `https://trading.tobytran.dev/login?returnTo=${encodeURIComponent(originalUrl)}`);
+      assert.equal(location, `https://trading-hub.tobytran.dev/login?returnTo=${encodeURIComponent(originalUrl)}`);
       // Round-trip: decoding returnTo reproduces the exact original URL, byte for byte.
       const parsed = new URL(location);
       assert.equal(parsed.searchParams.get("returnTo"), originalUrl);
@@ -285,14 +285,14 @@ test("401 returnTo never produces an open redirect: Location host is always the 
       // derived from the request — so no attacker input can redirect
       // off-domain at this hop.
       assert.equal(parsed.protocol, "https:");
-      assert.equal(parsed.hostname, "trading.tobytran.dev");
+      assert.equal(parsed.hostname, "trading-hub.tobytran.dev");
       assert.equal(parsed.pathname, "/login");
       // The entire attacker-controlled original URL, including its embedded
       // "returnTo=" and "//evil.example", is carried as one opaque,
       // fully-percent-encoded query value — not spliced into the query
       // string unescaped, so it cannot inject a second query param or a
       // raw scheme-relative URL Location-parseable on its own.
-      assert.equal(location, `https://trading.tobytran.dev/login?returnTo=${encodeURIComponent(maliciousUrl)}`);
+      assert.equal(location, `https://trading-hub.tobytran.dev/login?returnTo=${encodeURIComponent(maliciousUrl)}`);
       assert.equal(parsed.searchParams.get("returnTo"), maliciousUrl);
       assert.equal([...parsed.searchParams.keys()].length, 1); // no smuggled second query param
       assert.equal(calls.length, 1);
@@ -351,7 +351,7 @@ test("HEAD / with 401 also synthesizes a 302, no GCS fetch, empty body", async (
       assert.equal(res.status, 302);
       assert.equal(
         res.headers.get("location"),
-        `https://trading.tobytran.dev/login?returnTo=${encodeURIComponent("https://mirofish-static.tobytran.dev/")}`,
+        `https://trading-hub.tobytran.dev/login?returnTo=${encodeURIComponent("https://mirofish-static.tobytran.dev/")}`,
       );
       assert.equal(await res.text(), "");
       assert.equal(calls.length, 1);

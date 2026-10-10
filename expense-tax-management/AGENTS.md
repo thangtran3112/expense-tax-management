@@ -37,7 +37,10 @@ Phase 0 baseline, Phase 1A CI, Phase 1B private production deployment/auth, Phas
   - Gmail OAuth client "Mailbox broker (expense-mailbox.tobytran.dev)" in `expense-tax-tobytran-2026`, with the Gmail API enabled;
   - 4 Clerk M2M machines, one per audience: `app-api-mailbox`, `mailbox-broker-app`, `workflow-worker-mailbox` (to the broker), `workflow-worker-mailbox-app` (to App API);
   - the family tenant's `connected_mailbox_scan` entitlement comes from an operator override in `app.tenant_feature_overrides` (the `trial` plan keeps it off);
-  - the owner's Gmail is connected (Personal), with a daily 02:00 scan schedule.
+  - the owner's Gmail is connected (Personal), with a daily 02:00 scan schedule;
+  - Gmail's per-user quota is 6,000 units per rolling minute (a full message fetch costs ~30-60), and it answers an exhausted quota with 403 `rateLimitExceeded`; the broker retries it with a 1 s doubling backoff (63 s in total);
+  - one discovery page can take minutes, so the worker's `/discover` timeout is 240 s, the activity's `startToCloseTimeout` 5 min, and the broker's socket timeout 300 s;
+  - re-run a scan on the VPS: `docker exec family-temporal temporal schedule trigger --address temporal:7233 --namespace expense-tax --schedule-id mailbox-schedule-<connectionId>`.
 - Receipt OCR (Capture/Office uploads and Gmail attachments) uses OpenAI through Foundry route versions: `ocr_mode_fast` and `ocr_mode_balanced` use `gpt-5.4-mini`, `ocr_mode_accurate` uses `gpt-5.4`.
   - The worker rotates `OPENAI_API_KEY`, `OPENAI_API_KEY_1`, `OPENAI_API_KEY_2` (Firestore `shared/llm`, linked into the expense profiles) with failover; only `workflow-worker` receives them.
   - A route whose provider kind is `fake` still returns placeholder data; there is no silent fallback from OpenAI to the fake.

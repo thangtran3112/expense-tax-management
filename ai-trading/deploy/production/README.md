@@ -4,9 +4,10 @@ Release 1 runs the Trading Hub and three unmodified upstream apps on one host be
 
 | Service | Reached at | Notes |
 |---|---|---|
-| `web` | `https://trading.tobytran.dev/` | Hub |
-| `ta-terminal` | `https://trading.tobytran.dev/u/tradingagents/` | TradingAgents in ttyd + tmux |
-| `ahf-terminal` | `https://trading.tobytran.dev/u/ai-hedge-fund/` | ai-hedge-fund in ttyd + tmux |
+| hub (Worker + GCS) | `https://trading-hub.tobytran.dev/` | Static hub from GCS; `/u/*` and `/__auth/*` through `trading-origin` to Caddy (01l) |
+| `web` | `https://trading.tobytran.dev/` | The same hub, interim host until Desk Phase 4 takes it |
+| `ta-terminal` | `https://tradingagents.tobytran.dev/` | TradingAgents in ttyd + tmux; also `/u/tradingagents/` on the hub |
+| `ahf-terminal` | `https://ai-hedge-fund.tobytran.dev/` | ai-hedge-fund in ttyd + tmux; also `/u/ai-hedge-fund/` on the hub |
 | `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Caddy-verified hub session, then upstream API key and hardening |
 | `cloudflared` | outbound only | Tunnel connector |
 
@@ -105,7 +106,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 ## Acceptance checklist (Mac and iPad)
 
 1. Clerk login on the hub grants a session cookie for both hostnames; without it both terminal routes and Vibe-Trading return 401 (including the direct origin hostname). Opening Vibe-Trading directly before signing in through the hub returns 401.
-2. The hub home page and navigation work.
+2. The hub home page and navigation work. `tradingagents.` and `ai-hedge-fund.tobytran.dev` send a signed-out browser to the hub login and open the terminal full-screen after sign-in.
 3. One TradingAgents analysis completes.
 4. After closing the tab mid-run, reopening the route reattaches to the running session.
 5. ai-hedge-fund opens its terminal UI and reaches a backtest screen (with a data key) or its missing-key prompt.
@@ -114,6 +115,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 
 ## Operations
 
+- Caddyfile changes: `deploy.sh` labels the `gateway` container with the Caddyfile's sha256, so a deploy that changes the Caddyfile recreates the gateway (a running container never sees the new file through its single-file bind mount). Open terminal connections drop once when that happens.
 - Logs: `sudo docker compose -p ai-trading --env-file /opt/family-app/ai-trading/images.env -f /opt/family-app/ai-trading/docker-compose.yml logs -f <service>`
 - Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow (`workflow_dispatch`, `deploy_app=true`); it re-renders the four core profiles from Firestore and redeploys `${{ github.sha }}` of the `main` branch tip. MiroFish keeps its current state (`MIROFISH_ACTIVATE=keep`: on only if it is running now and its profile still renders); add `activate_mirofish=true` to turn it on or `stop_mirofish=true` to turn it off (see "MiroFish activation" above). `deploy.sh` always requires a fresh `ENV_STAGING_DIR/cloudflared.env` and always re-renders the four core profiles on the host — there is no manual mode that reuses a stale staging directory — so a host-only, direct `deploy.sh` run needs a real `cloudflared.env` staged first; rerunning the workflow is simpler.
 - Disk: one release unpacks to ~17 GB (MiroFish's backend alone is ~12 GB) and shares no layers with the previous tag. Before touching Firestore, a container, or any secret, `deploy.sh` removes every commit-tagged image in the registry's `ai-trading-*` repos except the release being deployed and `last-good-tag` (an image a container still uses is never removed; other apps' and third-party images are never touched), then stops with a clear message unless `AI_TRADING_MIN_FREE_GB` (default 30) GiB is free on `AI_TRADING_DOCKER_DATA_DIR` (default `/var/lib/docker`). That stop leaves the running release untouched. Without it, a full disk fails the pull mid-deploy and also breaks the env-file rollback (2026-10-10).

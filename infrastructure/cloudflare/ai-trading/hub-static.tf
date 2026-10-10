@@ -28,7 +28,7 @@ resource "cloudflare_dns_record" "hub_static_staging" {
   content = "192.0.2.1" # TEST-NET-1 (RFC 5737): never dialed, the Worker route below intercepts every request first
   ttl     = 1
   proxied = true
-  comment = "ai-trading hub static staging (Worker-routed)"
+  comment = "ai-trading hub (Worker-routed)"
 }
 
 resource "cloudflare_dns_record" "hub_origin" {

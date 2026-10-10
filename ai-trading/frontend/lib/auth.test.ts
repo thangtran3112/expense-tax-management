@@ -509,3 +509,16 @@ test("safeReturnTo rejects an unparsable value", () => {
 test("safeReturnTo rejects a bare path (not an absolute URL on either allowed host)", () => {
   assert.equal(safeReturnTo("/apps/mirofish"), "/");
 });
+
+test("safeReturnTo allows the terminal hostnames' root over https (01l)", () => {
+  assert.equal(safeReturnTo("https://tradingagents.tobytran.dev/"), "https://tradingagents.tobytran.dev/");
+  assert.equal(safeReturnTo("https://ai-hedge-fund.tobytran.dev/"), "https://ai-hedge-fund.tobytran.dev/");
+});
+
+test("safeReturnTo rejects look-alike terminal hostnames (01l)", () => {
+  assert.equal(safeReturnTo("http://tradingagents.tobytran.dev/"), "/");
+  assert.equal(safeReturnTo("https://tradingagents.tobytran.dev.evil.com/"), "/");
+  assert.equal(safeReturnTo("https://tradingagents.tobytran.dev:443/"), "/");
+  assert.equal(safeReturnTo("https://user:pass@ai-hedge-fund.tobytran.dev/"), "/");
+  assert.equal(safeReturnTo("https://evil-ai-hedge-fund.tobytran.dev/"), "/");
+});

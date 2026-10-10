@@ -15,8 +15,9 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 - `trading-hub.tobytran.dev`: the Trading Hub. It carries the registry (`/apps/*`) and the TradingAgents and ai-hedge-fund terminals (`/u/*`).
 - `trading.tobytran.dev`: the Family Desk, our own solution (Release 2).
 - `vibe-trading.tobytran.dev` stays a separate hostname for now. Upstream Vibe-Trading cannot run under a path prefix unmodified: its SPA and API are root-relative (`/api`, `/auth`, `/settings`, ...; the API base is a hard-coded `""`), its router has no base path, and it sends `X-Frame-Options: DENY`, so it cannot be a hub route or be framed. Making it a route would need patched upstream code or a rewriting proxy, which is the owner's decision (see `plans/STATUS.md`), not a default.
-- MiroFish's public hostname is still open (`mirofish-static.tobytran.dev` is staging today). TradingAgents and ai-hedge-fund have no hostnames of their own; they are terminal routes on the hub.
-- The hub has not moved yet and still answers on `trading.tobytran.dev`. Do not hard-code that hostname for the hub in new code, and do not put anything else there. The move is this lane's work: bring up `trading-hub`, pass the existing staging checks on it, then switch `trading.tobytran.dev` to the Desk. It touches Cloudflare Terraform (DNS, Worker routes), the Clerk allowed origins and `aud` claim (`auth/src/clerk.js`), the `ai-trading/gateway` profile's `ALLOWED_ORIGINS`, ttyd origin checks, the MiroFish static Worker's login redirect, and the registry's Desk card. The public Worker cutover still needs the separate approval recorded in `plans/STATUS.md`.
+- MiroFish's public hostname is still open (`mirofish-static.tobytran.dev` is staging today).
+- `tradingagents.tobytran.dev` and `ai-hedge-fund.tobytran.dev`: the two terminals, full-screen, behind the same Caddy/Clerk gate (01l). They also stay `/u/*` routes on the hub.
+- The hub moved to `trading-hub.tobytran.dev` (Worker + GCS, 01l). `trading.tobytran.dev` still serves the hub from `web:3000` only until Desk Phase 4 takes it; do not link to it as the hub or put anything else there.
 
 ## Secrets and Environment Values
 
