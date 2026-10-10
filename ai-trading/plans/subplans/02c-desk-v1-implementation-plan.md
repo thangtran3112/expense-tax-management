@@ -55,8 +55,8 @@
 - **Public repository (02a §10):** no balances, positions, account numbers, emails, or VPS addresses in commits. Mockups and fixtures use made-up numbers.
 - **Upstream code:** never edit `ai-trading/packages/*` (upstream submodules).
 - **Git (AGENTS.md):**
-  - The main session works in the main checkout on `feature/toby`, merged up to `origin/dev` before new work. It never opens a worktree unless the owner explicitly says so.
-  - Only subagents work in `.worktrees/` worktrees, and the main session merges their branches into `feature/toby`.
+  - The main session works in the main checkout on `feature/toby`, merged up to `origin/dev` before new work. A worktree for the main session is opt-in: only with the owner's explicit instruction or approval.
+  - Subagents work in `.worktrees/` worktrees, and the main session merges their branches into `feature/toby`.
   - Single-line commit messages without trailers.
   - Pull requests to `dev`.
 

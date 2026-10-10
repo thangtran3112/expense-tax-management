@@ -6,8 +6,8 @@ Each package's rules live in its own `AGENTS.md` (see "Package rules"). This fil
 
 - Several coding sessions work in this repository at the same time.
 - **Main sessions work in the main checkout (`/Users/tobytran/personal/family-app`) on the local branch `feature/toby`.** Never switch it to another branch or leave it detached.
-- **A main session never creates or uses a git worktree, and never suggests one, unless the owner explicitly tells that session to** (owner rule, 2026-10-10).
-- Only subagents work in worktrees, under `.worktrees/`, each on its own `feature/*` branch. The main session merges the subagent's branch into `feature/toby`, then removes the worktree and deletes the branch.
+- **Worktrees for a main session are opt-in** (owner rule, 2026-10-10). By default a main session works in the main checkout and never opens a worktree on its own judgment. It uses one only with the owner's explicit instruction or approval, for example when the owner wants more parallelism.
+- Subagents work in worktrees, under `.worktrees/`, each on its own `feature/*` branch. The main session merges the subagent's branch into `feature/toby`, then removes the worktree and deletes the branch.
 - Before you commit, merge, stash, or reset in the main checkout, run `git status --short --branch`. Stage exact paths only; never stage, stash, or discard changes you did not make. If another session's changes are in the way, stop and tell the owner.
 - A reset of `feature/toby` discards every session's commits that are not on `dev` yet. Before any reset, check `git log origin/dev..feature/toby` for other sessions' commits; if there are any, ask the owner.
 

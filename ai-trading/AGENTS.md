@@ -68,8 +68,8 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
 - **Checkout (owner, 2026-10-10; root `AGENTS.md`):**
   - Main sessions work in the main checkout (`/Users/tobytran/personal/family-app`) on the local branch `feature/toby`, so the owner can review mockups and plans there.
-  - A main session never creates or uses a git worktree, and never suggests one, unless the owner explicitly tells that session to.
-  - Only subagents use worktrees: under `.worktrees/`, on their own `feature/*` branches (release branches from `origin/main` included). The main session merges their branch into `feature/toby`, then removes the worktree and deletes the branch.
+  - Worktrees for a main session are opt-in: by default it never opens one on its own judgment, and uses one only with the owner's explicit instruction or approval (for example, for more parallelism).
+  - Subagents use worktrees: under `.worktrees/`, on their own `feature/*` branches (release branches from `origin/main` included). The main session merges their branch into `feature/toby`, then removes the worktree and deletes the branch.
   - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
   - Update `feature/toby` with `git fetch origin` and `git merge origin/dev`. ai-trading sessions never reset, rebase, or force-push it.
   - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, leave `feature/toby` merged up to `origin/dev`.

@@ -26,7 +26,7 @@ Paths below are relative to `ai-trading/` unless they start with `../`.
 
 ## Next Steps, in Order
 
-0. **Work on `feature/toby` in the main checkout.** Never open a worktree for the main session unless the owner explicitly says so (root `../AGENTS.md`).
+0. **Work on `feature/toby` in the main checkout.** A worktree for the main session is opt-in: only with the owner's explicit instruction or approval (root `../AGENTS.md`).
    - Run `git -C .. status --short --branch`. It should show `## feature/toby`. If there are changes you did not make, stop and tell the owner.
    - Run `git -C .. fetch origin && git -C .. merge origin/dev`.
 1. **Ask the owner for Task 0.4** (`phase-0-spike.md`):
