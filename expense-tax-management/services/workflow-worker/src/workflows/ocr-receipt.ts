@@ -9,13 +9,17 @@ interface OcrActivities {
   /** @deprecated kept only so histories started before "ocr-receipt-bytes-in-activity" still replay. */
   ocr_download_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<Uint8Array>;
   ocr_verify_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<void>;
-  ocr_resolve_route(input: { modeKey: OcrJobInputV1["modeKey"] }): Promise<{ aiModelId: string }>;
+  ocr_resolve_route(input: { modeKey: OcrJobInputV1["modeKey"] }): Promise<{ aiModelId: string; providerKind: string; providerModelId: string }>;
   ocr_reserve(input: { jobReference: JobReferenceV1; tenantId: string; aiModelId: string }): Promise<{ blocked: boolean; reservationId: string | null }>;
   ocr_submit_failed(input: { jobReference: JobReferenceV1; expectedJobVersion: number; error: string; message: string }): Promise<number>;
   ocr_mark_call_started(input: { reservationId: string }): Promise<number>;
   /** @deprecated kept only so histories started before "ocr-receipt-bytes-in-activity" still replay. */
   ocr_run_extraction(input: { data: Uint8Array }): Promise<OcrExtractionResultV1>;
-  ocr_extract_receipt(input: { fileId: string; expectedSha256: string | null }): Promise<OcrExtractionResultV1>;
+  ocr_extract_receipt(input: {
+    fileId: string;
+    expectedSha256: string | null;
+    route: { providerKind: string; providerModelId: string };
+  }): Promise<OcrExtractionResultV1>;
   ocr_record_accepted(input: { reservationId: string }): Promise<void>;
   ocr_submit_extraction(input: { jobReference: JobReferenceV1; expectedJobVersion: number; extraction: OcrExtractionResultV1 }): Promise<number>;
   ocr_record_deduplication(input: { jobReference: JobReferenceV1; sourceFileId: string; expectedJobVersion: number; extraction: OcrExtractionResultV1 }): Promise<unknown>;
@@ -88,7 +92,7 @@ export async function runOcr(jobReference: JobReferenceV1): Promise<void> {
     }
   }
 
-  let route: { aiModelId: string };
+  let route: { aiModelId: string; providerKind: string; providerModelId: string };
   try {
     route = await http.ocr_resolve_route({ modeKey: input.modeKey });
   } catch (error) {
@@ -126,7 +130,11 @@ export async function runOcr(jobReference: JobReferenceV1): Promise<void> {
   try {
     await http.ocr_mark_call_started({ reservationId });
     extraction = bytesStayOutOfHistory
-      ? await quick.ocr_extract_receipt({ fileId: input.fileId, expectedSha256: input.expectedSha256 })
+      ? await quick.ocr_extract_receipt({
+          fileId: input.fileId,
+          expectedSha256: input.expectedSha256,
+          route: { providerKind: route.providerKind, providerModelId: route.providerModelId },
+        })
       : await quick.ocr_run_extraction({ data: data as Uint8Array });
     await http.ocr_record_accepted({ reservationId });
     resultVersion = await http.ocr_submit_extraction({ jobReference, expectedJobVersion: version, extraction });

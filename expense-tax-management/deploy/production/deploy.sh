@@ -21,7 +21,7 @@ IMAGE_TAG="${IMAGE_TAG:-${1:-}}"
 # Allowlist is deliberately narrower than a shell environment. Values are data
 # only; no line is ever evaluated as shell syntax.
 KNOWN_ENV_KEYS=(
-  OPENAI_API_KEY OPENROUTER_API_KEY AUTH_PROVIDER
+  OPENAI_API_KEY OPENAI_API_KEY_1 OPENAI_API_KEY_2 OPENROUTER_API_KEY AUTH_PROVIDER
   APP_TENANT_TOKEN_ISSUER APP_TENANT_TOKEN_AUDIENCE APP_TENANT_JWKS_URL
   APP_SERVICE_TOKEN_ISSUER APP_SERVICE_TOKEN_AUDIENCE APP_SERVICE_JWKS_URL
   APP_DATABASE_URL APP_MIGRATION_DATABASE_URL
@@ -149,7 +149,7 @@ validate_auth_values() {
 # match what App API and the workflow worker mint against.
 validate_required_values() {
   local key
-  for key in OPENAI_API_KEY OPENROUTER_API_KEY \
+  for key in OPENROUTER_API_KEY \
     APP_DATABASE_URL APP_MIGRATION_DATABASE_URL FOUNDRY_DATABASE_URL FOUNDRY_MIGRATION_DATABASE_URL \
     CLERK_APP_MACHINE_SECRET_KEY CLERK_FOUNDRY_MACHINE_SECRET_KEY CLERK_WEBHOOK_SIGNING_SECRET; do
     [[ -n "${!key:-}" ]] || die "$key is required"
@@ -157,6 +157,15 @@ validate_required_values() {
   for key in STORAGE_URL_SIGNING_KEY INBOUND_WEBHOOK_SIGNING_KEY INBOUND_ROUTING_TOKEN_SECRET; do
     [[ "${!key:-}" =~ ^[0-9a-f]{64}$ ]] || die "$key must be 64 lowercase hex characters"
   done
+  # Real receipt OCR via OpenAI, Task 4: workflow-worker is the only
+  # consumer; any one of the three keys is enough, never print a value.
+  # A whitespace-only value trims to nothing in the worker's own
+  # normalization (config.ts), so strip whitespace here too before
+  # testing for non-emptiness -- a deploy must never pass this gate on a
+  # key that starts the worker with zero usable keys.
+  local openai_key="${OPENAI_API_KEY:-}" openai_key_1="${OPENAI_API_KEY_1:-}" openai_key_2="${OPENAI_API_KEY_2:-}"
+  [[ -n "${openai_key//[[:space:]]/}${openai_key_1//[[:space:]]/}${openai_key_2//[[:space:]]/}" ]] || \
+    die "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required"
   [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]] || return 0
   for key in CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY \
     MAILBOX_VAULT_KEYS MAILBOX_VAULT_ACTIVE_KEY_ID MAILBOX_BROKER_PUBLIC_BASE_URL MAILBOX_ALLOWED_REDIRECT_ORIGINS \
@@ -331,6 +340,17 @@ rollback() {
 trap 'rollback "$?"' ERR
 
 compose pull
+# Real receipt OCR via OpenAI fix round 3: foundry migration 007 repoints
+# the OCR routes at OpenAI, but the OLD workflow-worker image (still
+# running here, before the image swap below) ignores routes and always
+# uses the fake extractor -- a receipt processed between the migration
+# and the swap would be saved with placeholder data. No worker may run
+# while migrations change the data it reads; any job created meanwhile
+# simply waits in the Temporal task queue until the new worker starts
+# below. A failure to stop it must not itself fail the deploy or trigger
+# rollback -- Compose state is still valid either way, and `compose up -d`
+# below starts (or restarts) workflow-worker regardless.
+compose stop workflow-worker || printf 'warning: could not stop workflow-worker before migrations\n' >&2
 compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
 if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then

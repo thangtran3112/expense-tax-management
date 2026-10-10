@@ -346,7 +346,9 @@ esac
       );
 
     expect(run(base).status).toBe(0);
-    expect(run({ ...base, OPENAI_API_KEY: "" }).stderr).toContain("OPENAI_API_KEY is required");
+    expect(run({ ...base, OPENAI_API_KEY: "" }).stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
     expect(run({ ...base, STORAGE_URL_SIGNING_KEY: "not-hex" }).stderr).toContain(
       "STORAGE_URL_SIGNING_KEY must be 64 lowercase hex characters",
     );
@@ -357,6 +359,98 @@ esac
     expect(run({ ...base, MAILBOX_FEATURE_ENABLED: "true" }).stderr).toContain(
       "is required when MAILBOX_FEATURE_ENABLED=true",
     );
+  });
+
+  it("passes the OpenAI API keys to workflow-worker only, and fails closed without at least one (never printing a value)", () => {
+    const deploy = readProductionFile("deploy.sh");
+    const allowlist = deploy.match(/KNOWN_ENV_KEYS=\(([^)]*)\)/s)?.[1] ?? "";
+    const compose = YAML.parse(readProductionFile("docker-compose.yml")) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const mailboxOverlayText = readProductionFile("docker-compose.mailbox.yml");
+    const openAiKeys = ["OPENAI_API_KEY", "OPENAI_API_KEY_1", "OPENAI_API_KEY_2"];
+
+    for (const key of openAiKeys) {
+      expect(allowlist).toContain(key);
+      expect(compose.services["workflow-worker"].environment?.[key]).toBe(`\${${key}:-}`);
+    }
+    for (const [serviceName, service] of Object.entries(compose.services)) {
+      if (serviceName === "workflow-worker") continue;
+      expect(
+        Object.keys(service.environment ?? {}).some((key) => key.startsWith("OPENAI_")),
+      ).toBe(false);
+    }
+    expect(mailboxOverlayText).not.toContain("OPENAI_");
+
+    const fn = (name: string): string => {
+      const match = deploy.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "mu"));
+      if (!match) throw new Error(`could not extract function: ${name}`);
+      return match[0];
+    };
+    const hex = "a".repeat(64);
+    const base: Record<string, string> = {
+      OPENROUTER_API_KEY: "or-test",
+      APP_DATABASE_URL: "postgresql://app-runtime@postgres:5432/app",
+      APP_MIGRATION_DATABASE_URL: "postgresql://app-migrator@postgres:5432/app",
+      FOUNDRY_DATABASE_URL: "postgresql://foundry-runtime@postgres:5432/foundry",
+      FOUNDRY_MIGRATION_DATABASE_URL: "postgresql://foundry-migrator@postgres:5432/foundry",
+      CLERK_APP_MACHINE_SECRET_KEY: "ak_app",
+      CLERK_FOUNDRY_MACHINE_SECRET_KEY: "ak_foundry",
+      CLERK_WEBHOOK_SIGNING_SECRET: "whsec_test",
+      STORAGE_URL_SIGNING_KEY: hex,
+      INBOUND_WEBHOOK_SIGNING_KEY: hex,
+      INBOUND_ROUTING_TOKEN_SECRET: hex,
+    };
+    const run = (env: Record<string, string>) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -Eeuo pipefail\n${fn("die")}\n${fn("validate_required_values")}\nvalidate_required_values`],
+        { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" },
+      );
+
+    // Fix round 2: `base` deliberately carries none of the three OpenAI
+    // keys, and `run`'s spawned env is exactly `{ PATH, ...env }` -- not
+    // merged with process.env -- so this exercises truly absent
+    // variables (unset, not set-to-empty-string), the case the all-empty
+    // assertion below doesn't cover.
+    const allUnset = run(base);
+    expect(allUnset.status).not.toBe(0);
+    expect(allUnset.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+    expect(allUnset.stderr).not.toContain("test-key");
+
+    const none = run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "", OPENAI_API_KEY_2: "" });
+    expect(none.status).not.toBe(0);
+    expect(none.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+    expect(none.stderr).not.toContain("test-key");
+
+    // Fix round 1: a value that is only whitespace must be treated as
+    // absent -- the worker trims it to nothing (config.ts), so a deploy
+    // that passes this gate on whitespace alone would start the worker
+    // with zero usable keys.
+    const whitespaceOnly = run({
+      ...base,
+      OPENAI_API_KEY: "   ",
+      OPENAI_API_KEY_1: "\t",
+      OPENAI_API_KEY_2: "  \t  ",
+    });
+    expect(whitespaceOnly.status).not.toBe(0);
+    expect(whitespaceOnly.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+
+    expect(
+      run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "test-key-1", OPENAI_API_KEY_2: "" }).status,
+    ).toBe(0);
+    expect(run({ ...base, OPENAI_API_KEY: "test-key-2" }).status).toBe(0);
+    // A real value with surrounding whitespace still counts -- only an
+    // all-whitespace value is rejected.
+    expect(
+      run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "", OPENAI_API_KEY_2: "  test-key-3  " }).status,
+    ).toBe(0);
   });
 
   it("deploys migrations before services and rolls back to recorded prior tag", () => {
@@ -862,6 +956,11 @@ rollback 1
         .sort(),
     );
     expect(recorded(stateDir, "rm-args")).toEqual([]);
+    // Real receipt OCR via OpenAI fix round 3: if a migration fails after
+    // the new pre-migration `compose stop workflow-worker` step, rollback
+    // must still bring workflow-worker back -- confirmed here against the
+    // real (unmodified) rollback() function.
+    expect(recorded(stateDir, "up-args")).toContain("workflow-worker");
     expect(stderr).toContain(`rollback verified at prior image tag`);
     expect(stderr).not.toContain("rollback failed");
   });
@@ -908,5 +1007,142 @@ rollback 1
   it("fails rollback when a mandatory service's previous-tag image is missing", () => {
     const { stderr } = runRollback({ workflowWorkerImageExists: true, pullShouldFailFor: "app-api" });
     expect(stderr).toContain("rollback failed after original deployment failure");
+  });
+});
+
+describe("Real receipt OCR via OpenAI fix round 3: workflow-worker is stopped before migrations", () => {
+  const deployScript = readProductionFile("deploy.sh");
+
+  function extractFunction(source: string, name: string): string {
+    const match = source.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?^\\}`, "mu"));
+    if (!match) throw new Error(`could not extract function: ${name}`);
+    return match[0];
+  }
+
+  function extractArray(source: string, name: string): string {
+    const match = source.match(new RegExp(`^${name}=\\([^)]*\\)`, "mu"));
+    if (!match) throw new Error(`could not extract array: ${name}`);
+    return match[0];
+  }
+
+  /**
+   * Extracts the real top-level deploy sequence (not a shell function) so
+   * the test runs the exact, current lines rather than a hand-copied
+   * duplicate that could drift from deploy.sh.
+   */
+  function extractMainFlow(source: string): string {
+    const startMarker = "\ncompose pull\n";
+    const start = source.indexOf(startMarker);
+    if (start === -1) throw new Error("could not find main deploy flow start");
+    const endMarker = 'compose up -d "${APPLICATION_SERVICES[@]}"';
+    const endIndex = source.indexOf(endMarker, start);
+    if (endIndex === -1) throw new Error("could not find main deploy flow end");
+    return source.slice(start + 1, endIndex + endMarker.length);
+  }
+
+  const composeFn = extractFunction(deployScript, "compose");
+  const applicationServices = extractArray(deployScript, "APPLICATION_SERVICES");
+  const mainFlow = extractMainFlow(deployScript);
+
+  it("places the stop immediately after compose pull and before both migrations", () => {
+    expect(mainFlow).toContain("compose stop workflow-worker");
+    const pullIndex = mainFlow.indexOf("compose pull");
+    const stopIndex = mainFlow.indexOf("compose stop workflow-worker");
+    const appMigrateIndex = mainFlow.indexOf("compose run --rm app-api-migrate");
+    const foundryMigrateIndex = mainFlow.indexOf("compose run --rm foundry-service-migrate");
+    expect(pullIndex).toBeLessThan(stopIndex);
+    expect(stopIndex).toBeLessThan(appMigrateIndex);
+    expect(appMigrateIndex).toBeLessThan(foundryMigrateIndex);
+  });
+
+  /** Fake docker: logs every full invocation to $FAKE_DOCKER_LOG, then dispatches pull/stop/run/up. */
+  function runMainFlow(options: {
+    readonly stopShouldFail?: boolean;
+    readonly migrateShouldFailFor?: string;
+  }): { readonly status: number; readonly stdout: string; readonly stderr: string; readonly log: string } {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "expense-tax-stop-before-migrate-"));
+    const bin = path.join(tempRoot, "bin");
+    mkdirSync(bin, { recursive: true });
+    const log = path.join(tempRoot, "calls.log");
+    writeFileSync(log, "");
+    const fakeDocker = path.join(bin, "docker");
+    writeFileSync(
+      fakeDocker,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "\${FAKE_DOCKER_LOG:?}"
+case "\$1" in
+  compose)
+    shift
+    while [[ "\$1" != "pull" && "\$1" != "stop" && "\$1" != "run" && "\$1" != "up" ]]; do shift; done
+    sub="\$1"; shift
+    case "\$sub" in
+      stop)
+        [[ "\${STOP_SHOULD_FAIL:-0}" == "1" ]] && exit 1
+        exit 0 ;;
+      run)
+        svc="\${*: -1}"
+        case ",\${MIGRATE_SHOULD_FAIL_FOR:-}," in
+          *",\$svc,"*) exit 1 ;;
+        esac
+        exit 0 ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  *) exit 0 ;;
+esac
+`,
+    );
+    chmodSync(fakeDocker, 0o700);
+
+    const script = `
+set -Eeuo pipefail
+PROJECT_NAME=expense-tax-production
+COMPOSE_FILE=/dev/null
+COMPOSE_ENV_FILE=/dev/null
+${applicationServices}
+${composeFn}
+ROLLBACK_RAN=0
+trap 'ROLLBACK_RAN=1' ERR
+${mainFlow}
+printf 'DEPLOY_OK\\n'
+printf 'ROLLBACK_RAN=%s\\n' "$ROLLBACK_RAN"
+`;
+    const env: Record<string, string> = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      FAKE_DOCKER_LOG: log,
+      STOP_SHOULD_FAIL: options.stopShouldFail ? "1" : "0",
+    };
+    if (options.migrateShouldFailFor) env.MIGRATE_SHOULD_FAIL_FOR = options.migrateShouldFailFor;
+
+    const result = spawnSync("bash", ["-c", script], { env, encoding: "utf8" });
+    return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "", log };
+  }
+
+  it("runs stop before both migrations and before starting services, on a successful deploy", () => {
+    const { status, stdout, log } = runMainFlow({});
+    expect(status).toBe(0);
+    expect(stdout).toContain("DEPLOY_OK");
+    expect(stdout).toContain("ROLLBACK_RAN=0");
+
+    const lines = readFileSync(log, "utf8").split("\n").filter(Boolean);
+    const stopIndex = lines.findIndex((line) => line.includes("stop workflow-worker"));
+    const appMigrateIndex = lines.findIndex((line) => line.includes("run --rm app-api-migrate"));
+    const foundryMigrateIndex = lines.findIndex((line) => line.includes("run --rm foundry-service-migrate"));
+    const upIndex = lines.findIndex((line) => line.includes("up -d"));
+
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(stopIndex).toBeLessThan(appMigrateIndex);
+    expect(appMigrateIndex).toBeLessThan(foundryMigrateIndex);
+    expect(foundryMigrateIndex).toBeLessThan(upIndex);
+  });
+
+  it("does not fail the deploy or trigger rollback when stopping workflow-worker fails", () => {
+    const { status, stdout, stderr } = runMainFlow({ stopShouldFail: true });
+    expect(status).toBe(0);
+    expect(stdout).toContain("DEPLOY_OK");
+    expect(stdout).toContain("ROLLBACK_RAN=0");
+    expect(stderr).toContain("warning: could not stop workflow-worker before migrations");
   });
 });

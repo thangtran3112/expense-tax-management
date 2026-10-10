@@ -142,6 +142,14 @@ services:
       CLERK_FOUNDRY_MACHINE_SECRET_KEY: ${CLERK_FOUNDRY_MACHINE_SECRET_KEY:?CLERK_FOUNDRY_MACHINE_SECRET_KEY is required}
       CLERK_APP_SERVICE_SUBJECT: ${CLERK_APP_SERVICE_SUBJECT:?CLERK_APP_SERVICE_SUBJECT is required}
       CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:?CLERK_FOUNDRY_SERVICE_SUBJECT is required}
+      # Real receipt OCR via OpenAI, Task 4: workflow-worker is the only
+      # consumer of these keys. At least one must be non-empty in
+      # production (validate_required_values enforces this); any unset
+      # key defaults to empty so a fixture env file predating this task
+      # still deploys.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_1: ${OPENAI_API_KEY_1:-}
+      OPENAI_API_KEY_2: ${OPENAI_API_KEY_2:-}
     depends_on:
       app-api:
         condition: service_healthy

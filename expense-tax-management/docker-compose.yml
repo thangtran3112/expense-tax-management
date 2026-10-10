@@ -186,6 +186,11 @@ services:
       CLERK_FOUNDRY_MACHINE_SECRET_KEY: ${CLERK_FOUNDRY_MACHINE_SECRET_KEY:-not-yet-issued}
       CLERK_APP_SERVICE_SUBJECT: ${CLERK_APP_SERVICE_SUBJECT:-mch_3J9Xg9Hu84Rn2oeqj7EMrv0ax19}
       CLERK_FOUNDRY_SERVICE_SUBJECT: ${CLERK_FOUNDRY_SERVICE_SUBJECT:-mch_3J9gHBtDcxOE3fWE39Ay9uF7hFv}
+      # Real receipt OCR via OpenAI, Task 4: workflow-worker is the only
+      # consumer of these keys.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_1: ${OPENAI_API_KEY_1:-}
+      OPENAI_API_KEY_2: ${OPENAI_API_KEY_2:-}
     depends_on:
       temporal:
         condition: service_healthy

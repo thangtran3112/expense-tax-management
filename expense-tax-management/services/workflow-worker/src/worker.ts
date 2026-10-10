@@ -13,6 +13,8 @@ import { createFoundryClient } from "./clients/foundry.js";
 import { createMailboxAppApiClient } from "./clients/mailbox-client.js";
 import { WorkerConfigError, workerConfigFromEnv, type WorkerConfig } from "./config.js";
 import { extractFakeReceipt } from "./providers/fake-ocr.js";
+import { createOpenAiReceiptExtractor } from "./providers/openai-ocr.js";
+import { createReceiptExtractor } from "./providers/receipt-extractor.js";
 
 export interface WorkerFactories {
   readonly connect: typeof NativeConnection.connect;
@@ -34,19 +36,21 @@ export async function runWorker(
 
   try {
     const appApi = createAppApiClient(config);
-    const activities = createActivities({
-      appApi,
-      foundry: createFoundryClient(config),
-      extractReceipt: extractFakeReceipt,
+    const foundry = createFoundryClient(config);
+    // Task 3 (real receipt OCR via OpenAI): one dispatching extractor,
+    // shared by both activity factories -- it picks the fake provider for
+    // route.providerKind "fake" (no OpenAI keys configured) and the real
+    // OpenAI provider otherwise.
+    const extractReceipt = createReceiptExtractor({
+      openai: createOpenAiReceiptExtractor({ apiKeys: config.openAiApiKeys }),
+      fake: extractFakeReceipt,
     });
+    const activities = createActivities({ appApi, foundry, extractReceipt });
     // Phase 3D-C Task 5: mailbox_ocr_receipt needs only the generic App
     // API identity (jobs:write/files:read) -- never mailbox credentials --
     // so it registers unconditionally, same as the generic `activities`
     // above.
-    const mailboxOcrActivities = createMailboxOcrActivities({
-      appApi,
-      extractReceipt: extractFakeReceipt,
-    });
+    const mailboxOcrActivities = createMailboxOcrActivities({ appApi, foundry, extractReceipt });
     // Phase 3D-B Task 3: mirrors 3D-A Task 5's own "mailbox config is
     // optional, construct only when present" convention -- an ordinary
     // dev->main deploy carries no mailbox env at all.
