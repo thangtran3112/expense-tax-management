@@ -1512,6 +1512,50 @@ for variant38 in multi-line empty junk; do
 done
 echo "    ok"
 
+# MIROFISH_ACTIVATE=keep (push deploys): stay enabled only while a mirofish
+# container is running and the profile still renders valid. FAKE_RUNNING_ID
+# is what the fake `docker compose ... ps` prints (empty: nothing running).
+run_keep_scenario() {
+  local base="$1"
+  # shellcheck disable=SC2329
+  docker() {
+    echo "fake docker $*" >>"$base/docker.log"
+    [[ " $* " == *" ps "* ]] && printf '%s' "${FAKE_RUNNING_ID:-}"
+    return 0
+  }
+  MIROFISH_ACTIVATE=keep run_scenario_mirofish "$base"
+}
+
+echo "=== Case 39 (GREEN): MIROFISH_ACTIVATE=keep with a running mirofish container keeps MiroFish enabled ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s39="$(new_scratch case39)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s39/ci-staging/cloudflared.env"
+status="$(FAKE_RUNNING_ID=abc123 run_keep_scenario "$s39")"
+[[ "$status" == 0 ]] || fail "case39: expected exit 0, got $status"
+[[ "$(cat "$s39/compose-profiles.out" 2>/dev/null)" == mirofish ]] || fail "case39: keep + running must leave COMPOSE_PROFILES=mirofish"
+grep -q '^ZEP_API_KEY=' "$s39/runtime/mirofish.env" 2>/dev/null || fail "case39: keep + running must render mirofish.env"
+grep -q 'ps -q --status running mirofish$' "$s39/docker.log" 2>/dev/null || fail "case39: expected a running-container check: $(cat "$s39/docker.log" 2>/dev/null)"
+echo "    exit=$status"
+
+echo "=== Case 40 (GREEN): MIROFISH_ACTIVATE=keep with no running mirofish container leaves MiroFish disabled ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s40="$(new_scratch case40)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s40/ci-staging/cloudflared.env"
+status="$(FAKE_RUNNING_ID='' run_keep_scenario "$s40")"
+[[ "$status" == 0 ]] || fail "case40: expected exit 0, got $status"
+[[ "$(cat "$s40/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case40: keep + not running must leave COMPOSE_PROFILES unset"
+[[ -e "$s40/runtime/mirofish.env" ]] && fail "case40: keep + not running must not render mirofish.env"
+echo "    exit=$status"
+
+echo "=== Case 41 (GREEN overall): MIROFISH_ACTIVATE=keep with a running container but a missing profile leaves MiroFish disabled ==="
+CASE_COUNT=$((CASE_COUNT + 1))
+s41="$(new_scratch case41)"
+printf 'TUNNEL_TOKEN=fake-tunnel-token\n' >"$s41/ci-staging/cloudflared.env"
+status="$(FAKE_RUNNING_ID=abc123 FAKE_FC_MISSING_PROFILE=ai-trading/mirofish run_keep_scenario "$s41")"
+[[ "$status" == 0 ]] || fail "case41: expected exit 0, got $status"
+[[ "$(cat "$s41/compose-profiles.out" 2>/dev/null)" == unset ]] || fail "case41: keep with a missing profile must leave COMPOSE_PROFILES unset"
+echo "    exit=$status"
+
 echo
 cleanup
 if [[ "$FAIL_COUNT" -eq 0 ]]; then
