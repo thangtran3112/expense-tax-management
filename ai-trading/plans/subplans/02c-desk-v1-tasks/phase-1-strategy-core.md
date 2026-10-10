@@ -1158,6 +1158,11 @@ def test_intraday_rvol_compares_the_same_clock_time():
 def test_daily_rvol():
     daily = pd.DataFrame({"volume": [100.0, 100.0, 300.0]})
     np.testing.assert_allclose(indicators.rvol_daily(daily, 2), [np.nan, np.nan, 3.0])
+
+
+def test_wilder_seeds_after_length_valid_values():
+    # an interior NaN must not count toward the seed window: the 3rd valid value is 5, not 3
+    np.testing.assert_allclose(indicators._wilder(series(1, np.nan, 3, 5), 3), [np.nan, np.nan, np.nan, 3.0])
 ```
 
 - [ ] **Step 2: Run it and watch it fail.**
@@ -1187,14 +1192,13 @@ def ema(values: pd.Series, length: int) -> pd.Series:
 def _wilder(values: pd.Series, length: int) -> pd.Series:
     """Wilder's smoothing, seeded by the mean of the first `length` valid values:
     avg_t = (avg_{t-1} * (length - 1) + x_t) / length for every later value."""
-    valid = values.notna().to_numpy()
-    if valid.sum() < length:
+    valid = np.flatnonzero(values.notna().to_numpy())
+    if len(valid) < length:
         return pd.Series(np.nan, index=values.index)
-    start = valid.argmax()
-    seed_at = start + length - 1
+    seed_at = valid[length - 1]
     seeded = values.copy()
     seeded.iloc[:seed_at] = np.nan
-    seeded.iloc[seed_at] = values.iloc[start : seed_at + 1].mean()
+    seeded.iloc[seed_at] = values.iloc[valid[:length]].mean()
     return seeded.ewm(alpha=1 / length, adjust=False).mean()
 
 
@@ -1263,7 +1267,7 @@ def rvol_daily(daily: pd.DataFrame, lookback_days: int) -> pd.Series:
 - [ ] **Step 4: Run the tests.**
 
 Run: `cd ai-trading/backend && uv run pytest -q tests/test_indicators.py && uv run ruff check . && uv run ruff format --check .`
-Expected: `6 passed`; ruff clean.
+Expected: `7 passed`; ruff clean.
 
 - [ ] **Step 5: Commit.**
 
@@ -2281,7 +2285,7 @@ Expected: `test_every_template_has_a_golden_case` fails (no templates yet), and 
 - [ ] **Step 4: Run every suite.**
 
 Run: `cd ai-trading/backend && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
-Expected: `102 passed` in about 15 seconds; ruff clean.
+Expected: `103 passed` in about 15 seconds; ruff clean.
 
 Run: `cd ai-trading/contracts && pnpm test`
 Expected: `# pass 38`, `# fail 0` (the ten templates are now validated too).
@@ -2353,7 +2357,7 @@ Expected: no output.
 
 Run: `cd ai-trading/contracts && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`
 Run: `cd ai-trading/backend && uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q`
-Expected: `# pass 38`, `102 passed`, everything else clean.
+Expected: `# pass 38`, `103 passed`, everything else clean.
 
 - [ ] **Step 5: Commit.**
 

@@ -65,3 +65,8 @@ def test_intraday_rvol_compares_the_same_clock_time():
 def test_daily_rvol():
     daily = pd.DataFrame({"volume": [100.0, 100.0, 300.0]})
     np.testing.assert_allclose(indicators.rvol_daily(daily, 2), [np.nan, np.nan, 3.0])
+
+
+def test_wilder_seeds_after_length_valid_values():
+    # an interior NaN must not count toward the seed window: the 3rd valid value is 5, not 3
+    np.testing.assert_allclose(indicators._wilder(series(1, np.nan, 3, 5), 3), [np.nan, np.nan, np.nan, 3.0])
