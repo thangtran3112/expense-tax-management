@@ -55,7 +55,7 @@
 - **Public repository (02a §10):** no balances, positions, account numbers, emails, or VPS addresses in commits. Mockups and fixtures use made-up numbers.
 - **Upstream code:** never edit `ai-trading/packages/*` (upstream submodules).
 - **Git (AGENTS.md):**
-  - The main session works in the main checkout on `feature/ai-trading-desk-v1`.
+  - The main session works in the main checkout on its own `feature/ai-trading-*` branch, created from `origin/dev`.
   - Subagents work in `.worktrees/` worktrees, and the main session merges their branches.
   - Single-line commit messages without trailers.
   - Pull requests to `dev`.

@@ -22,10 +22,13 @@ Paths below are relative to `ai-trading/` unless they start with `../`.
 | Plan | `02c` master plan with phases 0–7, Global Constraints, Review Focus, Shared Interfaces, and phase outlines. Only Phase 0 has a detailed task file. Each later phase gets its own task file, written with the writing-plans skill and reviewed by the owner before it starts. |
 | Phase 0 spike | Tasks 0.1–0.3 are done: desk-side checks, docs research, and the probe tools in `tools/ibkr-probe/` (9 tests, ruff clean). Task 0.4 (owner IBKR setup) is open, and Tasks 0.5–0.6 wait on it. |
 | Research notes | Local and gitignored, under `temp/research/`: vendors, brokers, IBKR docs, upstream tools, upstream strategy models |
-| Git | The main checkout (`/Users/tobytran/personal/family-app`) is on `feature/ai-trading-desk-v1`, owned by the ai-trading main session (owner direction, 2026-10-10). No worktree of this session is left open. |
+| Git | Everything this session produced is merged to `dev` (PR #74). No branch, worktree, or uncommitted work is handed over; this file and the merged files are the whole handoff. The main checkout belongs to the ai-trading main session (owner direction, 2026-10-10). |
 
 ## Next Steps, in Order
 
+0. **Start a fresh branch from `dev`.**
+   - Run `git -C .. status --short --branch`. If the main checkout has changes you did not make, stop and tell the owner (root `../AGENTS.md`).
+   - Run `git -C .. fetch origin && git -C .. switch -c feature/ai-trading-desk-p0 origin/dev`. Pick any `feature/ai-trading-*` name.
 1. **Ask the owner for Task 0.4** (`phase-0-spike.md`):
    - create the data username and its subscriptions (about $16 per month: $10 + $4.50 + $1.50);
    - check whether that username has its own paper account, and switch on data sharing;

@@ -56,7 +56,7 @@
   - The main ai-trading coding session works in the main checkout (`/Users/tobytran/personal/family-app`) on its own `feature/ai-trading-*` branch, so the owner can review its mockups and plans there.
   - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
   - Session handoffs live in `plans/handoffs/`; read the newest one first.
-  - Its subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
+  - The main session's subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
   - Parallel sessions also use worktrees.
   - The owner resolves conflicts by assigning sessions to worktrees.
   - Open pull requests to `dev`.
