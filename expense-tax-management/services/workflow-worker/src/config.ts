@@ -76,6 +76,14 @@ export interface WorkerConfig {
      */
     readonly mailboxBroker?: MachineCredentialConfig;
   };
+  /**
+   * Task 3 (real receipt OCR via OpenAI): zero to three OpenAI API keys,
+   * trimmed, in CLERK_... env order, empty/whitespace-only entries
+   * dropped. Never required -- an empty array just means the OpenAI
+   * route is unavailable (createOpenAiReceiptExtractor throws
+   * OpenAiNotConfigured) and the "fake" provider kind keeps working.
+   */
+  readonly openAiApiKeys: readonly string[];
 }
 
 const RequiredStringSchema = z.string().trim().min(1);
@@ -215,6 +223,11 @@ const WorkerEnvironmentSchema = z.object({
   CLERK_MAILBOX_WORKER_APP_SUBJECT: machineIdSchema(
     "CLERK_MAILBOX_WORKER_APP_SUBJECT",
   ).optional(),
+  // Task 3 (real receipt OCR via OpenAI): optional on purpose -- never
+  // required for config parsing to succeed, trimmed/filtered below.
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_API_KEY_1: z.string().optional(),
+  OPENAI_API_KEY_2: z.string().optional(),
 });
 
 /**
@@ -303,6 +316,10 @@ export function workerConfigFromEnv(
         },
       };
 
+  const openAiApiKeys = [parsed.OPENAI_API_KEY, parsed.OPENAI_API_KEY_1, parsed.OPENAI_API_KEY_2]
+    .map((key) => key?.trim() ?? "")
+    .filter((key) => key.length > 0);
+
   return {
     temporal: {
       address: parsed.TEMPORAL_HOST,
@@ -311,5 +328,6 @@ export function workerConfigFromEnv(
     },
     services,
     clerk,
+    openAiApiKeys,
   };
 }

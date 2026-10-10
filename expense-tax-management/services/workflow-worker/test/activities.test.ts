@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { ApplicationFailure } from "@temporalio/activity";
 import { expect, it, vi } from "vitest";
 
 import { AppApiClientError, type AppApiClient } from "../src/clients/app-api.js";
@@ -7,6 +8,7 @@ import { FoundryClientError, type FoundryClient } from "../src/clients/foundry.j
 import { createActivities } from "../src/activities/index.js";
 
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
+const ROUTE = { providerKind: "fake", providerModelId: "fake-ocr-v1" } as const;
 const jobReference = {
   schemaVersion: 1,
   jobId: JOB_ID,
@@ -93,27 +95,107 @@ it("maps a quota conflict to blocked instead of retrying a reservation", async (
   expect(reserve).toHaveBeenCalledOnce();
 });
 
-it("redacts provider extraction failures without losing retryability", async () => {
+it("ocr_extract_receipt passes the downloaded bytes and route to the injected extractor and returns its schema-validated result", async () => {
+  const data = new Uint8Array([1, 2, 3]);
+  const downloadFile = vi.fn().mockResolvedValue(data);
+  const extraction = {
+    schemaVersion: 1 as const, merchant: "Acme", amount: "9.99",
+    currency: "USD", incurredOn: "2026-09-09", confidence: 0.8,
+  };
+  const extractReceipt = vi.fn().mockResolvedValue(extraction);
   const activities = createActivities({
-    appApi: {} as AppApiClient,
+    appApi: { downloadFile } as unknown as AppApiClient,
     foundry: {} as FoundryClient,
-    extractReceipt: () => { throw new Error("raw-provider-secret"); },
+    extractReceipt,
   });
-  const failure = await activities.ocr_run_extraction({ data: new Uint8Array([1]) }).catch((error: unknown) => error);
-  expect(failure).toMatchObject({ type: "OcrExtractionTransient", nonRetryable: false });
-  expect(String(failure)).not.toContain("raw-provider-secret");
-  expect(failure.cause).toBeUndefined();
+
+  await expect(
+    activities.ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: ROUTE }),
+  ).resolves.toEqual(extraction);
+  expect(extractReceipt).toHaveBeenCalledWith(data, ROUTE);
 });
 
-it("rejects malformed provider extraction permanently without leaking its fields", async () => {
+it("rethrows an ApplicationFailure from the extractor unchanged, not rewrapped", async () => {
+  const downloadFile = vi.fn().mockResolvedValue(new Uint8Array([1]));
+  const extractReceipt = vi.fn().mockRejectedValue(
+    ApplicationFailure.nonRetryable("unsupported format", "OcrUnsupportedFormat"),
+  );
+  const activities = createActivities({
+    appApi: { downloadFile } as unknown as AppApiClient,
+    foundry: {} as FoundryClient,
+    extractReceipt,
+  });
+
+  const failure = await activities
+    .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: ROUTE })
+    .catch((error: unknown) => error);
+  expect(failure).toMatchObject({ type: "OcrUnsupportedFormat", nonRetryable: true });
+});
+
+it("redacts an unclassified extractor error as retryable OcrExtractionTransient", async () => {
+  const downloadFile = vi.fn().mockResolvedValue(new Uint8Array([1]));
+  const extractReceipt = vi.fn().mockRejectedValue(new Error("raw-provider-secret"));
+  const activities = createActivities({
+    appApi: { downloadFile } as unknown as AppApiClient,
+    foundry: {} as FoundryClient,
+    extractReceipt,
+  });
+
+  const failure = await activities
+    .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: ROUTE })
+    .catch((error: unknown) => error);
+  expect(failure).toMatchObject({ type: "OcrExtractionTransient", nonRetryable: false });
+  expect(String(failure)).not.toContain("raw-provider-secret");
+  expect((failure as ApplicationFailure).cause).toBeUndefined();
+});
+
+it("fails non-retryably with OcrRouteMissing when route is undefined, without downloading or extracting", async () => {
+  const downloadFile = vi.fn();
+  const extractReceipt = vi.fn();
+  const activities = createActivities({
+    appApi: { downloadFile } as unknown as AppApiClient,
+    foundry: {} as FoundryClient,
+    extractReceipt,
+  });
+
+  const failure = await activities
+    .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null })
+    .catch((error: unknown) => error);
+  expect(failure).toMatchObject({ type: "OcrRouteMissing", nonRetryable: true });
+  expect(downloadFile).not.toHaveBeenCalled();
+  expect(extractReceipt).not.toHaveBeenCalled();
+});
+
+it("rejects a malformed extractor result permanently without leaking its fields", async () => {
+  const downloadFile = vi.fn().mockResolvedValue(new Uint8Array([1]));
+  const extractReceipt = vi.fn().mockResolvedValue(
+    { schemaVersion: 1, merchant: "raw-provider-secret", amount: "invalid" } as never,
+  );
+  const activities = createActivities({
+    appApi: { downloadFile } as unknown as AppApiClient,
+    foundry: {} as FoundryClient,
+    extractReceipt,
+  });
+
+  const failure = await activities
+    .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: ROUTE })
+    .catch((error: unknown) => error);
+  expect(failure).toMatchObject({ type: "OcrExtractionMalformed", nonRetryable: true });
+  expect(String(failure)).not.toContain("raw-provider-secret");
+});
+
+it("legacy ocr_run_extraction still returns the fake result directly, ignoring the injected extractor", async () => {
+  const extractReceipt = vi.fn();
   const activities = createActivities({
     appApi: {} as AppApiClient,
     foundry: {} as FoundryClient,
-    extractReceipt: () => ({ schemaVersion: 1, merchant: "raw-provider-secret", amount: "invalid" }) as never,
+    extractReceipt,
   });
-  const failure = await activities.ocr_run_extraction({ data: new Uint8Array([1]) }).catch((error: unknown) => error);
-  expect(failure).toMatchObject({ type: "OcrExtractionMalformed", nonRetryable: true });
-  expect(String(failure)).not.toContain("raw-provider-secret");
+
+  await expect(activities.ocr_run_extraction({ data: new Uint8Array([1, 2, 3]) })).resolves.toMatchObject({
+    merchant: "Fake OCR Merchant",
+  });
+  expect(extractReceipt).not.toHaveBeenCalled();
 });
 
 it("keeps enrichment input and result inside one activity with a fixed result key", async () => {

@@ -13,6 +13,7 @@ import { ApplicationFailure } from "@temporalio/activity";
 import { describe, expect, it, vi } from "vitest";
 
 import { AppApiClientError, type AppApiClient } from "../src/clients/app-api.js";
+import type { FoundryClient } from "../src/clients/foundry.js";
 import { MailboxClientError, type MailboxAppApiClient } from "../src/clients/mailbox-client.js";
 import {
   createMailboxMaterializeActivities,
@@ -27,6 +28,8 @@ const jobReference = {
   workflowId: `mailbox-ocr-${JOB_ID}`,
 } as const;
 
+const ROUTE = { aiModelId: JOB_ID, providerKind: "openai", providerModelId: "gpt-5.4-mini" } as const;
+
 const EXTRACTION = {
   schemaVersion: 1 as const,
   merchant: "Acme Hardware",
@@ -37,7 +40,7 @@ const EXTRACTION = {
 };
 
 describe("mailbox_ocr_receipt", () => {
-  it("downloads, verifies hash, extracts, and submits in one call, returning only the new version", async () => {
+  it("resolves the balanced route once, downloads, verifies hash, extracts with the route, and submits in one call, returning only the new version", async () => {
     const data = Buffer.from("fake receipt bytes");
     const getOcrInput = vi.fn().mockResolvedValue({
       fileId: "file-1",
@@ -47,16 +50,20 @@ describe("mailbox_ocr_receipt", () => {
     const downloadFile = vi.fn().mockResolvedValue(data);
     const submitResult = vi.fn().mockResolvedValue({ version: 5 });
     const extractReceipt = vi.fn().mockResolvedValue(EXTRACTION);
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
 
     const activities = createMailboxOcrActivities({
       appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
       extractReceipt,
     });
 
     const result = await activities.mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 });
 
     expect(result).toBe(5);
-    expect(extractReceipt).toHaveBeenCalledWith(data);
+    expect(getEffectiveRoute).toHaveBeenCalledOnce();
+    expect(getEffectiveRoute).toHaveBeenCalledWith({ operation: "RECEIPT_OCR", modeKey: "ocr_mode_balanced" });
+    expect(extractReceipt).toHaveBeenCalledWith(data, ROUTE);
     expect(submitResult).toHaveBeenCalledWith(JOB_ID, {
       schemaVersion: 1,
       status: "SUCCEEDED",
@@ -67,7 +74,7 @@ describe("mailbox_ocr_receipt", () => {
     });
   });
 
-  it("throws a non-retryable ApplicationFailure on a hash mismatch, without calling extractReceipt or submitResult", async () => {
+  it("throws a non-retryable ApplicationFailure on a hash mismatch, without resolving a route or calling extractReceipt or submitResult", async () => {
     const getOcrInput = vi.fn().mockResolvedValue({
       fileId: "file-1",
       expectedSha256: "0".repeat(64),
@@ -76,16 +83,123 @@ describe("mailbox_ocr_receipt", () => {
     const downloadFile = vi.fn().mockResolvedValue(Buffer.from("wrong bytes"));
     const submitResult = vi.fn();
     const extractReceipt = vi.fn();
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
 
     const activities = createMailboxOcrActivities({
       appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
       extractReceipt,
     });
 
     await expect(
       activities.mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 }),
     ).rejects.toMatchObject({ nonRetryable: true, type: "MailboxOcrHashMismatch" });
+    expect(getEffectiveRoute).not.toHaveBeenCalled();
     expect(extractReceipt).not.toHaveBeenCalled();
+    expect(submitResult).not.toHaveBeenCalled();
+  });
+
+  it("maps a failing getEffectiveRoute to a retryable MailboxOcrRouteUnavailable, without calling extractReceipt or submitResult", async () => {
+    const data = Buffer.from("fake receipt bytes");
+    const getOcrInput = vi.fn().mockResolvedValue({
+      fileId: "file-1",
+      expectedSha256: createHash("sha256").update(data).digest("hex"),
+      modeKey: "ocr_mode_fast",
+    });
+    const downloadFile = vi.fn().mockResolvedValue(data);
+    const submitResult = vi.fn();
+    const extractReceipt = vi.fn();
+    const getEffectiveRoute = vi.fn().mockRejectedValue(new Error("route lookup failed"));
+
+    const activities = createMailboxOcrActivities({
+      appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
+      extractReceipt,
+    });
+
+    const error = await activities
+      .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ type: "MailboxOcrRouteUnavailable", nonRetryable: false });
+    expect(extractReceipt).not.toHaveBeenCalled();
+    expect(submitResult).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an extractor ApplicationFailure (e.g. OcrUnsupportedFormat) unchanged, non-retryable", async () => {
+    const data = Buffer.from("fake receipt bytes");
+    const getOcrInput = vi.fn().mockResolvedValue({
+      fileId: "file-1",
+      expectedSha256: createHash("sha256").update(data).digest("hex"),
+      modeKey: "ocr_mode_fast",
+    });
+    const downloadFile = vi.fn().mockResolvedValue(data);
+    const submitResult = vi.fn();
+    const extractReceipt = vi.fn().mockRejectedValue(
+      ApplicationFailure.nonRetryable("unsupported receipt format", "OcrUnsupportedFormat"),
+    );
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
+
+    const activities = createMailboxOcrActivities({
+      appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
+      extractReceipt,
+    });
+
+    const error = await activities
+      .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ type: "OcrUnsupportedFormat", nonRetryable: true });
+    expect(submitResult).not.toHaveBeenCalled();
+  });
+
+  it("keeps a retryable extractor ApplicationFailure retryable", async () => {
+    const data = Buffer.from("fake receipt bytes");
+    const getOcrInput = vi.fn().mockResolvedValue({
+      fileId: "file-1",
+      expectedSha256: createHash("sha256").update(data).digest("hex"),
+      modeKey: "ocr_mode_fast",
+    });
+    const downloadFile = vi.fn().mockResolvedValue(data);
+    const submitResult = vi.fn();
+    const extractReceipt = vi.fn().mockRejectedValue(
+      ApplicationFailure.retryable("OpenAI request failed", "OpenAiTransient"),
+    );
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
+
+    const activities = createMailboxOcrActivities({
+      appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
+      extractReceipt,
+    });
+
+    const error = await activities
+      .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ type: "OpenAiTransient", nonRetryable: false });
+    expect(submitResult).not.toHaveBeenCalled();
+  });
+
+  it("throws a non-retryable MailboxOcrExtractionFailed when the extractor throws an unclassified error (today's behavior)", async () => {
+    const data = Buffer.from("fake receipt bytes");
+    const getOcrInput = vi.fn().mockResolvedValue({
+      fileId: "file-1",
+      expectedSha256: createHash("sha256").update(data).digest("hex"),
+      modeKey: "ocr_mode_fast",
+    });
+    const downloadFile = vi.fn().mockResolvedValue(data);
+    const submitResult = vi.fn();
+    const extractReceipt = vi.fn().mockRejectedValue(new Error("unclassified"));
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
+
+    const activities = createMailboxOcrActivities({
+      appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
+      extractReceipt,
+    });
+
+    await expect(
+      activities.mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 }),
+    ).rejects.toMatchObject({ nonRetryable: true, type: "MailboxOcrExtractionFailed" });
     expect(submitResult).not.toHaveBeenCalled();
   });
 
@@ -99,9 +213,11 @@ describe("mailbox_ocr_receipt", () => {
     const downloadFile = vi.fn().mockResolvedValue(data);
     const submitResult = vi.fn();
     const extractReceipt = vi.fn().mockResolvedValue({ not: "a valid extraction" });
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
 
     const activities = createMailboxOcrActivities({
       appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
       extractReceipt,
     });
 
@@ -121,9 +237,11 @@ describe("mailbox_ocr_receipt", () => {
     const downloadFile = vi.fn().mockResolvedValue(data);
     const submitResult = vi.fn().mockRejectedValue(new AppApiClientError("conflict", 409));
     const extractReceipt = vi.fn().mockResolvedValue(EXTRACTION);
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
 
     const activities = createMailboxOcrActivities({
       appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
       extractReceipt,
     });
 
@@ -144,9 +262,11 @@ describe("mailbox_ocr_receipt", () => {
     const downloadFile = vi.fn().mockResolvedValue(data);
     const submitResult = vi.fn().mockRejectedValue(new AppApiClientError("unavailable", 503));
     const extractReceipt = vi.fn().mockResolvedValue(EXTRACTION);
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
 
     const activities = createMailboxOcrActivities({
       appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
       extractReceipt,
     });
 

@@ -325,7 +325,7 @@ it("finishes OCR before recording deduplication with the returned job version", 
     ["mark_running", 3],
     ["ocr_get_input", { fileId: "44444444-4444-4444-8444-444444444444", expectedSha256: null, modeKey: "ocr_mode_balanced", tenantId: "22222222-2222-4222-8222-222222222222", schemaVersion: 1 }],
     ["ocr_verify_receipt", undefined],
-    ["ocr_resolve_route", { aiModelId: "55555555-5555-4555-8555-555555555555" }],
+    ["ocr_resolve_route", { aiModelId: "55555555-5555-4555-8555-555555555555", providerKind: "openai", providerModelId: "gpt-5.4-mini" }],
     ["ocr_reserve", { blocked: false, reservationId: "66666666-6666-4666-8666-666666666666" }],
     ["ocr_mark_call_started", 1],
     ["ocr_extract_receipt", extraction],
@@ -357,6 +357,11 @@ it("finishes OCR before recording deduplication with the returned job version", 
       "ocr_submit_extraction", "ocr_record_deduplication",
     ]);
     expect(calls[0]?.[1]).toEqual({ jobReference, expectedJobVersion: 2 });
+    expect(calls[6]?.[1]).toEqual({
+      fileId: "44444444-4444-4444-8444-444444444444",
+      expectedSha256: null,
+      route: { providerKind: "openai", providerModelId: "gpt-5.4-mini" },
+    });
     expect(calls[8]?.[1]).toMatchObject({ expectedJobVersion: 3, extraction });
     expect(calls[9]?.[1]).toMatchObject({ expectedJobVersion: 4 });
     // Bug fix (2026-10-07): a fresh workflow execution always takes the
@@ -556,6 +561,41 @@ it("releases a reservation before reporting an extraction failure", async () => 
     expect(release).toBeDefined();
     expect(release?.activityTaskScheduledEventAttributes?.startToCloseTimeout?.seconds?.toString()).toBe("30");
     expect(release?.activityTaskScheduledEventAttributes?.retryPolicy?.maximumAttempts).toBe(2);
+  } finally {
+    await env.teardown();
+  }
+}, 60_000);
+
+it("releases the reservation and fails through the existing path on a retryable OpenAiTransient failure, never falling back to the fake extractor", async () => {
+  const calls: string[] = [];
+  const workflowId = `ocr-openai-transient-${JOB_ID}`;
+  const env = await TestWorkflowEnvironment.createTimeSkipping();
+  try {
+    const worker = await Worker.create({
+      connection: env.nativeConnection, namespace: env.namespace,
+      taskQueue: TASK_QUEUE, workflowsPath,
+      activities: {
+        async mark_running() { return 3; },
+        async ocr_get_input() { return { fileId: JOB_ID, modeKey: "ocr_mode_balanced", expectedSha256: null, tenantId: JOB_ID }; },
+        async ocr_verify_receipt() { /* no-op */ },
+        async ocr_resolve_route() { return { aiModelId: JOB_ID, providerKind: "openai", providerModelId: "gpt-5.4-mini" }; },
+        async ocr_reserve() { return { blocked: false, reservationId: JOB_ID }; },
+        async ocr_mark_call_started() { return 1; },
+        async ocr_extract_receipt() {
+          calls.push("extract_attempt");
+          throw ApplicationFailure.retryable("OpenAI request failed", "OpenAiTransient");
+        },
+        async ocr_release() { calls.push("release"); },
+        async ocr_mark_failed(input: { message: string }) { calls.push(input.message); return 4; },
+      },
+    });
+    await worker.runUntil(() => env.client.workflow.execute("OcrReceiptWorkflow", {
+      workflowId, taskQueue: TASK_QUEUE,
+      args: [{ schemaVersion: 1, jobId: JOB_ID, workflowType: "OcrReceiptWorkflow", workflowId }],
+    }));
+    // quick activities retry up to 2 attempts, then the workflow releases
+    // the reservation and fails through the existing path -- no fake fallback.
+    expect(calls).toEqual(["extract_attempt", "extract_attempt", "release", "OCR_FAILED: extraction pipeline error"]);
   } finally {
     await env.teardown();
   }
