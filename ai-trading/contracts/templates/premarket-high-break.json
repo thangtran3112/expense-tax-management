@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "Pre-market high break",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "op": "crosses_above", "left": { "series": "close" }, "right": { "level": "premarket_high" } },
+      { "op": "gte", "left": { "series": "rvol", "lookbackDays": 10 }, "right": { "value": 1.5 } },
+      { "op": "time_between", "start": "09:30", "end": "11:00" }
+    ]
+  },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 200 }, "stop": { "level": "premarket_low" }, "target": { "r": 2 } }
+  },
+  "limits": { "maxTradesPerDay": 2, "maxOpenPositions": 1, "flatBy": "15:55" }
+}
