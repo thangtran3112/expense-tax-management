@@ -62,7 +62,8 @@ Every push to `main` touching `ai-trading/**` (excluding `ai-trading/plans/**` a
 | Input (`workflow_dispatch`) | Default | Effect |
 |---|---|---|
 | `deploy_app` | `false` | Runs `build` then `deploy` (manual redeploy/rollback). Ignored on a push — push always runs both. |
-| `activate_mirofish` | `false` | Adds `MIROFISH_ACTIVATE=1` to `deploy.sh`'s remote invocation. **Only takes effect when `deploy_app` is also `true`**; on a push, or a dispatch with `deploy_app=false`, this is always `0` regardless of its own value. |
+| `activate_mirofish` | `false` | Sends `MIROFISH_ACTIVATE=1` (turn MiroFish on). **Only takes effect when `deploy_app` is also `true`.** Without it, and on every push, `deploy.sh` gets `keep`. |
+| `stop_mirofish` | `false` | Sends `MIROFISH_ACTIVATE=0` (turn MiroFish off); wins over `activate_mirofish`. Only takes effect when `deploy_app` is also `true`. |
 | `upload_hub_static` | `false` | Runs the independent `hub-static-upload` job: builds the frontend's Next.js static export with pnpm and uploads it to the hub bucket. Never builds/pushes images, never runs `deploy`, never touches MiroFish. |
 | `upload_mirofish_static` | `false` | Runs the independent `mirofish-static-upload` job: builds MiroFish's static Vue export and uploads it to its own bucket. Same isolation as `upload_hub_static`. |
 
@@ -73,15 +74,15 @@ Every push to `main` touching `ai-trading/**` (excluding `ai-trading/plans/**` a
 
 On the host, `deploy.sh` renders `ai-trading/tradingagents`, `ai-trading/ai-hedge-fund`, `ai-trading/vibe-trading`, and `ai-trading/gateway` (renamed `auth.env`) straight from Firestore with the `family-config-reader` key, validates every file (well-formed `KEY=value` lines, no empty value, no NUL or CR byte), backs up the current files to `.previous/`, derives `vibe-gateway.env` (only `VIBE_API_AUTH_KEY`, copied from `vibe-trading.env`'s `API_AUTH_KEY`, for the Caddy gateway), installs all six files (the five above, plus `cloudflared.env`, the one file CI itself staged) as `root:root 0600`, then pulls and restarts the stack. If the new tag fails to come up healthy, it restores `.previous/` and rolls back to `last-good-tag`.
 
-### MiroFish activation (`activate_mirofish`)
+### MiroFish activation (`activate_mirofish`, `stop_mirofish`)
 
-`deploy.sh`'s `MIROFISH_ACTIVATE` opt-in (see `ai-trading/AGENTS.md`) is now wired to the `activate_mirofish` dispatch input instead of being unreachable from CI. The workflow always passes an explicit `MIROFISH_ACTIVATE=0` or `=1` to the remote `deploy.sh` invocation (never leaves it unset) so the value sent is never ambiguous:
+The workflow always passes an explicit `MIROFISH_ACTIVATE` to the remote `deploy.sh` (see `ai-trading/AGENTS.md`):
 
-- A push to `main` always sends `0` — MiroFish is never activated by an automatic deploy.
-- A manual dispatch with `deploy_app=true` and `activate_mirofish=true` sends `1`.
-- Any other combination (including `activate_mirofish=true` with `deploy_app=false`, which runs no deploy at all) sends `0`.
+- A push to `main`, or a dispatch without either input, sends `keep`: MiroFish stays on only if a `mirofish` container is running now; otherwise it stays off.
+- A dispatch with `deploy_app=true` and `activate_mirofish=true` sends `1`: MiroFish is turned on.
+- A dispatch with `deploy_app=true` and `stop_mirofish=true` sends `0`: MiroFish is turned off. It wins over `activate_mirofish`.
 
-This only widens *how* the existing fail-safe opt-in is reached; it does not change `deploy.sh` itself. A malformed or absent `ai-trading/mirofish` Firestore profile still leaves MiroFish disabled and logs why, without failing the other three apps' deploy (`activate_mirofish()` in `deploy.sh`). **Deactivation**: any deploy that does not activate MiroFish (a plain push, or a dispatch without `activate_mirofish=true`) stops and removes a running MiroFish container (`ensure_mirofish_stopped()` in `deploy.sh`), so re-dispatch with `activate_mirofish=true` after such a deploy to keep it on.
+`1` and `keep` both render the `ai-trading/mirofish` Firestore profile; a malformed or absent profile leaves MiroFish disabled and logs why, without failing the other three apps' deploy (`activate_mirofish()` in `deploy.sh`). Any deploy that ends with MiroFish disabled stops and removes a running MiroFish container (`ensure_mirofish_stopped()`).
 
 ### Hub and MiroFish static uploads
 
@@ -114,7 +115,7 @@ Both static-upload jobs are fully independent of `build`/`deploy` and of each ot
 ## Operations
 
 - Logs: `sudo docker compose -p ai-trading --env-file /opt/family-app/ai-trading/images.env -f /opt/family-app/ai-trading/docker-compose.yml logs -f <service>`
-- Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow (`workflow_dispatch`, `deploy_app=true`); it re-renders the four core profiles from Firestore and redeploys `${{ github.sha }}` of the `main` branch tip. This dispatch only activates MiroFish if `activate_mirofish` is also set `true` — otherwise `MIROFISH_ACTIVATE=0` is sent even if MiroFish was active before (see "MiroFish activation" above). `deploy.sh` always requires a fresh `ENV_STAGING_DIR/cloudflared.env` and always re-renders the four core profiles on the host — there is no manual mode that reuses a stale staging directory — so a host-only, direct `deploy.sh` run needs a real `cloudflared.env` staged first; rerunning the workflow is simpler.
+- Redeploy the current tag: rerun the `ai-trading-deploy` GitHub Actions workflow (`workflow_dispatch`, `deploy_app=true`); it re-renders the four core profiles from Firestore and redeploys `${{ github.sha }}` of the `main` branch tip. MiroFish keeps its current state (`MIROFISH_ACTIVATE=keep`: on only if it is running now and its profile still renders); add `activate_mirofish=true` to turn it on or `stop_mirofish=true` to turn it off (see "MiroFish activation" above). `deploy.sh` always requires a fresh `ENV_STAGING_DIR/cloudflared.env` and always re-renders the four core profiles on the host — there is no manual mode that reuses a stale staging directory — so a host-only, direct `deploy.sh` run needs a real `cloudflared.env` staged first; rerunning the workflow is simpler.
 - Disk: one release unpacks to ~17 GB (MiroFish's backend alone is ~12 GB) and shares no layers with the previous tag. Before touching Firestore, a container, or any secret, `deploy.sh` removes every commit-tagged image in the registry's `ai-trading-*` repos except the release being deployed and `last-good-tag` (an image a container still uses is never removed; other apps' and third-party images are never touched), then stops with a clear message unless `AI_TRADING_MIN_FREE_GB` (default 30) GiB is free on `AI_TRADING_DOCKER_DATA_DIR` (default `/var/lib/docker`). That stop leaves the running release untouched. Without it, a full disk fails the pull mid-deploy and also breaks the env-file rollback (2026-10-10).
 - Rotate the Vibe-Trading access key: change `API_AUTH_KEY` in `ai-trading/vibe-trading` (see "Editing values"), and rerun the deploy workflow; the gateway picks up the new key, so browsers need nothing.
 - Upstream updates arrive as one grouped Dependabot pull request per week. Merge it to `dev` when CI is green, then release to `main`.
