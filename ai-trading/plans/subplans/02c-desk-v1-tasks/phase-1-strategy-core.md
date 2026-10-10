@@ -2378,7 +2378,7 @@ git commit -m "feat(ai-trading): ten intraday and swing strategy templates with 
           node-version: 24
           cache: pnpm
           cache-dependency-path: ai-trading/contracts/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0  # no floating major tag; Dependabot bumps it
         with:
           enable-cache: true
           cache-dependency-glob: ai-trading/backend/uv.lock
