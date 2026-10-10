@@ -8,6 +8,7 @@ Release 1 runs the Trading Hub and three unmodified upstream apps on one host be
 | `web` | `https://trading.tobytran.dev/` | The same hub, interim host until Desk Phase 4 takes it |
 | `ta-terminal` | `https://tradingagents.tobytran.dev/` | TradingAgents in ttyd + tmux; also `/u/tradingagents/` on the hub |
 | `ahf-terminal` | `https://ai-hedge-fund.tobytran.dev/` | ai-hedge-fund in ttyd + tmux; also `/u/ai-hedge-fund/` on the hub |
+| `market-data` | internal only (`ahf` network, port 8000) | Financial Datasets-shaped API for ai-hedge-fund: Alpaca free daily bars + SEC EDGAR fundamentals (01m). Missing Alpaca or SEC values return 502, never empty data |
 | `vibe-trading` | `https://vibe-trading.tobytran.dev/` | Caddy-verified hub session, then upstream API key and hardening |
 | `cloudflared` | outbound only | Tunnel connector |
 
