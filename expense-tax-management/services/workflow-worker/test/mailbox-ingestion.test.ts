@@ -189,6 +189,7 @@ describe("mailbox_ocr_receipt", () => {
     const error = await activities
       .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
       .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApplicationFailure);
     expect(error).toMatchObject({ type: "OcrUnsupportedFormat", nonRetryable: true });
     expect(fakeFetch).not.toHaveBeenCalled();
     expect(fakeOcrSpy).not.toHaveBeenCalled();

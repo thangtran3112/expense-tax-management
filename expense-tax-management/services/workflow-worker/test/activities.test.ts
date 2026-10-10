@@ -248,6 +248,7 @@ it.each([
   const failure = await activities
     .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: OPENAI_ROUTE })
     .catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ApplicationFailure);
   expect(failure).toMatchObject({ type: "OcrExtractionMalformed", nonRetryable: false });
   expect(fakeOcrSpy).not.toHaveBeenCalled();
 });
@@ -266,13 +267,13 @@ it("rejects retryably with OpenAiTransient when every key gets an HTTP 500, neve
     extractReceipt,
   });
 
-  const outcome = await activities
+  const failure = await activities
     .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: OPENAI_ROUTE })
-    .then((result) => ({ result }))
-    .catch((error: unknown) => ({ error }));
-  expect(outcome).toMatchObject({ error: { type: "OpenAiTransient", nonRetryable: false } });
+    .catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ApplicationFailure);
+  expect(failure).toMatchObject({ type: "OpenAiTransient", nonRetryable: false });
   expect(fakeOcrSpy).not.toHaveBeenCalled();
-  expect(JSON.stringify(outcome)).not.toContain("Fake OCR Merchant");
+  expect(JSON.stringify(failure)).not.toContain("Fake OCR Merchant");
 });
 
 it("rejects non-retryably when OpenAI answers HTTP 400 for every key", async () => {
@@ -291,6 +292,7 @@ it("rejects non-retryably when OpenAI answers HTTP 400 for every key", async () 
   const failure = await activities
     .ocr_extract_receipt({ fileId: JOB_ID, expectedSha256: null, route: OPENAI_ROUTE })
     .catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ApplicationFailure);
   expect(failure).toMatchObject({ nonRetryable: true });
   expect((failure as ApplicationFailure).type).toBe("OpenAiRejectedRequest");
 });
