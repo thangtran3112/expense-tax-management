@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp, type BuildAppOptions } from "../src/app.js";
 import type { BrokerConfig, InboundAuthConfig } from "../src/config.js";
+import { GmailApiError } from "../src/discovery.js";
 import type { MailboxBrokerConnectionAppClient, MailboxProviderAdapter } from "../src/contracts.js";
 import { createBeginTicket } from "../src/begin-ticket.js";
 import { createOAuthState, type VaultKeyMap } from "../src/oauth-state.js";
@@ -801,6 +802,51 @@ describe("mailbox-broker routes", () => {
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    it("logs the Gmail error code (never the message body) behind the 503, so a 404-recovery or deleted-message failure is diagnosable", async () => {
+      const issuer = await createFakeClerkIssuer();
+      const vaultKeys = createVaultKeyMap();
+      const inboundAuth: InboundAuthConfig = {
+        issuer: issuer.issuerUrl,
+        audience: AUDIENCE,
+        jwksUrl: issuer.jwksUrl,
+        appApiSubject: APP_API_SUBJECT,
+        workerSubject: WORKER_SUBJECT,
+      };
+      const secretLookingMessage = "token=ya29.SUPER_SECRET_VALUE_SHOULD_NEVER_BE_LOGGED";
+      const discoveryProviderAdapter = {
+        discover: vi.fn(async () => {
+          throw new GmailApiError("unavailable", secretLookingMessage);
+        }),
+      };
+      const lines: string[] = [];
+      const app = buildApp({
+        config: fakeConfig(inboundAuth, vaultKeys),
+        logger: { level: "warn", stream: { write: (msg: string) => lines.push(msg) } },
+        appClient: fakeAppClient(),
+        providerAdapter: fakeProviderAdapter(),
+        allowedRedirectOrigins: [ALLOWED_ORIGIN],
+        inboundKeyResolver: issuer.keyResolver,
+        buildGoogleAuthorizationUrl: fakeBuildGoogleAuthorizationUrl,
+        discoveryProviderAdapter,
+        discoveryAppClient: { loadScanBinding: vi.fn(), stageCandidateMetadata: vi.fn() },
+      });
+      apps.add(app);
+      const token = await issuer.mint({ subject: WORKER_SUBJECT, audience: AUDIENCE, scopes: ["mailbox:discover"] });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/internal/v1/mailbox/scan-runs/${SCAN_RUN_ID}/discover`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(503);
+      const logged = lines.map((line) => JSON.parse(line));
+      const gmailErrorLine = logged.find((entry) => entry.msg === "gmail api error");
+      expect(gmailErrorLine).toMatchObject({ gmailErrorCode: "unavailable", statusCode: 503 });
+      expect(lines.join("\n")).not.toContain(secretLookingMessage);
     });
   });
 
