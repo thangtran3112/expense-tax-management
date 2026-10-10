@@ -52,7 +52,14 @@
 ## Git
 
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
-- Another session resets `feature/toby` in the main checkout. Do ai-trading work in a worktree under `.worktrees/` on a `feature/*` branch, and open pull requests to `dev`.
+- **Checkout ownership (owner, 2026-10-10):**
+  - The main ai-trading coding session works in the main checkout (`/Users/tobytran/personal/family-app`) on its own `feature/ai-trading-*` branch, so the owner can review its mockups and plans there.
+  - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
+  - Session handoffs live in `plans/handoffs/`; read the newest one first.
+  - Its subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
+  - Parallel sessions also use worktrees.
+  - The owner resolves conflicts by assigning sessions to worktrees.
+  - Open pull requests to `dev`.
 - **Standing delivery authorization (personal project, 2026-10-10):** after completing each requested implementation phase, run verification/review, commit and push, create and merge its PR to `dev`, then release and deploy it immediately without asking for routine approval. Do not stop at a branch-choice menu, an unmerged PR, or a "ready to deploy" handoff. Monitor CI/deployment and verify the live result before reporting the phase complete.
 - Releases to `main` carry only the completed phase's ai-trading paths (and its app-specific workflow changes when needed), on a branch from `origin/main`. The standing authorization above covers that scoped release; it replaces the old per-release approval gate. Never merge all of `dev` into `main`, which would also release unrelated expense phases.
 - Preserve MiroFish activation on deployments when it is enabled: use the existing `deploy_app=true`, `activate_mirofish=true` dispatch, and coordinate any automatic push deployment so it does not silently disable MiroFish. Upload static assets only when that phase changes them.
