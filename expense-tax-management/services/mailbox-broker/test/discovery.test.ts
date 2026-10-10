@@ -602,6 +602,110 @@ describe("discovery.ts createDiscoveryEngine", () => {
     expect(staged?.evidence).toContain("attachment_oversize");
   });
 
+  it("message deleted after listing: a not_found from getMessage mid-page skips that message and stages the rest (incremental sync)", async () => {
+    const appClient = createFakeDiscoveryAppClient({ historyId: "history-start" });
+    const ids = [{ id: randomUUID(), threadId: null }, { id: randomUUID(), threadId: null }, { id: randomUUID(), threadId: null }];
+    const deletedId = ids[1]!.id;
+    const client = fakeGmailClient({
+      listHistory: async () => ({ historyId: "history-after", ids, nextPageToken: null }),
+      getMessage: async (id) => {
+        if (id === deletedId) throw new GmailApiError("not_found");
+        return gmailMessage({ id });
+      },
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(page.candidateCount).toBe(2); // the deleted message is skipped, the other two are staged
+    expect(appClient.state.historyId).toBe("history-after"); // cursor advances normally
+    const stagedIds = appClient.stagedPages[0]?.messages.map((message) => message.providerMessageId);
+    expect(stagedIds).toEqual([ids[0]!.id, ids[2]!.id]);
+  });
+
+  it("message deleted after listing: a not_found from getMessage mid-page skips that message during a full-sync backlog page too", async () => {
+    const appClient = createFakeDiscoveryAppClient();
+    const ids = [{ id: randomUUID(), threadId: null }, { id: randomUUID(), threadId: null }, { id: randomUUID(), threadId: null }];
+    const deletedId = ids[1]!.id;
+    const client = fakeGmailClient({
+      listMessageIds: async () => ({ ids }),
+      getMessage: async (id) => {
+        if (id === deletedId) throw new GmailApiError("not_found");
+        return gmailMessage({ id });
+      },
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(page.candidateCount).toBe(2);
+    const stagedIds = appClient.stagedPages[0]?.messages.map((message) => message.providerMessageId);
+    expect(stagedIds).toEqual([ids[0]!.id, ids[2]!.id]);
+  });
+
+  it("message deleted after listing: a not_found from getAttachment skips that whole message, others still stage", async () => {
+    const appClient = createFakeDiscoveryAppClient({ historyId: "history-start" });
+    const okMessage = gmailMessage();
+    const messageWithDeletedAttachment = gmailMessage({
+      attachments: [{ attachmentId: "a1", filename: "receipt.pdf", mimeType: "application/pdf", sizeBytes: 1024 }],
+    });
+    const ids = [
+      { id: okMessage.id, threadId: null },
+      { id: messageWithDeletedAttachment.id, threadId: null },
+    ];
+    const client = fakeGmailClient({
+      listHistory: async () => ({ historyId: "history-after", ids, nextPageToken: null }),
+      getMessage: async (id) =>
+        [okMessage, messageWithDeletedAttachment].find((message) => message.id === id) as GmailMessageDetail,
+      getAttachment: async (input: { messageId: string; attachmentId: string }) => {
+        if (input.messageId === messageWithDeletedAttachment.id) throw new GmailApiError("not_found");
+        return Buffer.from("bytes");
+      },
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(page.candidateCount).toBe(1);
+    expect(appClient.stagedPages[0]?.messages[0]?.providerMessageId).toBe(okMessage.id);
+    expect(appClient.state.historyId).toBe("history-after");
+  });
+
+  it("other Gmail errors from getMessage still propagate unchanged (unknown, reauth_required, a plain Error)", async () => {
+    const appClient = createFakeDiscoveryAppClient({ historyId: "history-start" });
+    const ids = [{ id: randomUUID(), threadId: null }];
+
+    for (const error of [new GmailApiError("unknown"), new GmailApiError("reauth_required"), new Error("boom")]) {
+      const client = fakeGmailClient({
+        listHistory: async () => ({ historyId: "history-after", ids, nextPageToken: null }),
+        getMessage: async () => {
+          throw error;
+        },
+      });
+      const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+      await expect(engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID })).rejects.toBe(error);
+    }
+  });
+
+  it("every message in a page deleted: the page completes with zero staged and the cursor still advances", async () => {
+    const appClient = createFakeDiscoveryAppClient({ historyId: "history-start" });
+    const ids = [{ id: randomUUID(), threadId: null }, { id: randomUUID(), threadId: null }];
+    const client = fakeGmailClient({
+      listHistory: async () => ({ historyId: "history-after", ids, nextPageToken: null }),
+      getMessage: async () => {
+        throw new GmailApiError("not_found");
+      },
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(page.candidateCount).toBe(0);
+    expect(appClient.state.historyId).toBe("history-after"); // cursor still advances -- never stuck on deleted mail
+    expect(appClient.stagedPages[0]?.messages).toEqual([]);
+  });
+
   it("429/5xx retry: honors a Gmail Retry-After hint instead of the default exponential delay", async () => {
     const appClient = createFakeDiscoveryAppClient();
     let attempts = 0;
