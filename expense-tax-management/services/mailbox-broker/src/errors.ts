@@ -57,10 +57,20 @@ export function registerErrorHandlers(app: FastifyInstance): void {
     if (error instanceof GmailApiError) {
       const statusCode =
         error.code === "reauth_required" ? 409 : error.code === "rate_limited" ? 429 : 503;
-      // Static code only -- never the error message, response, headers,
+      // Static codes only -- never the error message, response, headers,
       // tokens, or ids -- so a Gmail failure is diagnosable without
-      // risking a secret-bearing value reaching the log.
-      request.log.warn({ gmailErrorCode: error.code, statusCode, requestId: request.id }, "gmail api error");
+      // risking a secret-bearing value reaching the log. `upstream*` are
+      // Gmail's HTTP status and error reason (plain identifiers).
+      request.log.warn(
+        {
+          gmailErrorCode: error.code,
+          upstreamStatus: error.upstream?.status,
+          upstreamReason: error.upstream?.reason,
+          statusCode,
+          requestId: request.id,
+        },
+        "gmail api error",
+      );
       reply
         .code(statusCode)
         .send(errorEnvelope(`GOOGLE_${error.code.toUpperCase()}`, error.message, request.id));
