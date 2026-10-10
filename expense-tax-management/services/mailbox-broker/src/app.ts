@@ -98,7 +98,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const app = Fastify({
     logger: loggerWithRedaction(options.logger),
     bodyLimit: 1024 * 1024,
-    connectionTimeout: 15_000,
+    // A worker /discover call is idle on the socket while the broker walks a
+    // Gmail page (paced by Gmail's per-minute quota, up to minutes); Node
+    // destroys a socket idle longer than this. Keep above the worker's
+    // MAILBOX_DISCOVER_TIMEOUT_MS.
+    connectionTimeout: 300_000,
     keepAliveTimeout: 5_000,
   });
 

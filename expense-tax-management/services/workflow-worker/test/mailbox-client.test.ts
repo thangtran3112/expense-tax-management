@@ -226,6 +226,44 @@ describe("clients/mailbox-client.ts createMailboxAppApiClient", () => {
     expect(capturedContentType).toBe("application/json");
   });
 
+  it("discoverPage outlasts the generic request timeout: a 100-message Gmail page takes over 10 s, and aborting it only starts a second, overlapping page walk", async () => {
+    const slowDiscoverPage = fakeFetch(async (_url, init) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 80);
+        init.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(init.signal?.reason);
+          },
+          { once: true },
+        );
+      });
+      return new Response(
+        JSON.stringify({
+          scanRunId: "11111111-1111-4111-8111-111111111111",
+          pageSequence: 1,
+          candidateCount: 98,
+          retryCount: 0,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = createMailboxAppApiClient(config, {
+      appTokenProvider: async () => "app-token-value",
+      brokerTokenProvider: async () => "broker-token-value",
+      timeoutMs: 20,
+      fetch: slowDiscoverPage,
+    });
+
+    await expect(client.discoverPage("11111111-1111-4111-8111-111111111111")).resolves.toMatchObject({
+      candidateCount: 98,
+    });
+    await expect(
+      client.requestBroker({ path: "/y", method: "GET", responseSchema: z.object({}) }),
+    ).rejects.toMatchObject({ code: "timeout" });
+  });
+
   it("fix round 7: mailboxJobStatus sends a body that validates against the canonical JobStatusUpdateRequestV1Schema the route itself uses", async () => {
     let capturedPath = "";
     let capturedBody: unknown;
