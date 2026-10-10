@@ -131,6 +131,12 @@ compose() {
   if [[ -f "$IMAGES_ENV" ]]; then
     env_file_args=(--env-file "$IMAGES_ENV")
   fi
+  # The gateway bind-mounts this single file; the workflow's `install` swaps in
+  # a new inode, which a running container never sees. Its sha256 is a gateway
+  # label, so Compose recreates the gateway exactly when the Caddyfile changes.
+  local caddyfile_sha=unset
+  [[ -f "$APP_DIR/Caddyfile" ]] && caddyfile_sha="$(sha256sum "$APP_DIR/Caddyfile")" && caddyfile_sha="${caddyfile_sha%% *}"
+  AI_TRADING_CADDYFILE_SHA256="$caddyfile_sha" \
   AI_TRADING_REGISTRY="$REGISTRY" \
   AI_TRADING_IMAGE_TAG="$IMAGE_TAG" \
   AI_TRADING_SECRETS_DIR="$SECRETS_DIR" \
