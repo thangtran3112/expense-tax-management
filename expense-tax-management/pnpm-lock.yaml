@@ -357,6 +357,9 @@ importers:
       '@temporalio/client':
         specifier: 1.23.0
         version: 1.23.0
+      '@temporalio/common':
+        specifier: 1.23.0
+        version: 1.23.0
       '@temporalio/worker':
         specifier: 1.23.0
         version: 1.23.0(@swc/helpers@0.5.23)(esbuild@0.28.2)(sharp@0.35.4(@types/node@24.13.3))

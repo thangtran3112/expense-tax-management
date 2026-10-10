@@ -420,67 +420,76 @@ export function createDiscoveryEngine(options: DiscoveryEngineOptions): Discover
       const messages: StagingMessage[] = [];
 
       for (const { id } of page.ids) {
-        const detail = await withGoogleRetry(() => client.getMessage(id), retry);
+        try {
+          const detail = await withGoogleRetry(() => client.getMessage(id), retry);
 
-        const attachmentManifest: AttachmentManifestV1[] = [];
-        let hasOversizeAttachment = false;
-        for (const part of detail.attachments) {
-          if (attachmentManifest.length >= MAX_CANDIDATE_ATTACHMENTS) break;
-          if (!ACCEPTED_ATTACHMENT_MIME_TYPES.has(part.mimeType)) continue;
-          if (part.sizeBytes > MAX_UPLOAD_BYTES) {
-            // Never download an oversize attachment -- no partial parsing
-            // (spec: "Exceeding a limit creates typed review/skip
-            // outcome, never partial parsing").
-            hasOversizeAttachment = true;
-            continue;
+          const attachmentManifest: AttachmentManifestV1[] = [];
+          let hasOversizeAttachment = false;
+          for (const part of detail.attachments) {
+            if (attachmentManifest.length >= MAX_CANDIDATE_ATTACHMENTS) break;
+            if (!ACCEPTED_ATTACHMENT_MIME_TYPES.has(part.mimeType)) continue;
+            if (part.sizeBytes > MAX_UPLOAD_BYTES) {
+              // Never download an oversize attachment -- no partial parsing
+              // (spec: "Exceeding a limit creates typed review/skip
+              // outcome, never partial parsing").
+              hasOversizeAttachment = true;
+              continue;
+            }
+            const bytes = await withGoogleRetry(
+              () => client.getAttachment({ messageId: id, attachmentId: part.attachmentId }),
+              retry,
+            );
+            if (bytes.length > MAX_UPLOAD_BYTES) {
+              // Defense in depth: Gmail's reported size was wrong/stale.
+              hasOversizeAttachment = true;
+              continue;
+            }
+            attachmentManifest.push({
+              name: part.filename,
+              mimeType: part.mimeType as FileContentType,
+              sizeBytes: bytes.length,
+              sha256: sha256Hex(bytes),
+            });
           }
-          const bytes = await withGoogleRetry(
-            () => client.getAttachment({ messageId: id, attachmentId: part.attachmentId }),
-            retry,
-          );
-          if (bytes.length > MAX_UPLOAD_BYTES) {
-            // Defense in depth: Gmail's reported size was wrong/stale.
-            hasOversizeAttachment = true;
-            continue;
-          }
-          attachmentManifest.push({
-            name: part.filename,
-            mimeType: part.mimeType as FileContentType,
-            sizeBytes: bytes.length,
-            sha256: sha256Hex(bytes),
+
+          const senderDomain = detail.senderAddress.split("@")[1]?.toLowerCase() ?? "";
+          // Fix round 2 item 3 -- Task 5's approved reason-code catalog,
+          // not this module's own ad hoc keyword rule.
+          const catalogResult = classifyCandidateEvidence({
+            subject: detail.subject,
+            hasAcceptedAttachment: attachmentManifest.length > 0,
+            senderDomainKnownRetailer: senderDomainKnownRetailer(),
           });
+          const evidence: string[] = hasOversizeAttachment
+            ? [...catalogResult.evidence, "attachment_oversize"]
+            : [...catalogResult.evidence];
+          // An oversize attachment is never auto-stageable, regardless of
+          // what other evidence the message carries (review Important #5).
+          const classification = hasOversizeAttachment && catalogResult.classification === "receipt"
+            ? "ambiguous"
+            : catalogResult.classification;
+
+          messages.push({
+            receivedAt: detail.receivedAt,
+            senderAddress: detail.senderAddress,
+            senderDomain,
+            subject: detail.subject,
+            contentHash: sha256Hex(`${detail.id}:${detail.subject}:${detail.receivedAt}`),
+            attachmentManifest,
+            classification,
+            confidence: catalogResult.confidence,
+            evidence,
+            providerMessageId: detail.id,
+            providerThreadId: detail.threadId,
+          });
+        } catch (error) {
+          if (!(error instanceof GmailApiError) || error.code !== "not_found") throw error;
+          // Gmail already deleted this message (draft discarded, trash
+          // purged, etc.) between being listed and being fetched here --
+          // skip it rather than failing the whole page, which would
+          // otherwise block the cursor from ever advancing past it.
+          continue;
         }
-
-        const senderDomain = detail.senderAddress.split("@")[1]?.toLowerCase() ?? "";
-        // Fix round 2 item 3 -- Task 5's approved reason-code catalog,
-        // not this module's own ad hoc keyword rule.
-        const catalogResult = classifyCandidateEvidence({
-          subject: detail.subject,
-          hasAcceptedAttachment: attachmentManifest.length > 0,
-          senderDomainKnownRetailer: senderDomainKnownRetailer(),
-        });
-        const evidence: string[] = hasOversizeAttachment
-          ? [...catalogResult.evidence, "attachment_oversize"]
-          : [...catalogResult.evidence];
-        // An oversize attachment is never auto-stageable, regardless of
-        // what other evidence the message carries (review Important #5).
-        const classification = hasOversizeAttachment && catalogResult.classification === "receipt"
-          ? "ambiguous"
-          : catalogResult.classification;
-
-        messages.push({
-          receivedAt: detail.receivedAt,
-          senderAddress: detail.senderAddress,
-          senderDomain,
-          subject: detail.subject,
-          contentHash: sha256Hex(`${detail.id}:${detail.subject}:${detail.receivedAt}`),
-          attachmentManifest,
-          classification,
-          confidence: catalogResult.confidence,
-          evidence,
-          providerMessageId: detail.id,
-          providerThreadId: detail.threadId,
-        });
       }
 
       const staged = await options.appClient.stageCandidateMetadata({
