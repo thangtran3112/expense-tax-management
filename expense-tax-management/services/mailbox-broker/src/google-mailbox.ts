@@ -192,7 +192,38 @@ export function decodeBase64UrlBounded(base64Url: string, maxBytes: number): Buf
   return decoded.length > maxBytes ? decoded.subarray(0, maxBytes + 1) : decoded;
 }
 
-function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
+/**
+ * Production bug fix -- a Gmail message's `Date` header is sender-
+ * controlled and frequently malformed (spam, broken mail clients);
+ * `new Date(header).toISOString()` throws a RangeError on an invalid
+ * value, which `getMessage`'s old single `try` around the whole method
+ * turned into a Gmail API `unknown` (503) -- a poison message that never
+ * stages and never lets the cursor advance. Falls back to Gmail's own
+ * `internalDate` (epoch ms, Gmail-assigned, present on every message) when
+ * the header is missing or unparseable, and to `now()` only if neither is
+ * usable.
+ */
+export function parseReceivedAt(
+  dateHeader: string,
+  internalDate: string | null | undefined,
+  now: () => Date = () => new Date(),
+): string {
+  if (dateHeader) {
+    const fromHeader = new Date(dateHeader);
+    if (!Number.isNaN(fromHeader.getTime())) return fromHeader.toISOString();
+  }
+  if (internalDate) {
+    const epochMs = Number(internalDate);
+    if (Number.isFinite(epochMs)) {
+      const fromInternalDate = new Date(epochMs);
+      if (!Number.isNaN(fromInternalDate.getTime())) return fromInternalDate.toISOString();
+    }
+  }
+  return now().toISOString();
+}
+
+/** Exported so tests can exercise the real Gmail wiring directly (with `googleapis` itself mocked) rather than only through the injectable `GmailDiscoveryClientLike` fakes used elsewhere. */
+export function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscoveryClientLike {
   const gmail = google.gmail({ version: "v1", auth: client as unknown as GmailAuthParam });
 
   function parseAttachmentParts(
@@ -296,46 +327,55 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
     },
 
     async getMessage(id): Promise<GmailMessageDetail> {
-      try {
-        const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
-        const headers = response.data.payload?.headers ?? [];
-        const header = (name: string) =>
-          headers.find((candidate) => candidate.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
-        const dateHeader = header("date");
-        return {
-          id: response.data.id as string,
-          threadId: response.data.threadId ?? null,
-          receivedAt: dateHeader ? new Date(dateHeader).toISOString() : new Date().toISOString(),
-          senderAddress: header("from"),
-          subject: header("subject"),
-          attachments: parseAttachmentParts(response.data.payload ?? undefined),
-        };
-      } catch (error) {
-        mapGoogleApiError(error);
-      }
+      // Production bug fix -- only the Gmail API call itself is mapped to
+      // a GmailApiError; header/attachment parsing runs outside the catch
+      // so a genuine parsing bug surfaces as a normal error (visible,
+      // logged) instead of masquerading as a Gmail API "unknown".
+      const response = await (async () => {
+        try {
+          return await gmail.users.messages.get({ userId: "me", id, format: "full" });
+        } catch (error) {
+          mapGoogleApiError(error);
+        }
+      })();
+      const headers = response.data.payload?.headers ?? [];
+      const header = (name: string) =>
+        headers.find((candidate) => candidate.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
+      return {
+        id: response.data.id as string,
+        threadId: response.data.threadId ?? null,
+        receivedAt: parseReceivedAt(header("date"), response.data.internalDate),
+        senderAddress: header("from"),
+        subject: header("subject"),
+        attachments: parseAttachmentParts(response.data.payload ?? undefined),
+      };
     },
 
     async getAttachment(input) {
-      try {
-        const response = await gmail.users.messages.attachments.get({
-          userId: "me",
-          messageId: input.messageId,
-          id: input.attachmentId,
-        });
-        return Buffer.from(response.data.data ?? "", "base64url");
-      } catch (error) {
-        mapGoogleApiError(error);
-      }
+      const response = await (async () => {
+        try {
+          return await gmail.users.messages.attachments.get({
+            userId: "me",
+            messageId: input.messageId,
+            id: input.attachmentId,
+          });
+        } catch (error) {
+          mapGoogleApiError(error);
+        }
+      })();
+      return Buffer.from(response.data.data ?? "", "base64url");
     },
 
     async getProfileHistoryId() {
-      try {
-        const response = await gmail.users.getProfile({ userId: "me" });
-        if (!response.data.historyId) throw new Error("Gmail profile response missing historyId");
-        return response.data.historyId;
-      } catch (error) {
-        mapGoogleApiError(error);
-      }
+      const response = await (async () => {
+        try {
+          return await gmail.users.getProfile({ userId: "me" });
+        } catch (error) {
+          mapGoogleApiError(error);
+        }
+      })();
+      if (!response.data.historyId) throw new Error("Gmail profile response missing historyId");
+      return response.data.historyId;
     },
 
     /**
@@ -353,14 +393,16 @@ function createRealGmailDiscoveryClient(client: OAuth2ClientLike): GmailDiscover
      * through any path other than this bounded AsyncIterable.
      */
     async getMessageHtmlBody(id) {
-      try {
-        const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
-        const htmlData = findHtmlPartData(response.data.payload ?? undefined);
-        if (htmlData === null) return null;
-        return chunksOf(decodeBase64UrlBounded(htmlData, STRUCTURED_RECEIPT_MAX_DECODED_BYTES));
-      } catch (error) {
-        mapGoogleApiError(error);
-      }
+      const response = await (async () => {
+        try {
+          return await gmail.users.messages.get({ userId: "me", id, format: "full" });
+        } catch (error) {
+          mapGoogleApiError(error);
+        }
+      })();
+      const htmlData = findHtmlPartData(response.data.payload ?? undefined);
+      if (htmlData === null) return null;
+      return chunksOf(decodeBase64UrlBounded(htmlData, STRUCTURED_RECEIPT_MAX_DECODED_BYTES));
     },
   };
 }

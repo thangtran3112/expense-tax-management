@@ -552,6 +552,27 @@ describe("discovery.ts createDiscoveryEngine", () => {
     expect(Object.keys(page).sort()).toEqual(["candidateCount", "pageSequence", "retryCount", "scanRunId"]);
   });
 
+  it("production bug fix: a message whose receivedAt is a fallback value (unparseable Gmail Date header) still stages normally", async () => {
+    // discovery.ts never parses/validates receivedAt itself -- it's an
+    // opaque string from GmailMessageDetail (google-mailbox.ts's
+    // getMessage is responsible for always producing a valid ISO
+    // timestamp, even via its internalDate/now() fallbacks). This proves
+    // discover() doesn't choke on a message whose receivedAt came from
+    // one of those fallbacks instead of a parsed Date header.
+    const appClient = createFakeDiscoveryAppClient();
+    const message = gmailMessage({ receivedAt: new Date(Date.UTC(2026, 9, 10, 12, 0, 0)).toISOString() });
+    const client = fakeGmailClient({
+      listMessageIds: async () => ({ ids: [{ id: message.id, threadId: null }] }),
+      getMessage: async () => message,
+    });
+    const engine = createDiscoveryEngine({ appClient, getGmailClient: async () => client, now: () => FIXED_NOW });
+
+    const page = await engine.discover({ connectionId: CONNECTION_ID, scanRunId: SCAN_RUN_ID });
+
+    expect(page.candidateCount).toBe(1);
+    expect(appClient.stagedPages[0]?.messages[0]?.receivedAt).toBe(message.receivedAt);
+  });
+
   it("filters attachments to the accepted MIME allow-list and caps at 5, hashing only transiently", async () => {
     const appClient = createFakeDiscoveryAppClient();
     const message = gmailMessage({
