@@ -14,3 +14,8 @@ updates:
       ai-trading-upstream:
         patterns:
           - "*"
+    ignore:
+      # Vibe-Trading is a family-app fork (ai-trading/packages/vibe-trading/DIVERGENCE.md).
+      # Dependabot would move the pin to the fork's stale main and drop every patch.
+      # Upstream updates go through the sync-vibe-trading skill instead.
+      - dependency-name: "ai-trading/packages/vibe-trading"

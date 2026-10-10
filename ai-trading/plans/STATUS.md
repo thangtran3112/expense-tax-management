@@ -54,6 +54,7 @@ Releases: release 1 (MVP) is a Trading Hub web app for four unmodified upstream 
 
 | 2026-10-04 | ai-trading work happens in the worktree `.worktrees/ai-trading-hub` on a `feature/*` branch (currently `feature/ai-trading-access-defer`), not on `feature/toby`. | Accepted (ruling) | Another session resets `feature/toby` to `origin/dev` in the main checkout several times an hour; staged or committed ai-trading work there would be wiped or swept into its pull requests. |
 | 2026-10-07 | Defer Cloudflare Access/Zero Trust from Release 1; Caddy/Clerk is the sole backend gate for all four apps, including Vibe-Trading. Keep the Zero Trust Terraform root for a separate future decision. | Accepted | First Access apply failed (403 and account not enabled); Cloudflare requires dashboard onboarding and payment details even for Free, outside this repo's IaC-only policy. Removing its Release 1 dependency leaves authenticated tunnel/Worker staging possible without changing expense infrastructure. |
+| 2026-10-10 | Vibe-Trading becomes a small family-app fork (`thangtran3112/Vibe-Trading`, branch `family-app`), tracked by `packages/vibe-trading/DIVERGENCE.md`. Changes: Settings loads reasoning efforts per model (live probe) and refuses ones the model rejects; OpenAI default is `gpt-6.1-sol`; temperature, QVeris and the Tushare/Gildata/BaoStock credentials are gone from Settings. Dependabot ignores the submodule; syncs use the `sync-vibe-trading` skill. | Accepted (owner) | Upstream offered one fixed effort list for every model, so a saved `max` on `gpt-6.1-sol` (it accepts `low`, `medium`, `high`, `xhigh`) failed every run with HTTP 400. The picker and API are upstream source, so a wrapper cannot fix it. The Firestore profile must also carry an effort Sol accepts (it was `none`). |
 
 ## Release 1 Build Notes (2026-10-04)
 
@@ -96,7 +97,7 @@ Releases: release 1 (MVP) is a Trading Hub web app for four unmodified upstream 
 |---|---|---|---|---|
 | TradingAgents | `packages/trading-agents` | `1394a3f72aa4` | Apache-2.0 | Integrated unmodified into the local hub (browser terminal); reference for the Desk |
 | ai-hedge-fund | `packages/ai-hedge-fund` | `78b779c1389e` | MIT | Integrated unmodified into the local hub (browser terminal); persona prompts for the Desk later |
-| Vibe-Trading | `packages/vibe-trading` | `251b094320c1` | MIT + NOTICE | Integrated unmodified into the local hub (own hostname); options math, IBKR connector, and Telegram pattern adapted into the Desk |
+| Vibe-Trading | `packages/vibe-trading` | `d7d09115d110` (fork `family-app`, based on upstream `251b094320c1`) | MIT + NOTICE | Small fork, see `packages/vibe-trading/DIVERGENCE.md`; own hostname; options math, IBKR connector, and Telegram pattern adapted into the Desk |
 | MiroFish | `packages/mirofish` | `7657031ac01184afe2cb220f5ee3545573b5e843` | AGPL-3.0 | Unmodified Vue client built as static assets for GCS, Flask backend image built locally; financial prediction is not shipped and activation needs Zep Cloud + OpenAI-compatible LLM key |
 | deer-flow | `packages/deer-flow` | `ee44d1ebc77d` | MIT | Borrow scheduler, auth, and chat UI patterns; do not fork |
 | AG-UI | `packages/ag-ui` | `97f789cc1c48` | MIT | Adopt the protocol; skip CopilotKit |
