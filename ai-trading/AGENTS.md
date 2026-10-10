@@ -66,14 +66,14 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 ## Git
 
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
-- **Checkout ownership (owner, 2026-10-10):**
-  - The main ai-trading coding session works in the main checkout (`/Users/tobytran/personal/family-app`) on its own `feature/ai-trading-*` branch, so the owner can review its mockups and plans there.
+- **Checkout (owner, 2026-10-10; root `AGENTS.md`):**
+  - Main sessions work in the main checkout (`/Users/tobytran/personal/family-app`) on the local branch `feature/toby`, so the owner can review mockups and plans there.
+  - A main session never creates or uses a git worktree, and never suggests one, unless the owner explicitly tells that session to.
+  - Only subagents use worktrees: under `.worktrees/`, on their own `feature/*` branches (release branches from `origin/main` included). The main session merges their branch into `feature/toby`, then removes the worktree and deletes the branch.
   - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
-  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, fast-forward the main checkout's local branch to `origin/dev`.
-  - The main session's subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
-  - Parallel sessions also use worktrees.
-  - The owner resolves conflicts by assigning sessions to worktrees.
-  - Open pull requests to `dev`.
+  - Update `feature/toby` with `git fetch origin` and `git merge origin/dev`. ai-trading sessions never reset, rebase, or force-push it.
+  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, leave `feature/toby` merged up to `origin/dev`.
+  - Open pull requests from `feature/toby` to `dev`.
 - **Standing delivery authorization (personal project, 2026-10-10):** after completing each requested implementation phase, run verification/review, commit and push, create and merge its PR to `dev`, then release and deploy it immediately without asking for routine approval. Do not stop at a branch-choice menu, an unmerged PR, or a "ready to deploy" handoff. Monitor CI/deployment and verify the live result before reporting the phase complete.
 - Releases to `main` carry only the completed phase's ai-trading paths (and its app-specific workflow changes when needed), on a branch from `origin/main`. The standing authorization above covers that scoped release; it replaces the old per-release approval gate. Never merge all of `dev` into `main`, which would also release unrelated expense phases.
 - Deploys keep MiroFish in its current state (`MIROFISH_ACTIVATE=keep`); turn it on or off only with the `activate_mirofish` or `stop_mirofish` dispatch inputs. Upload static assets only when that phase changes them.

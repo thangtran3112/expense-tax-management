@@ -5,13 +5,11 @@ Each package's rules live in its own `AGENTS.md` (see "Package rules"). This fil
 ## Shared Git Checkout
 
 - Several coding sessions work in this repository at the same time.
-- The owner assigns the main checkout (`/Users/tobytran/personal/family-app`) to one main session. Other sessions and all subagents use worktrees under `.worktrees/`.
-- Before you switch branches, reset, stash, or commit in the main checkout, run `git status --short --branch`.
-- If the main checkout is on another session's branch or has changes you did not make:
-  - do not switch, reset, stash, or commit there;
-  - use your own worktree;
-  - tell the owner.
-- Remove your own worktree after its branch is merged.
+- **Main sessions work in the main checkout (`/Users/tobytran/personal/family-app`) on the local branch `feature/toby`.** Never switch it to another branch or leave it detached.
+- **A main session never creates or uses a git worktree, and never suggests one, unless the owner explicitly tells that session to** (owner rule, 2026-10-10).
+- Only subagents work in worktrees, under `.worktrees/`, each on its own `feature/*` branch. The main session merges the subagent's branch into `feature/toby`, then removes the worktree and deletes the branch.
+- Before you commit, merge, stash, or reset in the main checkout, run `git status --short --branch`. Stage exact paths only; never stage, stash, or discard changes you did not make. If another session's changes are in the way, stop and tell the owner.
+- A reset of `feature/toby` discards every session's commits that are not on `dev` yet. Before any reset, check `git log origin/dev..feature/toby` for other sessions' commits; if there are any, ask the owner.
 
 ## Package rules
 
@@ -35,4 +33,4 @@ Start a session inside the package you are changing. Each package's `AGENTS.md` 
 
 ## Parallel sessions
 
-Stay inside your area, follow any plan another session has published in the repo, keep edits to shared files (such as `ai-trading/plans/STATUS.md`) small and additive, rebase before you push, and never stage or revert another session's changes.
+Stay inside your area, follow any plan another session has published in the repo, keep edits to shared files (such as `ai-trading/plans/STATUS.md`) small and additive, merge `origin/dev` before you push, and never stage or revert another session's changes.

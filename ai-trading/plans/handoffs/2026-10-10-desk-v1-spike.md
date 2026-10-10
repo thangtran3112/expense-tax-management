@@ -22,13 +22,13 @@ Paths below are relative to `ai-trading/` unless they start with `../`.
 | Plan | `02c` master plan with phases 0–7, Global Constraints, Review Focus, Shared Interfaces, and phase outlines. Only Phase 0 has a detailed task file. Each later phase gets its own task file, written with the writing-plans skill and reviewed by the owner before it starts. |
 | Phase 0 spike | Tasks 0.1–0.3 are done: desk-side checks, docs research, and the probe tools in `tools/ibkr-probe/` (9 tests, ruff clean). Task 0.4 (owner IBKR setup) is open, and Tasks 0.5–0.6 wait on it. |
 | Research notes | Local and gitignored, under `temp/research/`: vendors, brokers, IBKR docs, upstream tools, upstream strategy models |
-| Git | Everything this session produced is merged to `dev` (PR #74). No branch, worktree, or uncommitted work is handed over; this file and the merged files are the whole handoff. The main checkout belongs to the ai-trading main session (owner direction, 2026-10-10). |
+| Git | Everything this session produced is merged to `dev` (PR #74). No branch, worktree, or uncommitted work is handed over; this file and the merged files are the whole handoff. The main session works in the main checkout on `feature/toby` (owner direction, 2026-10-10). |
 
 ## Next Steps, in Order
 
-0. **Start a fresh branch from `dev`.**
-   - Run `git -C .. status --short --branch`. If the main checkout has changes you did not make, stop and tell the owner (root `../AGENTS.md`).
-   - Run `git -C .. fetch origin && git -C .. switch -c feature/ai-trading-desk-p0 origin/dev`. Pick any `feature/ai-trading-*` name.
+0. **Work on `feature/toby` in the main checkout.** Never open a worktree for the main session unless the owner explicitly says so (root `../AGENTS.md`).
+   - Run `git -C .. status --short --branch`. It should show `## feature/toby`. If there are changes you did not make, stop and tell the owner.
+   - Run `git -C .. fetch origin && git -C .. merge origin/dev`.
 1. **Ask the owner for Task 0.4** (`phase-0-spike.md`):
    - create the data username and its subscriptions (about $16 per month: $10 + $4.50 + $1.50);
    - check whether that username has its own paper account, and switch on data sharing;
@@ -65,10 +65,9 @@ Paths below are relative to `ai-trading/` unless they start with `../`.
   - The open-source lane owns the hub, the upstream apps, and the hub's move to `trading-hub`. Phase 4 waits for that move; it does not redo it.
   - Do not edit the other lane's files. Keep edits to `plans/STATUS.md` and `AGENTS.md` small and additive.
   - The open-source lane's newest handoff is `plans/handoffs/*trading-hub*`.
-- **Shared checkout.** Expense sessions' own `AGENTS.md` says they work on `feature/toby` in the main checkout, but the owner gave the main checkout to the ai-trading main session.
-  - The root `../AGENTS.md` now tells every session to check `git status --short --branch` before switching or committing there.
-  - Watch for commits on our branch that are not ours, and tell the owner.
-  - Push often.
+- **Shared checkout.** Expense and ai-trading main sessions both work on `feature/toby` in the main checkout (root `../AGENTS.md`).
+  - Stage exact paths only, and leave other sessions' changes alone.
+  - Expense rules allow resetting and force-pushing `feature/toby` after a squash merge, which drops any unmerged ai-trading commits. Push often and get Desk work to `dev` quickly.
 - **Delivery.**
   - Pull requests to `dev` must pass the required "Contracts, services, workers, frontends" check, and auto-merge is disabled. Use `gh pr checks <n> --watch`, then `gh pr merge <n> --squash`. Never pass `--delete-branch`, `--admin`, or force pushes.
   - The ruleset also requires the branch to be up to date with `dev`, and the expense CI takes about 15 minutes, so `dev` often moves during a run. When the merge says "not up to date", run `gh pr update-branch <n>`, wait for the checks again, then merge.
