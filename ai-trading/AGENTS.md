@@ -67,11 +67,11 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
 - **Checkout ownership (owner, 2026-10-10):**
-  - The main ai-trading coding session works in the main checkout (`/Users/tobytran/personal/family-app`) on its own `feature/ai-trading-*` branch, so the owner can review its mockups and plans there.
+  - The main checkout (`/Users/tobytran/personal/family-app`) always stays on `feature/toby` (root `AGENTS.md`). When the owner makes an ai-trading session the main session, it works directly on `feature/toby` there, so the owner can review its mockups and plans.
+  - Before new work, run `git fetch origin` and fast-forward `feature/toby` onto `origin/dev`. If `feature/toby` holds commits that are not on `dev` yet, they belong to another session: do not reset or rewrite them, and ask the owner.
   - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
-  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, fast-forward the main checkout's local branch to `origin/dev`.
-  - The main session's subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
-  - Parallel sessions also use worktrees.
+  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, leave the main checkout on `feature/toby`, fast-forwarded to `origin/dev`.
+  - Subagents and parallel sessions work in worktrees under `.worktrees/` on their own `feature/*` branches, never `feature/toby`. The main session merges subagent work into `feature/toby`, then removes the worktree.
   - The owner resolves conflicts by assigning sessions to worktrees.
   - Open pull requests to `dev`.
 - **Standing delivery authorization (personal project, 2026-10-10):** after completing each requested implementation phase, run verification/review, commit and push, create and merge its PR to `dev`, then release and deploy it immediately without asking for routine approval. Do not stop at a branch-choice menu, an unmerged PR, or a "ready to deploy" handoff. Monitor CI/deployment and verify the live result before reporting the phase complete.
