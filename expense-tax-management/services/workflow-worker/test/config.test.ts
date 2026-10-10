@@ -63,7 +63,36 @@ describe("workerConfigFromEnv", () => {
           subject: "mch_workerMailbox",
         },
       },
+      openAiApiKeys: [],
     });
+  });
+
+  it("collects configured OpenAI keys in order, trimmed", () => {
+    const config = workerConfigFromEnv({
+      ...ENV,
+      OPENAI_API_KEY: " sk-primary ",
+      OPENAI_API_KEY_1: "sk-secondary",
+      OPENAI_API_KEY_2: "sk-tertiary",
+    });
+
+    expect(config.openAiApiKeys).toEqual(["sk-primary", "sk-secondary", "sk-tertiary"]);
+  });
+
+  it("drops empty-string and whitespace-only OpenAI keys", () => {
+    const config = workerConfigFromEnv({
+      ...ENV,
+      OPENAI_API_KEY: "",
+      OPENAI_API_KEY_1: "   ",
+      OPENAI_API_KEY_2: "sk-only-one",
+    });
+
+    expect(config.openAiApiKeys).toEqual(["sk-only-one"]);
+  });
+
+  it("defaults to no OpenAI keys when none are set, and never fails parsing because of them", () => {
+    const config = workerConfigFromEnv(ENV);
+
+    expect(config.openAiApiKeys).toEqual([]);
   });
 
   it("fix round 5: mailboxApp and mailboxBroker pick distinct machine pairs by audience", () => {
