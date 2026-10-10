@@ -340,6 +340,17 @@ rollback() {
 trap 'rollback "$?"' ERR
 
 compose pull
+# Real receipt OCR via OpenAI fix round 3: foundry migration 007 repoints
+# the OCR routes at OpenAI, but the OLD workflow-worker image (still
+# running here, before the image swap below) ignores routes and always
+# uses the fake extractor -- a receipt processed between the migration
+# and the swap would be saved with placeholder data. No worker may run
+# while migrations change the data it reads; any job created meanwhile
+# simply waits in the Temporal task queue until the new worker starts
+# below. A failure to stop it must not itself fail the deploy or trigger
+# rollback -- Compose state is still valid either way, and `compose up -d`
+# below starts (or restarts) workflow-worker regardless.
+compose stop workflow-worker || printf 'warning: could not stop workflow-worker before migrations\n' >&2
 compose run --rm app-api-migrate
 compose run --rm foundry-service-migrate
 if [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]]; then
