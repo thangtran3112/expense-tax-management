@@ -19,6 +19,9 @@ import {
   createMailboxMaterializeActivities,
   createMailboxOcrActivities,
 } from "../src/activities/mailbox-ingestion.js";
+import { extractFakeReceipt } from "../src/providers/fake-ocr.js";
+import { createOpenAiReceiptExtractor } from "../src/providers/openai-ocr.js";
+import { createReceiptExtractor } from "../src/providers/receipt-extractor.js";
 
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
 const jobReference = {
@@ -149,6 +152,46 @@ describe("mailbox_ocr_receipt", () => {
       .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
       .catch((caught: unknown) => caught);
     expect(error).toMatchObject({ type: "OcrUnsupportedFormat", nonRetryable: true });
+    expect(submitResult).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1 (task-3-review.md, Important #2): composed with the REAL
+  // Task 2 extractor stack (createReceiptExtractor + createOpenAiReceiptExtractor)
+  // and a fake `fetch` -- unsupported attachment bytes, not an injected
+  // ApplicationFailure, drive the rejection; sniffReceiptFormat must reject
+  // these before any network call.
+  it.each([
+    ["a GIF", Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00])],
+    ["a TIFF", Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00])],
+    ["a ZIP/DOCX", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00])],
+  ])("rejects %s attachment as non-retryable OcrUnsupportedFormat through the real extractor, without calling fetch", async (_label, data) => {
+    const getOcrInput = vi.fn().mockResolvedValue({
+      fileId: "file-1",
+      expectedSha256: createHash("sha256").update(data).digest("hex"),
+      modeKey: "ocr_mode_fast",
+    });
+    const downloadFile = vi.fn().mockResolvedValue(data);
+    const submitResult = vi.fn();
+    const getEffectiveRoute = vi.fn().mockResolvedValue(ROUTE);
+    const fakeFetch = vi.fn();
+    const fakeOcrSpy = vi.fn(extractFakeReceipt);
+    const extractReceipt = createReceiptExtractor({
+      openai: createOpenAiReceiptExtractor({ apiKeys: ["test-key"], fetch: fakeFetch, log: () => undefined }),
+      fake: fakeOcrSpy,
+    });
+
+    const activities = createMailboxOcrActivities({
+      appApi: { getOcrInput, downloadFile, submitResult } as unknown as AppApiClient,
+      foundry: { getEffectiveRoute } as unknown as FoundryClient,
+      extractReceipt,
+    });
+
+    const error = await activities
+      .mailbox_ocr_receipt({ jobReference, expectedJobVersion: 2 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ type: "OcrUnsupportedFormat", nonRetryable: true });
+    expect(fakeFetch).not.toHaveBeenCalled();
+    expect(fakeOcrSpy).not.toHaveBeenCalled();
     expect(submitResult).not.toHaveBeenCalled();
   });
 
