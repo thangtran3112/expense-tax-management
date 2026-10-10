@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "Opening-range breakout (15 min)",
+  "watch": { "universe": { "watchlist": "Day movers" }, "session": "regular", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "op": "crosses_above", "left": { "series": "close" }, "right": { "level": "opening_range_high", "minutes": 15 } },
+      { "op": "gte", "left": { "series": "rvol", "lookbackDays": 10 }, "right": { "value": 2 } },
+      { "op": "gt", "left": { "series": "close" }, "right": { "series": "vwap" } }
+    ]
+  },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 200 }, "stop": { "level": "opening_range_low", "minutes": 15 }, "target": { "r": 2 } }
+  },
+  "limits": { "maxTradesPerDay": 3, "maxOpenPositions": 2, "flatBy": "15:55", "pauseAfterDailyLossUsd": 600 }
+}

@@ -60,6 +60,39 @@ jobs:
       - name: Upload-hub-static mock-gcloud test
         run: ../deploy/ci/upload-hub-static.test.sh
 
+  desk:
+    name: Desk contracts and backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ai-trading/contracts/pnpm-lock.yaml
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: ai-trading/backend/uv.lock
+      - name: Contracts (Zod, fixtures, JSON Schema drift)
+        working-directory: ai-trading/contracts
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+      - name: Backend (Pydantic parity and drift, core, templates)
+        working-directory: ai-trading/backend
+        run: |
+          uv sync --locked
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q
+
   scripts:
     name: Scripts and compose
     runs-on: ubuntu-latest

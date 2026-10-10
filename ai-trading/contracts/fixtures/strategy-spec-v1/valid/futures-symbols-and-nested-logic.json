@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "name": "Fixture",
+  "watch": { "universe": { "symbols": ["/ES", "/MNQ", "BRK.B", "SPY"] }, "session": "extended", "runOn": "bar_close_1m" },
+  "when": {
+    "all": [
+      { "not": { "op": "lt", "left": { "series": "ema", "length": 9 }, "right": { "series": "ema", "length": 21 } } },
+      { "any": [
+        { "op": "within_pct", "left": { "series": "close" }, "right": { "level": "prior_day_close" }, "pct": 0.5 },
+        { "op": "crosses_below", "left": { "series": "close" }, "right": { "level": "overnight_low" } }
+      ] },
+      { "op": "time_between", "start": "18:00", "end": "02:00" }
+    ]
+  },
+  "then": { "alert": { "channels": ["inbox", "slack"], "severity": "risk" } }
+}

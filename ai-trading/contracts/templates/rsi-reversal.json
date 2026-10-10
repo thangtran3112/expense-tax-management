@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "RSI oversold reversal",
+  "watch": { "universe": { "watchlist": "Swing" }, "session": "regular", "runOn": "daily_close" },
+  "when": { "op": "crosses_above", "left": { "series": "rsi", "length": 14 }, "right": { "value": 30 } },
+  "then": {
+    "alert": { "channels": ["inbox", "telegram"], "severity": "opportunity" },
+    "paperOrder": { "side": "buy", "size": { "riskUsd": 300 }, "stop": { "atrMultiple": 1.5 }, "target": { "r": 2 } }
+  },
+  "limits": { "maxOpenPositions": 3 }
+}
