@@ -1,6 +1,6 @@
 # AI Trading: Status
 
-Main tracker for the family AI trading assistant. Child plans and phase details live in `subplans/`. Scratch files go in `../temp/` (gitignored). The four release-1 upstream apps are pinned in `../packages/` as git submodules; deer-flow and AG-UI stay gitignored references. No ai-trading service has been deployed to production.
+Main tracker for the family AI trading assistant. Child plans and phase details live in `subplans/`. Scratch files go in `../temp/` (gitignored). The four release-1 upstream apps are pinned in `../packages/` as git submodules; deer-flow and AG-UI stay gitignored references. Release 1 is live; pending changes and rollout gates are recorded below.
 
 > `family-app` is a public GitHub repository. Never commit balances, positions, account numbers, broker credentials, or API keys.
 
@@ -56,6 +56,8 @@ Releases: release 1 (MVP) is a Trading Hub web app for four unmodified upstream 
 | 2026-10-07 | Defer Cloudflare Access/Zero Trust from Release 1; Caddy/Clerk is the sole backend gate for all four apps, including Vibe-Trading. Keep the Zero Trust Terraform root for a separate future decision. | Accepted | First Access apply failed (403 and account not enabled); Cloudflare requires dashboard onboarding and payment details even for Free, outside this repo's IaC-only policy. Removing its Release 1 dependency leaves authenticated tunnel/Worker staging possible without changing expense infrastructure. |
 
 ## Release 1 Build Notes (2026-10-04)
+
+- **Terminal/provider repair rollout in progress:** the captive launcher retains output and offers another analysis after completion, errors, or Ctrl+C; reconnect never starts another run automatically. Vibe's Firestore default is now direct OpenAI; a tested external startup wrapper fixes the misleading OpenRouter example-settings label without copying provider keys into settings. Full rebuilt-image/Caddy smoke and offline suites pass; upstream sources remain untouched. The owner's standing authorization now requires automatic `dev` merge, scoped release, deployment, and live verification after each completed phase, without another routine approval. Financial Datasets alternatives remain a separate, unapproved design discussion.
 
 - **Verified follow-up rollout (PRs #53/#54 and #55/#57):** production images at `ee15c11` are healthy, including opt-in MiroFish. Vibe-Trading's hash-pinned native Anthropic adapter responds using the rotated shared Firestore key; all three app-container keys match the store, without being printed. The Account panel on public/staging hubs shows current Clerk name/email read-only; browser Sign out returns to login and new terminal requests return 401. Existing copied-cookie, cross-tab in-flight refresh, and open-stream expiry limits remain explicit in the runbook. Production smoke builds retain cache reads but disable optional cache uploads after a cache-export timeout blocked deployment. Public Worker cutover is still a separate approval gate.
 
