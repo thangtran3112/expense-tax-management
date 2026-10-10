@@ -50,7 +50,7 @@ tunnel_ready() {
 
 # --- main flow below this line; test-deploy-firestore.sh sources only the
 # function definitions above it and calls them directly. ---
-SERVICES=(web ta-terminal ahf-terminal vibe-trading cloudflared gateway auth)
+SERVICES=(web ta-terminal ahf-terminal market-data vibe-trading cloudflared gateway auth)
 mirofish_enabled && SERVICES+=(mirofish)
 
 failing=()

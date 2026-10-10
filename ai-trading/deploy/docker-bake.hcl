@@ -30,7 +30,7 @@ variable "CLERK_PUBLISHABLE_KEY" {
 }
 
 group "default" {
-  targets = ["web", "ta-terminal", "ahf-terminal", "vibe-trading", "mirofish-backend", "auth"]
+  targets = ["web", "ta-terminal", "ahf-terminal", "market-data", "vibe-trading", "mirofish-backend", "auth"]
 }
 
 target "web" {
@@ -66,6 +66,11 @@ target "ahf-terminal" {
     tools    = "target:terminal-tools"
   }
   tags = ["${REGISTRY}/ai-trading-ahf-terminal:${TAG}"]
+}
+
+target "market-data" {
+  context = "ai-trading/market-data"
+  tags    = ["${REGISTRY}/ai-trading-market-data:${TAG}"]
 }
 
 target "vibe-upstream" {

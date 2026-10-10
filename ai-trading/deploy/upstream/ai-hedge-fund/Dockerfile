@@ -21,6 +21,8 @@ RUN apt-get update \
  && useradd --create-home --shell /usr/sbin/nologin app \
  && install -d -o app -g app -m 0700 /home/app/.hedge-fund
 COPY --from=build /opt/venv /opt/venv
+# Repoints upstream's FDClient at the family market-data service when FD_BASE_URL is set (01m).
+COPY sitecustomize.py /opt/venv/lib/python3.11/site-packages/sitecustomize.py
 COPY --from=tools / /
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \

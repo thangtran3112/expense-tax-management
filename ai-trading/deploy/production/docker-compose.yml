@@ -39,6 +39,8 @@ services:
     restart: unless-stopped
     env_file:
       - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/ai-hedge-fund.env
+    environment:
+      FD_BASE_URL: http://market-data:8000
     volumes:
       - ahf-data:/home/app/.hedge-fund
     networks: [ahf]
@@ -51,6 +53,18 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  market-data:
+    # Financial Datasets-shaped API for ai-hedge-fund: Alpaca prices + SEC fundamentals (01m).
+    image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-market-data:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - ${AI_TRADING_SECRETS_DIR:-/etc/family-app/ai-trading}/market-data.env
+    networks: [ahf]
+    mem_limit: 256m
+    pids_limit: 128
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
 
   vibe-trading:
     image: ${AI_TRADING_REGISTRY:-ghcr.io/thangtran3112/family-app}/ai-trading-vibe-trading:${AI_TRADING_IMAGE_TAG:?AI_TRADING_IMAGE_TAG is required}
