@@ -26,7 +26,7 @@ export function TerminalFrame({ app }: { app: TerminalApp }) {
           Reconnect
         </button>
         <a
-          href={app.terminalPath}
+          href={app.hostUrl}
           target="_blank"
           rel="noopener"
           className="flex h-11 cursor-pointer items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"

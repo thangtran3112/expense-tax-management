@@ -3,7 +3,7 @@
 	auto_https off
 }
 
-# Hub and terminals, like trading.tobytran.dev behind the tunnel.
+# Hub and terminals, like trading-hub.tobytran.dev's dynamic paths behind the tunnel.
 :8080 {
 	handle /u/tradingagents* {
 		reverse_proxy ta-terminal:7681 {

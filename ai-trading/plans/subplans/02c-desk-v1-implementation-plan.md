@@ -55,8 +55,8 @@
 - **Public repository (02a §10):** no balances, positions, account numbers, emails, or VPS addresses in commits. Mockups and fixtures use made-up numbers.
 - **Upstream code:** never edit `ai-trading/packages/*` (upstream submodules).
 - **Git (AGENTS.md):**
-  - The main session works in the main checkout on its own `feature/ai-trading-*` branch, created from `origin/dev`.
-  - Subagents work in `.worktrees/` worktrees, and the main session merges their branches.
+  - The main session works in the main checkout on `feature/toby`, merged up to `origin/dev` before new work. A worktree for the main session is opt-in: only with the owner's explicit instruction or approval.
+  - Subagents work in `.worktrees/` worktrees, and the main session merges their branches into `feature/toby`.
   - Single-line commit messages without trailers.
   - Pull requests to `dev`.
 
@@ -92,7 +92,7 @@
 | Phase | Ships | Depends on | Task file | Status |
 |---|---|---|---|---|
 | 0. Verification spike | Answers for 02a §12; read-only IBKR and Flex probe tools | none | [phase-0-spike.md](02c-desk-v1-tasks/phase-0-spike.md) | In progress |
-| 1. Strategy core | Contracts package, backend scaffold, session calendar, indicators, levels, evaluator, intraday and swing templates (no I/O) | none; can run beside Phase 0 | `phase-1-strategy-core.md` | Next |
+| 1. Strategy core | Contracts package, backend scaffold, session calendar, indicators, levels, evaluator, intraday and swing templates (no I/O) | none; can run beside Phase 0 | [phase-1-strategy-core.md](02c-desk-v1-tasks/phase-1-strategy-core.md) | Plan written; awaiting owner review |
 | 2. Data foundation | Postgres schema, bar store and backfills, IBKR live adapter, futures roll, streaming slots, calendar/news/fundamentals adapters | 0, 1 | `phase-2-data.md` | Planned |
 | 3. Runtime and alerts | `api` and `scheduler`, live evaluation, alert outbox, Telegram/Slack, watchdog checks, compose services, Firestore profile, backups (deployed) | 2 | `phase-3-runtime.md` | Planned |
 | 4. Desk web and hostnames | Desk static app (Today, Strategies, Watchlists, Settings); `trading.tobytran.dev` points at the Desk after the open-source lane moves the hub to `trading-hub` | 3, plus the hub move (open-source lane) | `phase-4-web.md` | Planned |

@@ -96,23 +96,13 @@ Part of [02c-desk-v1-implementation-plan.md](../02c-desk-v1-implementation-plan.
 - Consumes: nothing.
 - Produces: a data username with live subscriptions and its paper login (or the two-gateway fallback); a Flex query ID and token stored in Firestore.
 
-- [ ] **Step 1: Create the data username.**
-  - On the account that should pay for data, go to Client Portal → Settings → Users & Access Rights and add a username for the same account holder.
-  - Finish its first login, including 2FA enrollment.
-  - Answer the market-data questionnaire as **non-professional**.
-- [ ] **Step 2: Subscribe the data username** (Settings → Market Data Subscriptions):
-  - US Securities Snapshot and Futures Value Bundle ($10)
-  - US Equity and Options Add-On Streaming Bundle ($4.50)
-  - OPRA Top of Book ($1.50)
-  - Confirm the account has futures trading permission.
-- [ ] **Step 3: Check whether the data username has its own paper account.**
-  - Logged in as the data username, open Settings → Paper Trading Account.
-  - If it exists, switch on "Share real-time market data subscriptions with paper trading account" and note the paper login.
-  - If it does not exist, note that. Task 0.5 then probes the two-gateway fallback.
-- [ ] **Step 4: Create the Flex query and token** (README "Probe a Flex Query", steps 1–3).
-  - Repeat for each account to import (both IBKR accounts).
-  - The keys are `IBKR_FLEX_TOKEN` and `IBKR_FLEX_QUERY_ID`. Phase 5 adds per-account suffixes.
-- [ ] **Step 5: Install IB Gateway** (stable) from IBKR on the Mac, for the probe run.
+The owner follows the step-by-step guide [02e-ibkr-data-user-setup.md](../02e-ibkr-data-user-setup.md), which also explains why the Desk needs its own username.
+
+- [ ] **Step 1: Create the data username** (02e Step 1).
+- [ ] **Step 2: Subscribe the data username** (02e Step 2): the USD 10 bundle and the USD 4.50 streaming add-on; OPRA only if Task 0.5 shows it is needed.
+- [ ] **Step 3: Paper account and data sharing** (02e Step 3). If there is no paper account, Task 0.5 probes the two-gateway fallback.
+- [ ] **Step 4: Flex query and token in `ai-trading/desk`** (02e Step 4). One account for the spike; Phase 5 adds the other with per-account key names.
+- [ ] **Step 5: Install IB Gateway on the Mac** (02e Step 5).
 
 ### Task 0.5: Run the probes and record the results (main session with the owner)
 
