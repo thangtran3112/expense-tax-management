@@ -13,9 +13,11 @@
 // closed — this is proven by this module's tests, not assumed.
 import { verifyToken } from "@clerk/backend";
 
-// Fixed per 01e's binding ruling: this hub's Clerk instance issuer and this
-// hub's own audience. Not caller-configurable — a wrong value here must not be
-// satisfiable by a malicious or misconfigured caller.
+// Fixed per 01e's binding ruling. CLERK_AUDIENCE is the custom `aud` claim of
+// the single Clerk instance's session-token template, which expense shares,
+// so it cannot differ per hub host (01l §3.4): treat it as an opaque marker.
+// The per-host check is `azp` against ALLOWED_ORIGINS. Not caller-configurable.
+// A wrong value here must not be satisfiable by a malicious or misconfigured caller.
 export const CLERK_ISSUER = "https://clerk.tobytran.dev";
 export const CLERK_AUDIENCE = "https://trading.tobytran.dev";
 
