@@ -159,7 +159,12 @@ validate_required_values() {
   done
   # Real receipt OCR via OpenAI, Task 4: workflow-worker is the only
   # consumer; any one of the three keys is enough, never print a value.
-  [[ -n "${OPENAI_API_KEY:-}${OPENAI_API_KEY_1:-}${OPENAI_API_KEY_2:-}" ]] || \
+  # A whitespace-only value trims to nothing in the worker's own
+  # normalization (config.ts), so strip whitespace here too before
+  # testing for non-emptiness -- a deploy must never pass this gate on a
+  # key that starts the worker with zero usable keys.
+  local openai_key="${OPENAI_API_KEY:-}" openai_key_1="${OPENAI_API_KEY_1:-}" openai_key_2="${OPENAI_API_KEY_2:-}"
+  [[ -n "${openai_key//[[:space:]]/}${openai_key_1//[[:space:]]/}${openai_key_2//[[:space:]]/}" ]] || \
     die "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required"
   [[ "${MAILBOX_FEATURE_ENABLED:-false}" == "true" ]] || return 0
   for key in CLERK_MAILBOX_APP_API_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_MACHINE_SECRET_KEY CLERK_MAILBOX_WORKER_APP_MACHINE_SECRET_KEY CLERK_MAILBOX_BROKER_MACHINE_SECRET_KEY \

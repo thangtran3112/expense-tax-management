@@ -415,10 +415,30 @@ esac
     );
     expect(none.stderr).not.toContain("test-key");
 
+    // Fix round 1: a value that is only whitespace must be treated as
+    // absent -- the worker trims it to nothing (config.ts), so a deploy
+    // that passes this gate on whitespace alone would start the worker
+    // with zero usable keys.
+    const whitespaceOnly = run({
+      ...base,
+      OPENAI_API_KEY: "   ",
+      OPENAI_API_KEY_1: "\t",
+      OPENAI_API_KEY_2: "  \t  ",
+    });
+    expect(whitespaceOnly.status).not.toBe(0);
+    expect(whitespaceOnly.stderr).toContain(
+      "at least one of OPENAI_API_KEY, OPENAI_API_KEY_1, OPENAI_API_KEY_2 is required",
+    );
+
     expect(
       run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "test-key-1", OPENAI_API_KEY_2: "" }).status,
     ).toBe(0);
     expect(run({ ...base, OPENAI_API_KEY: "test-key-2" }).status).toBe(0);
+    // A real value with surrounding whitespace still counts -- only an
+    // all-whitespace value is rejected.
+    expect(
+      run({ ...base, OPENAI_API_KEY: "", OPENAI_API_KEY_1: "", OPENAI_API_KEY_2: "  test-key-3  " }).status,
+    ).toBe(0);
   });
 
   it("deploys migrations before services and rolls back to recorded prior tag", () => {
