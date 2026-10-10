@@ -88,7 +88,7 @@ def futures_overnight_range_break(fire: bool) -> Scenario:
 
 def volume_spike(fire: bool) -> Scenario:
     bars, daily = stock_history()
-    set_bar(bars, DAY, "10:30", volume=200_000.0 if fire else 100_000.0)  # rvol 4.26 or 2.62
+    set_bar(bars, DAY, "10:30", volume=200_000.0 if fire else 122_000.0)  # rvol 4.26 or 2.98
     return Scenario("stock", bars, daily)
 
 

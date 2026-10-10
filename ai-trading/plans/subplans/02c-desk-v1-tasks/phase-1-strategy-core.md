@@ -1582,6 +1582,21 @@ def test_weekly_reads_the_last_trading_day_of_a_finished_week():
     assert midweek == []
 
 
+def test_unknown_data_does_not_reset_the_edge():
+    bars = minute_bars("stock", DAY)
+    closes(bars, DAY, "10:00", "16:00", 101.0)
+    bars.loc[et(DAY, "10:01"), "close"] = float("nan")
+    assert times(run(make_spec(above(100.5)), bars)) == ["10-06 10:00"]
+
+
+def test_a_series_first_value_is_not_a_crossing():
+    bars = minute_bars("stock", DAY, price=99.0)
+    closes(bars, DAY, "04:02", "09:30", 101.0)
+    when = {"op": "crosses_above", "left": CLOSE, "right": {"series": "sma", "length": 3}}
+    spec = make_spec(when, session="extended")
+    assert "10-06 04:02" not in times(run(spec, bars))
+
+
 def test_premarket_scan_reads_the_bars_closed_by_0830():
     days = trading_days("stock", DAY, 2)
     daily = daily_bars(days[:1], [100.0])
@@ -1761,15 +1776,18 @@ def _condition(node: dict[str, Any], frame: _Frame) -> pd.Series:
     if op == "within_pct":
         near = (left - right).abs().to_numpy() <= node["pct"] / 100 * right.abs().to_numpy()
         return _truth(near, known)
-    # crosses: now beyond, and the previous bar at or behind. A level that only became known on
-    # this bar is compared with its current value.
-    before_right = right.shift(1).fillna(right)
+    # crosses: now beyond, and the previous bar at or behind. A level or a constant that only
+    # became known on this bar is compared with its current value; a series needs its own known
+    # previous value, so it joins the known mask below instead of falling back.
+    before_right = right.shift(1)
+    if "series" not in node["right"]:
+        before_right = before_right.fillna(right)
     before_left = left.shift(1)
     if op == "crosses_above":
         now, before = left > right, before_left <= before_right
     else:
         now, before = left < right, before_left >= before_right
-    return _truth((now & before).to_numpy(), known & before_left.notna())
+    return _truth((now & before).to_numpy(), known & before_left.notna() & before_right.notna())
 
 
 def _points(run_on: str, frame: _Frame, session_name: str, as_of: pd.Timestamp) -> pd.Series:
@@ -1837,13 +1855,17 @@ def evaluate(
     if points.empty:
         return []
     rows = pd.Index(points.to_numpy())
-    now = pd.Series(truth.reindex(rows).fillna(False).to_numpy(dtype=bool), index=points.index)
+    now = truth.reindex(rows)
+    now.index = points.index
     if run_on == "premarket_0830":
-        fired = now
+        fired = now.fillna(False).astype(bool)
     else:
+        # An unknown point neither fires nor resets the edge: compare with the last KNOWN state
+        # before it (per day for bar_close_1m, the whole series for daily_close/weekly).
         groups = frame.days.to_series(index=frame.bars.index).reindex(rows).to_numpy()
-        before = now.groupby(groups if run_on == "bar_close_1m" else np.zeros(len(now))).shift(1)
-        fired = now & ~before.fillna(False).astype(bool)
+        keys = groups if run_on == "bar_close_1m" else np.zeros(len(now))
+        last_known = now.groupby(keys).transform(lambda s: s.ffill().shift(1))
+        fired = now.fillna(False).astype(bool) & ~last_known.fillna(False).astype(bool)
 
     evidence = {label(op): _series(op, frame).reindex(rows).to_numpy() for op in _operands(when)}
     out = []
@@ -1856,7 +1878,7 @@ def evaluate(
 - [ ] **Step 4: Run the tests.**
 
 Run: `cd ai-trading/backend && uv run pytest -q tests/test_evaluate.py && uv run ruff check . && uv run ruff format --check .`
-Expected: `13 passed`; ruff clean.
+Expected: `15 passed`; ruff clean.
 
 - [ ] **Step 5: Commit.**
 
@@ -1968,7 +1990,7 @@ def futures_overnight_range_break(fire: bool) -> Scenario:
 
 def volume_spike(fire: bool) -> Scenario:
     bars, daily = stock_history()
-    set_bar(bars, DAY, "10:30", volume=200_000.0 if fire else 100_000.0)  # rvol 4.26 or 2.62
+    set_bar(bars, DAY, "10:30", volume=200_000.0 if fire else 122_000.0)  # rvol 4.26 or 2.98
     return Scenario("stock", bars, daily)
 
 
@@ -2285,7 +2307,7 @@ Expected: `test_every_template_has_a_golden_case` fails (no templates yet), and 
 - [ ] **Step 4: Run every suite.**
 
 Run: `cd ai-trading/backend && uv run pytest -q && uv run ruff check . && uv run ruff format --check .`
-Expected: `103 passed` in about 15 seconds; ruff clean.
+Expected: `105 passed` in about 15 seconds; ruff clean.
 
 Run: `cd ai-trading/contracts && pnpm test`
 Expected: `# pass 38`, `# fail 0` (the ten templates are now validated too).
@@ -2357,7 +2379,7 @@ Expected: no output.
 
 Run: `cd ai-trading/contracts && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`
 Run: `cd ai-trading/backend && uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run pytest -q`
-Expected: `# pass 38`, `103 passed`, everything else clean.
+Expected: `# pass 38`, `105 passed`, everything else clean.
 
 - [ ] **Step 5: Commit.**
 

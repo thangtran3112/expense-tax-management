@@ -155,15 +155,18 @@ def _condition(node: dict[str, Any], frame: _Frame) -> pd.Series:
     if op == "within_pct":
         near = (left - right).abs().to_numpy() <= node["pct"] / 100 * right.abs().to_numpy()
         return _truth(near, known)
-    # crosses: now beyond, and the previous bar at or behind. A level that only became known on
-    # this bar is compared with its current value.
-    before_right = right.shift(1).fillna(right)
+    # crosses: now beyond, and the previous bar at or behind. A level or a constant that only
+    # became known on this bar is compared with its current value; a series needs its own known
+    # previous value, so it joins the known mask below instead of falling back.
+    before_right = right.shift(1)
+    if "series" not in node["right"]:
+        before_right = before_right.fillna(right)
     before_left = left.shift(1)
     if op == "crosses_above":
         now, before = left > right, before_left <= before_right
     else:
         now, before = left < right, before_left >= before_right
-    return _truth((now & before).to_numpy(), known & before_left.notna())
+    return _truth((now & before).to_numpy(), known & before_left.notna() & before_right.notna())
 
 
 def _points(run_on: str, frame: _Frame, session_name: str, as_of: pd.Timestamp) -> pd.Series:
@@ -231,13 +234,17 @@ def evaluate(
     if points.empty:
         return []
     rows = pd.Index(points.to_numpy())
-    now = pd.Series(truth.reindex(rows).fillna(False).to_numpy(dtype=bool), index=points.index)
+    now = truth.reindex(rows)
+    now.index = points.index
     if run_on == "premarket_0830":
-        fired = now
+        fired = now.fillna(False).astype(bool)
     else:
+        # An unknown point neither fires nor resets the edge: compare with the last KNOWN state
+        # before it (per day for bar_close_1m, the whole series for daily_close/weekly).
         groups = frame.days.to_series(index=frame.bars.index).reindex(rows).to_numpy()
-        before = now.groupby(groups if run_on == "bar_close_1m" else np.zeros(len(now))).shift(1)
-        fired = now & ~before.fillna(False).astype(bool)
+        keys = groups if run_on == "bar_close_1m" else np.zeros(len(now))
+        last_known = now.groupby(keys).transform(lambda s: s.ffill().shift(1))
+        fired = now.fillna(False).astype(bool) & ~last_known.fillna(False).astype(bool)
 
     evidence = {label(op): _series(op, frame).reindex(rows).to_numpy() for op in _operands(when)}
     out = []

@@ -130,6 +130,21 @@ def test_weekly_reads_the_last_trading_day_of_a_finished_week():
     assert midweek == []
 
 
+def test_unknown_data_does_not_reset_the_edge():
+    bars = minute_bars("stock", DAY)
+    closes(bars, DAY, "10:00", "16:00", 101.0)
+    bars.loc[et(DAY, "10:01"), "close"] = float("nan")
+    assert times(run(make_spec(above(100.5)), bars)) == ["10-06 10:00"]
+
+
+def test_a_series_first_value_is_not_a_crossing():
+    bars = minute_bars("stock", DAY, price=99.0)
+    closes(bars, DAY, "04:02", "09:30", 101.0)
+    when = {"op": "crosses_above", "left": CLOSE, "right": {"series": "sma", "length": 3}}
+    spec = make_spec(when, session="extended")
+    assert "10-06 04:02" not in times(run(spec, bars))
+
+
 def test_premarket_scan_reads_the_bars_closed_by_0830():
     days = trading_days("stock", DAY, 2)
     daily = daily_bars(days[:1], [100.0])
