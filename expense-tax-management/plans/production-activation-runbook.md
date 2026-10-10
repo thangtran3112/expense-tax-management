@@ -258,6 +258,8 @@ health-check only; no Temporal swap, no new migrations listed in Stage C).
 
 ## 6. Phase 4 — Connected Mailbox (3D) Activation
 
+**Status:** Live 2026-10-08/09 (`main` `be7af1e`). The real Gmail e2e passed through the resolve step. The first receipt's materialization hit the attachment-query bug, which #67/#68 fixed; a re-proof needs a fresh receipt email. Fixes found by the first real run: #56/#59, #60/#62, #63/#64, #65/#66, #67/#68. Ops steps beyond the table: enable the Gmail API, and add an entitlement override for `connected_mailbox_scan`.
+
 **Precise requirement finding (code-verified, corrects any assumption that
 `advance`/drain gates this phase):** mailbox workflows
 (`MailboxScanWorkflow`, `MailboxOcrReceiptWorkflow`,

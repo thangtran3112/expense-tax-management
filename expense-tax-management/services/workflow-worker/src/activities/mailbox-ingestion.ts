@@ -40,7 +40,9 @@ import {
 import { ApplicationFailure } from "@temporalio/activity";
 
 import { AppApiClientError, type AppApiClient } from "../clients/app-api.js";
+import type { FoundryClient } from "../clients/foundry.js";
 import { MailboxClientError, type MailboxAppApiClient } from "../clients/mailbox-client.js";
+import type { ReceiptExtractor } from "../providers/receipt-extractor.js";
 
 const TRANSIENT_CLIENT_ERROR_CODES = new Set(["timeout", "unavailable", "rate_limited"]);
 
@@ -59,12 +61,11 @@ function throwAppApiFailure(error: unknown, retryableType: string, nonRetryableT
 
 export interface MailboxOcrActivityDependencies {
   readonly appApi: AppApiClient;
-  readonly extractReceipt: (
-    data: Uint8Array,
-  ) => OcrExtractionResultV1 | Promise<OcrExtractionResultV1>;
+  readonly foundry: FoundryClient;
+  readonly extractReceipt: ReceiptExtractor;
 }
 
-export function createMailboxOcrActivities({ appApi, extractReceipt }: MailboxOcrActivityDependencies) {
+export function createMailboxOcrActivities({ appApi, foundry, extractReceipt }: MailboxOcrActivityDependencies) {
   return {
     async mailbox_ocr_receipt(input: {
       jobReference: JobReferenceV1;
@@ -95,10 +96,18 @@ export function createMailboxOcrActivities({ appApi, extractReceipt }: MailboxOc
         );
       }
 
+      let route: Awaited<ReturnType<FoundryClient["getEffectiveRoute"]>>;
+      try {
+        route = await foundry.getEffectiveRoute({ operation: "RECEIPT_OCR", modeKey: "ocr_mode_balanced" });
+      } catch {
+        throw ApplicationFailure.retryable("OCR route unavailable", "MailboxOcrRouteUnavailable");
+      }
+
       let extraction: OcrExtractionResultV1;
       try {
-        extraction = OcrExtractionResultV1Schema.parse(await extractReceipt(data));
-      } catch {
+        extraction = OcrExtractionResultV1Schema.parse(await extractReceipt(data, route));
+      } catch (error) {
+        if (error instanceof ApplicationFailure) throw error;
         throw ApplicationFailure.nonRetryable("mailbox OCR extraction failed", "MailboxOcrExtractionFailed");
       }
 

@@ -107,20 +107,34 @@ describe.skipIf(!integrationEnabled)("Phase 0C Foundry effective route", () => {
     await database?.destroy();
   });
 
-  it("resolves each seeded OCR mode to the fake model without secrets", async () => {
+  const EXPECTED_ROUTES = [
+    { modeKey: "ocr_mode_fast", providerModelId: "gpt-5.4-mini" },
+    { modeKey: "ocr_mode_balanced", providerModelId: "gpt-5.4-mini" },
+    { modeKey: "ocr_mode_accurate", providerModelId: "gpt-5.4" },
+  ] as const;
+
+  it("resolves each seeded OCR mode to its current OpenAI route without secrets", async () => {
     const domain = createRoutesDomain(database);
-    for (const modeKey of ["ocr_mode_fast", "ocr_mode_balanced", "ocr_mode_accurate"]) {
+    for (const { modeKey, providerModelId } of EXPECTED_ROUTES) {
       const route = await domain.resolveEffectiveRoute({
         operation: "RECEIPT_OCR",
         modeKey,
       });
-      expect(route.aiModelId).toBe(FAKE_MODEL_ID);
-      expect(route.providerKind).toBe("fake");
-      expect(route.providerModelId).toBe("fake-ocr-v1");
-      expect(route.routeVersionNumber).toBe(1);
+      expect(route.providerKind).toBe("openai");
+      expect(route.providerModelId).toBe(providerModelId);
+      expect(route.routeVersionNumber).toBe(2);
       expect(route).not.toHaveProperty("secretReference");
       expect(route).not.toHaveProperty("secretValue");
     }
+  });
+
+  it("keeps the fake model row active and selectable by id after the OpenAI migration", async () => {
+    const row = await database
+      .selectFrom("foundry.ai_models")
+      .select(["status"])
+      .where("id", "=", FAKE_MODEL_ID)
+      .executeTakeFirst();
+    expect(row?.status).toBe("active");
   });
 
   it("returns NOT_FOUND uniformly for unknown modes, operations, and retired routes", async () => {
