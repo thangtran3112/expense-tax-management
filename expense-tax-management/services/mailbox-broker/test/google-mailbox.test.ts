@@ -19,6 +19,7 @@ import {
   createMailboxProviderAdapter,
   decodeBase64UrlBounded,
   GMAIL_READONLY_SCOPE,
+  parseReceivedAt,
 } from "../src/google-mailbox.js";
 import { createOAuthState } from "../src/oauth-state.js";
 import { decryptVaultRow, selectVaultRow } from "../src/token-vault.js";
@@ -430,5 +431,45 @@ describe("decodeBase64UrlBounded", () => {
     const result = decodeBase64UrlBounded(overByOne.toString("base64url"), budget);
     expect(result.length).toBe(budget + 1);
     expect(result.equals(overByOne)).toBe(true);
+  });
+});
+
+/**
+ * Production bug fix -- a Gmail message's `Date` header is sender-
+ * controlled and frequently unparseable (spam, broken clients);
+ * `new Date(header).toISOString()` used to throw a RangeError on an
+ * invalid value, which getMessage's old single `try` around the whole
+ * method turned into a Gmail API "unknown" (503) that never let the
+ * cursor advance. Pure, no googleapis/network dependency, directly
+ * unit-testable the same way as decodeBase64UrlBounded above.
+ */
+describe("parseReceivedAt", () => {
+  it("falls back to internalDate when the Date header is unparseable", () => {
+    const internalDateMs = Date.UTC(2026, 9, 1, 12, 0, 0);
+    const result = parseReceivedAt("not a date", String(internalDateMs));
+    expect(result).toBe(new Date(internalDateMs).toISOString());
+  });
+
+  it("falls back to internalDate when there is no Date header", () => {
+    const internalDateMs = Date.UTC(2026, 9, 1, 12, 0, 0);
+    const result = parseReceivedAt("", String(internalDateMs));
+    expect(result).toBe(new Date(internalDateMs).toISOString());
+  });
+
+  it("falls back to now() when neither the Date header nor internalDate is usable", () => {
+    const fakeNow = new Date("2026-10-10T00:00:00.000Z");
+    const result = parseReceivedAt("not a date", "also not a number", () => fakeNow);
+    expect(result).toBe(fakeNow.toISOString());
+  });
+
+  it("falls back to now() when internalDate is missing entirely", () => {
+    const fakeNow = new Date("2026-10-10T00:00:00.000Z");
+    const result = parseReceivedAt("not a date", undefined, () => fakeNow);
+    expect(result).toBe(fakeNow.toISOString());
+  });
+
+  it("uses a valid Date header even when internalDate differs", () => {
+    const result = parseReceivedAt("Tue, 10 Oct 2026 12:00:00 +0000", String(Date.UTC(2020, 0, 1)));
+    expect(result).toBe("2026-10-10T12:00:00.000Z");
   });
 });
