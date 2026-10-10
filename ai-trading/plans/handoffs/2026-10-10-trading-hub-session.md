@@ -1,115 +1,47 @@
 # Handoff: Trading Hub lane (open-source apps)
 
-**Date:** 2026-10-10
-**From:** the Trading Hub session (worktree `.worktrees/ai-trading-hub`, removed after its last merge)
-**For:** the next Trading Hub session, started in `ai-trading/` of its own worktree
-**Read first:** `ai-trading/AGENTS.md` (rules, hostnames, lanes), `ai-trading/plans/STATUS.md` (tracker), `ai-trading/deploy/production/README.md` (runbook)
+**Date:** 2026-10-10 (second session of the day; replaces the first session's handoff, which stays in git history)
+**For:** the next Trading Hub session, started in `ai-trading/`
+**Read first:** `ai-trading/AGENTS.md` (rules, hostnames, lanes), root `AGENTS.md` (shared checkout, Actions minutes), `ai-trading/plans/STATUS.md`, `ai-trading/deploy/production/README.md`
 
 ## 1. Start here
 
-The main checkout (`/Users/tobytran/personal/family-app`) belongs to the Family Desk session (branch `feature/ai-trading-desk-v1` on 2026-10-10). Do not switch, reset, stash, or commit there. Start your own worktree and work in its `ai-trading/` folder:
+- Main sessions work in the main checkout on `feature/toby` (root `AGENTS.md`); worktrees only with the owner's approval, or for subagents.
+- `git -C .. status --short --branch`, then `git -C .. fetch origin && git -C .. merge origin/dev`. Never reset or rebase `feature/toby`.
+- One PR per finished phase or meaningful batch (Actions minutes). Docs ride along with the next phase's PR.
+- Upstream submodules are not checked out by default: `git submodule update --init --depth 1 ai-trading/packages/<app>` before building their images. The `web` image and `pnpm build` need `CLERK_PUBLISHABLE_KEY` / `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (public; `common/config/family_config.py get ai-trading/clerk PUBLISHABLE_KEY`). Auth tests need `npm ci` first. Docker on the Mac cannot mount the session temp dir: use `ai-trading/temp/` (gitignored).
 
-```bash
-cd /Users/tobytran/personal/family-app           # read-only use of the main checkout
-git status --short --branch && git worktree list # whose branch is this? who else is running?
-git fetch origin
-git worktree add .worktrees/<task> -b feature/ai-trading-<task> origin/dev
-cd .worktrees/<task>/ai-trading                  # open (or session_move) your session here
-git submodule update --init --depth 1 ai-trading/packages/<app>   # only the upstream apps you need to read
-```
-
-Remove the worktree and its local branch as soon as its pull request merges (`git -C /Users/tobytran/personal/family-app worktree remove --force .worktrees/<task>`; `--force` is needed because submodules are checked out).
-
-Rules that bite (all in `ai-trading/AGENTS.md`): never edit `packages/*`; never print secrets; Vibe-Trading is direct OpenAI only; the owner's standing delivery authorization covers PR to `dev`, scoped release to `main`, deploy, and live verification, not paid purchases or the gated items in section 4. `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are sponsored: use them freely for tests and live checks.
-
-## 2. State at the end of this session (verified live)
+## 2. State (verified live, end of session)
 
 | Area | State |
 |---|---|
-| Production | Images `c9b7df5` (main at the disk-guard release): `ta-terminal`, `ahf-terminal`, `vibe-trading`, `auth`, `web`, `mirofish` healthy with zero restarts; `gateway` and `cloudflared` untouched; the expense stack is never touched by this lane (it was healthy; its own release deployed separately at 16:41-16:44 UTC). MiroFish is enabled (`deploy_app=true`, `activate_mirofish=true`). |
-| Terminals | The launcher (`deploy/upstream/terminal/session.sh`) keeps output after a run ends, prompts "Press Enter to start another analysis", never reruns on reconnect, and exits on EOF. The real tmux lifecycle test (`deploy/upstream/terminal/test-session-lifecycle.py`) passes inside both production terminal containers. |
-| Vibe-Trading | Direct OpenAI `gpt-5.5` (`shared/llm:OPENAI_API_KEY_1`), enforced by `deploy/upstream/vibe-trading/start-vibe.py`. Verified: adapter and `/settings/llm` agree, no OpenRouter value, key not copied to settings, one real completion. |
-| Disk | The 96 GB VPS disk filled on the first deploy attempt (each release is about 17 GB; MiroFish's backend alone is 12.5 GB with no shared layers; old tags were never removed). Fixed by `deploy.sh` (PR #72): prunes old commit-tagged `ai-trading-*` images, keeps the release and `last-good-tag`, refuses to start below `AI_TRADING_MIN_FREE_GB` (default 30) free. Verified live after the `c9b7df5` deploy: it pruned `ee15c11` by itself (only `c9b7df5` and the rollback target `aab45c1` remain), the disk is 66% used with 34 GB free, the deployed `deploy.sh` equals `main`'s, and on the real host its guard refuses a 100000 GiB requirement and passes 1 GiB. The next deploy prunes `aab45c1` first, so it starts with about 50 GB free. |
-| PRs this session | #69 terminal/Vibe fix, #70 release, #71 sponsored-key note, #72 disk guard, #76 its release, and the docs PR that carries this handoff (hostnames, lanes, status, the 01k proposal). |
+| Production | `main` image tag `c4db662`: all eight containers healthy, zero restarts, MiroFish on. Expense untouched. Disk about 29 GB free (the next deploy prunes the previous tag first). |
+| Hostnames (01l, done) | `trading-hub.tobytran.dev` = hub (Worker + GCS); `tradingagents.` / `ai-hedge-fund.tobytran.dev` = full-screen terminals behind the Caddy/Clerk gate (signed-out navigation → hub login with `returnTo`); `trading-static` removed; `trading.tobytran.dev` still serves the hub from `web:3000` until Desk Phase 4. `ALLOWED_ORIGINS` in Firestore is now `trading` + `trading-hub` (the running `auth.env` still lists `trading-static` until the next deploy renders it; harmless, it no longer resolves). Clerk instance needs no origin list (`allowed_origins` empty). |
+| MiroFish | Deploys keep it in its current state (`MIROFISH_ACTIVATE=keep`); `activate_mirofish` / `stop_mirofish` dispatch inputs turn it on or off. No more manual re-dispatch or `[skip ci]` dance. |
+| Gateway | `deploy.sh` labels the gateway with the Caddyfile's sha256, so a changed Caddyfile recreates it. Before this, Caddyfile changes never reached the running gateway (single-file bind mount keeps the old inode). |
+| PRs this session | #83 root AGENTS.md; #84/#86 MiroFish keep; #90/#91 hub move; #93/#94 gateway recreate. All merged to `dev` and released. |
 
 ## 3. Next work, in order
 
-1. **Root `AGENTS.md`.** The Desk session's PR #74 (check whether it has merged) adds a root `AGENTS.md` with the "Shared Git Checkout" rules and rewrites the Git bullet of `ai-trading/AGENTS.md`. I did not add a competing root file, and my edits to `ai-trading/AGENTS.md` and `STATUS.md` avoid its lines (a dry-run merge of the two branches was clean; whichever lands second only needs `gh pr update-branch`). Once their root file is on `dev`, add the package map, "Everywhere" rules, and parallel-session etiquette from Appendix A as an additive PR.
-2. **Decide how Vibe-Trading (and MiroFish) are reached** (section 4, question 1). Nothing to build until the owner answers.
-3. **Hub hostname move to `trading-hub.tobytran.dev`** (the Desk takes `trading.tobytran.dev`; Desk plan `02a` §8). Design first, then the cutover order from the plan: bring up `trading-hub`, pass the staging checks on it, then free `trading.tobytran.dev`. Touchpoints found by grep on 2026-10-10:
+1. **01m market-data adapter** (owner-approved spec `plans/subplans/01m-market-data-adapter.md`; plan `plans/subplans/01m-market-data-adapter-plan.md`, written, not yet reviewed by the owner). Ask the owner to review the plan and pick an execution method. It rules one deviation from the spec: `period` other than `ttm` returns 501 in v1. Owner gates before go-live: a free Alpaca account and data key pair, and the SEC contact string (both into Firestore `ai-trading/market-data`; the plan's Task 6 has the commands). Create `MARKET_DATA_TOKEN` and the profile **before** the deploy that adds `market-data.env`, or `render_profiles` fails the whole deploy.
+2. **Owner Safari check** on `trading-hub` (sign-in, reload, quit/reopen), the last open 01h Task 10 item for the new hostname.
+3. **After Desk Phase 4 takes `trading.tobytran.dev`:** remove the `web` service and the four `hub_hostname` tunnel entries if Phase 4 did not.
+4. Weekly Dependabot upstream bumps (sync skills under `.opencode/skills/`); MiroFish public hostname still open (staging `mirofish-static`).
 
-   | Where | What changes |
-   |---|---|
-   | `ai-trading/auth/src/clerk.js` | `CLERK_AUDIENCE` is the constant `https://trading.tobytran.dev`; the hub and the Desk will be two hosts under one Clerk login, so decide per-host audiences (tests: `clerk.test.js`, `origin.test.js`, `server.test.js`) |
-   | Clerk instance (API or dashboard) | allowed origins, session-token `aud` claim, cookie domain; the `clerk-cli` skill can do the API part |
-   | Firestore `ai-trading/gateway` | `ALLOWED_ORIGINS` |
-   | `infrastructure/cloudflare/ai-trading/` | `variables.tf` (hub hostname), `hub-static-variables.tf` (`trading-static`, `trading-origin`), `main.tf` (tunnel ingress), Worker routes, `README.md` |
-   | `infrastructure/cloudflare/ai-trading/workers/mirofish-static.js` | `HUB_LOGIN_URL` redirect (and its tests) |
-   | `ai-trading/frontend/` | `lib/apps.ts` (Desk card links to `trading.tobytran.dev`), `static-server.mjs` comment |
-   | `ai-trading/deploy/production/` | `Caddyfile` host blocks, `README.md` URL table and acceptance checklist; ttyd origin checks |
+## 4. Recipes
 
-   The public Worker cutover still needs the separate approval and auth-limit review recorded in `STATUS.md` (copied-cookie, cross-tab refresh, open-stream expiry limits). The Desk plan's fallback if the move fails: stay on `trading-static`.
-4. **ai-hedge-fund without a Financial Datasets key:** `plans/subplans/01k-ai-hedge-fund-data-options.md` (proposal). Recommended: point `FDClient.BASE_URL` at the Desk's `/api/data` from the wrapper image; needs the Desk lane's data layer and an FD-shaped `/api/data` surface. Waits for the owner.
-5. **Weekly Dependabot upstream bumps** (sync skills under `.opencode/skills/`), and the pending MiroFish public hostname/Worker cutover.
+**Release a phase:** PR from `feature/toby` to `dev` (required check `Contracts, services, workers, frontends`; `gh pr update-branch` if `BEHIND`; merge with `--match-head-commit`). Then a scoped release to `main` of exactly the phase's paths with `build-release.sh` (Appendix B), PR to `main`, squash-merge. The push deploy keeps MiroFish. Infra changes: `gh workflow run ai-trading-infra.yml --ref main -f apply=true` after reading the push run's plan. Static hub: `gh workflow run ai-trading-deploy.yml --ref main -f upload_hub_static=true`.
 
-## 4. Open questions for the owner
+**Reach the VPS** (from the repo root): `common/config/family_config.py run ai-trading/deploy -- common/config/family_config.py with-file shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY -- python3 vps-run.py {} remote-script.sh`.
 
-1. **Why does Vibe-Trading have its own hostname; should every app be a route on `trading-hub`?** Answered in `STATUS.md` (Release 1 Build Notes). Short version: upstream Vibe calls its API through a hard-coded `BASE = ""` (everything root-relative: `/api`, `/auth/sse-ticket`, `/sessions`, `/swarm`, `/settings`, `/options`, ...), has no router `basename` and no backend prefix support, and sends `X-Frame-Options: DENY`. As a route it would collide with `/api/*` and cannot be embedded. Terminals are routes because ttyd has `--base-path`. Recommended: keep Vibe on its own hostname and link to it from the hub. Alternatives: patch at image-build time (breaks "unmodified upstream", re-verify every bump) or a rewriting proxy (brittle with SSE/WebSocket). MiroFish looks feasible as a route (build-time `VITE_API_BASE_URL`, no router base) after a spike.
-2. `ai-hedge-fund.tobytran.dev` does not exist (no DNS). ai-hedge-fund and TradingAgents are terminal routes on the hub host. Does the owner want dedicated hostnames for them?
-3. Should a push deploy keep MiroFish on when it is already running? Today a push deploy (or any dispatch without `activate_mirofish=true`) stops it, so every release needs a manual MiroFish-enabled dispatch. A small `deploy.sh` change (activate when a `mirofish` container is running) would remove the dance and the cross-lane hazard below; it changes the owner's opt-in design, so ask first.
-4. Choice of option for the ai-hedge-fund data source (01k).
+**Live checks used this session:** container state, image tag, restarts, disk, expense container count via `docker ps`/`docker inspect`; public probes with `curl -A '<browser UA>'`; signed-in checks in the agent browser (`agent-browser`, CDP via `browser-harness-js`): WebSocket 101 on `/u/*/ws` through `trading-hub` and on `/ws` at both terminal hostnames, and the `/login?returnTo=` round trip.
 
-## 5. Recipes
+## 5. Pitfalls
 
-**Release a phase** (the standing authorization covers all of it):
-
-1. PR to `dev`. The ruleset requires only the check `Contracts, services, workers, frontends`, and the branch must be current: if `gh pr view` says `BEHIND`, run `gh pr update-branch <n>`, wait for that check, then `gh pr merge <n> --squash --match-head-commit <head sha>`. The 30-minute `Images and smoke tests` job is not a required check, but let it finish on the change itself before you update the branch; a merge of unrelated `dev` commits needs only the required check again.
-2. Release to `main` carrying only the phase's `ai-trading/` paths, taken verbatim from `origin/dev` (Appendix B, `build-release.sh`). `main` has no protection and no PR checks, so the release PR merges at once.
-3. Put `[skip ci]` in the squash-merge message so the push does not start an automatic deploy (which would stop MiroFish), then dispatch: `gh workflow run ai-trading-deploy.yml --ref main -f deploy_app=true -f activate_mirofish=true -f upload_hub_static=false -f upload_mirofish_static=false`. Verified on release #76 (2026-10-10): the squash commit `c9b7df5` started no workflow, and the manual dispatch ran normally; GitHub documents that `[skip ci]` only affects `push` and `pull_request` runs.
-4. Verify live (below). Pushes to `main` that touch `ai-trading/**` (except `plans/` and `*.md`), `.gitmodules`, the deploy workflow, or `common/config/**` start an automatic MiroFish-off deploy; an expense release that touches `common/config/**` would do it too. After any such push, check MiroFish and re-dispatch if it was stopped.
-
-**Reach the VPS** (read-only checks and one-off scripts), from the repo root of any checkout; the runner is in Appendix B:
-
-```bash
-common/config/family_config.py run ai-trading/deploy -- common/config/family_config.py \
-  with-file shared/vps VPS_DEPLOY_SSH_PRIVATE_KEY -- python3 vps-run.py {} remote-script.sh
-```
-
-**Live verification** (what this session asserted, all through `docker exec`/`docker inspect` on the VPS, never printing values): `images.env` and `last-good-tag` equal the release; each app container is `running`, `healthy`, zero restarts, image tag equals the release; only the release and the previous good tag remain as `ai-trading-*` images; expense containers unchanged; provider keys inside the containers match Firestore via `secrets.compare_digest` fed on stdin; Vibe `/settings/llm` (with its `API_AUTH_KEY` from the container env) reports `openai`, `gpt-5.5`, `https://api.openai.com/v1`, key configured, nothing copied to the persisted `.env` (mode 600), and one real `build_llm().invoke(...)` returns; run `test-session-lifecycle.py` inside both terminal containers (`docker exec -i <container> python - < file`). Public (checked after `c9b7df5`): `trading.tobytran.dev` 200 and `/apps/vibe-trading` 200, the terminal routes and `vibe-trading.tobytran.dev` 401 without a session. Use `curl` with a browser User-Agent; Python `urllib` gets an edge 403.
-
-## 6. Pitfalls we hit
-
-- A full disk breaks the pull and the env-file rollback. If `deploy.sh` ever fails mid-rollback, check `/etc/family-app/ai-trading` (a failed `install` can leave a zero-byte temp file) and `images.env` before anything else. A residual gap: `restore_or_remove_secrets` aborts the rest of the rollback if one restore fails.
-- `docker rmi` without `-f` refuses images any container uses; that is the prune's safety net. Never run a global prune: the expense stack shares the host (`/var/lib/docker` also held about 200 mostly-expense images and 4 GB of journal logs; tidying those is the owner's call).
-- Each MiroFish image build produces new layers, so every deploy re-pulls about 12.5 GB. A reproducible build would remove that cost.
-- `dev` ruleset is strict: any new commit on `dev` makes an open PR `BEHIND`, which restarts the required check.
-- The OpenCode docs for V2: only `AGENTS.md` is read; `opencode.json` `instructions` and `CLAUDE.md` do nothing; nested `AGENTS.md` load when a file below them is read.
-- The scripts in Appendix B live here because a session's temp directory does not survive. Remote `feature/*` and `release/*` branches from this session were left in place; only worktrees and local branches are removed.
-
-## Appendix A: additions for the root `AGENTS.md` (after the Desk session's file lands)
-
-```md
-## Package rules
-Start a session inside the package you are changing. Each package's `AGENTS.md` governs that package only; where rules conflict, the package being edited wins. Never apply one app's branch, release, or deploy policy to another.
-
-| Path | What | Rules |
-|---|---|---|
-| `ai-trading/` | Trading Hub (open-source apps) and the Family Desk | `ai-trading/AGENTS.md` |
-| `expense-tax-management/` | Expense and tax apps | `expense-tax-management/AGENTS.md` |
-| `infrastructure/` | Terraform, VPS bootstrap, shared compose, backups | `infrastructure/README.md` |
-| `common/config/` | Firestore `family-config` CLI | `common/config/README.md` |
-| `docs/superpowers/` | Cross-app specs and plans | n/a |
-
-## Everywhere
-- Public repo: never commit or print secrets, email addresses, account numbers, or VPS addresses.
-- All secrets and env values live in Firestore `family-config`, read and written only through `common/config/family_config.py`. No `.env` or key files in the repo.
-- Infrastructure is code under `infrastructure/`; no console edits. GCP commands use `CLOUDSDK_ACTIVE_CONFIG_NAME=personal`. One shared Cloudflare token (`shared/cloudflare`): never create another.
-- One shared VPS: touch only your own app's containers, images, and volumes; never run a global `docker system prune`.
-- Never commit to or force-push `dev` or `main`; work reaches `dev` by pull request; `main` releases carry only the owning package's paths. Delivery authorization is per package.
-
-## Parallel sessions
-Stay inside your area, follow any plan another session has published in the repo, keep edits to shared files (such as `ai-trading/plans/STATUS.md`) small and additive, rebase before you push, and never stage or revert another session's changes.
-```
+- A Caddyfile-only change needs a deploy to reach the gateway (now automatic via the label); verify with `docker exec ai-trading-gateway-1 grep ... /etc/caddy/Caddyfile`.
+- Releases that touch `infrastructure/cloudflare/**` also start `Expense Tax Cloudflare` on `main`; it only plans on push (apply needs a manual dispatch), so it cannot change expense resources.
+- Tunnel ingress is a list: inserting entries shows the later ones as positional changes in `terraform plan`; check that the `trading.tobytran.dev` entries and `tunnel["hub"]` are not in the diff.
+- `docker rmi` without `-f` is the prune's safety net; never run a global prune (shared VPS).
 
 ## Appendix B: scripts used this session (recreate them in a temp directory, not in the repo)
 
