@@ -15,8 +15,9 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 - `trading-hub.tobytran.dev`: the Trading Hub. It carries the registry (`/apps/*`) and the TradingAgents and ai-hedge-fund terminals (`/u/*`).
 - `trading.tobytran.dev`: the Family Desk, our own solution (Release 2).
 - `vibe-trading.tobytran.dev` stays a separate hostname for now. Upstream Vibe-Trading cannot run under a path prefix unmodified: its SPA and API are root-relative (`/api`, `/auth`, `/settings`, ...; the API base is a hard-coded `""`), its router has no base path, and it sends `X-Frame-Options: DENY`, so it cannot be a hub route or be framed. Making it a route would need patched upstream code or a rewriting proxy, which is the owner's decision (see `plans/STATUS.md`), not a default.
-- MiroFish's public hostname is still open (`mirofish-static.tobytran.dev` is staging today). TradingAgents and ai-hedge-fund have no hostnames of their own; they are terminal routes on the hub.
-- The hub has not moved yet and still answers on `trading.tobytran.dev`. Do not hard-code that hostname for the hub in new code, and do not put anything else there. The move is this lane's work: bring up `trading-hub`, pass the existing staging checks on it, then switch `trading.tobytran.dev` to the Desk. It touches Cloudflare Terraform (DNS, Worker routes), the Clerk allowed origins and `aud` claim (`auth/src/clerk.js`), the `ai-trading/gateway` profile's `ALLOWED_ORIGINS`, ttyd origin checks, the MiroFish static Worker's login redirect, and the registry's Desk card. The public Worker cutover still needs the separate approval recorded in `plans/STATUS.md`.
+- MiroFish's public hostname is still open (`mirofish-static.tobytran.dev` is staging today).
+- `tradingagents.tobytran.dev` and `ai-hedge-fund.tobytran.dev`: the two terminals, full-screen, behind the same Caddy/Clerk gate (01l). They also stay `/u/*` routes on the hub.
+- The hub moved to `trading-hub.tobytran.dev` (Worker + GCS, 01l). `trading.tobytran.dev` still serves the hub from `web:3000` only until Desk Phase 4 takes it; do not link to it as the hub or put anything else there.
 
 ## Secrets and Environment Values
 
@@ -66,14 +67,14 @@ Owner decision, 2026-10-10 (Desk plan: `plans/subplans/02a-desk-v1-strategies-de
 ## Git
 
 - `family-app` is a public repository: no secrets, email addresses, account numbers, or VPS addresses in commits.
-- **Checkout ownership (owner, 2026-10-10):**
-  - The main ai-trading coding session works in the main checkout (`/Users/tobytran/personal/family-app`) on its own `feature/ai-trading-*` branch, so the owner can review its mockups and plans there.
+- **Checkout (owner, 2026-10-10; root `AGENTS.md`):**
+  - Main sessions work in the main checkout (`/Users/tobytran/personal/family-app`) on the local branch `feature/toby`, so the owner can review mockups and plans there.
+  - Worktrees for a main session are opt-in: by default it never opens one on its own judgment, and uses one only with the owner's explicit instruction or approval (for example, for more parallelism).
+  - Subagents use worktrees: under `.worktrees/`, on their own `feature/*` branches (release branches from `origin/main` included). The main session merges their branch into `feature/toby`, then removes the worktree and deletes the branch.
   - Start ai-trading opencode sessions with the working directory `ai-trading/`, not the repository root. Repository-wide commands still run from the root, for example `git -C ..` and `../common/config/family_config.py`.
-  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, fast-forward the main checkout's local branch to `origin/dev`.
-  - The main session's subagents work in worktrees under `.worktrees/` on their own `feature/*` branches. The main session merges their work into its branch and then removes the worktree.
-  - Parallel sessions also use worktrees.
-  - The owner resolves conflicts by assigning sessions to worktrees.
-  - Open pull requests to `dev`.
+  - Update `feature/toby` with `git fetch origin` and `git merge origin/dev`. ai-trading sessions never reset, rebase, or force-push it.
+  - Handoffs carry only what is merged to `dev`. Never hand over a worktree, an unmerged branch, or uncommitted work. Before handing off, leave `feature/toby` merged up to `origin/dev`.
+  - Open pull requests from `feature/toby` to `dev`, one per finished phase or meaningful batch, never per small task (root `AGENTS.md`, "Conserve GitHub Actions minutes").
 - **Standing delivery authorization (personal project, 2026-10-10):** after completing each requested implementation phase, run verification/review, commit and push, create and merge its PR to `dev`, then release and deploy it immediately without asking for routine approval. Do not stop at a branch-choice menu, an unmerged PR, or a "ready to deploy" handoff. Monitor CI/deployment and verify the live result before reporting the phase complete.
 - Releases to `main` carry only the completed phase's ai-trading paths (and its app-specific workflow changes when needed), on a branch from `origin/main`. The standing authorization above covers that scoped release; it replaces the old per-release approval gate. Never merge all of `dev` into `main`, which would also release unrelated expense phases.
 - Deploys keep MiroFish in its current state (`MIROFISH_ACTIVATE=keep`); turn it on or off only with the `activate_mirofish` or `stop_mirofish` dispatch inputs. Upload static assets only when that phase changes them.
