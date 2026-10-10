@@ -397,6 +397,63 @@ http.server.HTTPServer(("0.0.0.0", 7681), H).serve_forever()
   docker network rm "$net" >/dev/null 2>&1 || true
 }
 
+smoke_market_data() {
+  local net="smoke-md-net"
+  docker network rm "$net" >/dev/null 2>&1 || true
+  docker network create "$net" >/dev/null
+  docker run -d --name smoke-market-data --network "$net" --network-alias market-data \
+    -e MARKET_DATA_TOKEN=smoke-token "$(image market-data)" >/dev/null
+  containers+=(smoke-market-data)
+  # Real upstream FDClient, repointed by the wrapper's sitecustomize, against the
+  # real service with no provider keys: earnings 501, prices 502, bad key 401.
+  docker run --rm --network "$net" -e FD_BASE_URL=http://market-data:8000 -e FINANCIAL_DATASETS_API_KEY=smoke-token \
+    --entrypoint python "$(image ahf-terminal)" -c '
+import time, urllib.request
+for _ in range(30):
+    try:
+        urllib.request.urlopen("http://market-data:8000/healthz", timeout=2); break
+    except Exception:
+        time.sleep(1)
+from hedge_fund.data import FDClient, FDClientError
+assert FDClient.BASE_URL == "http://market-data:8000", FDClient.BASE_URL
+def status(call):
+    try:
+        call(); return 200
+    except FDClientError as e:
+        return e.status_code
+fd = FDClient()
+assert status(lambda: fd.get_earnings("AAPL")) == 501
+assert status(lambda: fd.get_prices("AAPL", "2024-01-01", "2024-01-31")) == 502
+assert status(lambda: FDClient(api_key="wrong").get_prices("AAPL", "2024-01-01", "2024-01-31")) == 401
+' || fail "ai-hedge-fund FDClient against market-data"
+  echo "ok   ai-hedge-fund FDClient reaches market-data: 501/502/401 contract"
+  # Shape contract: our responses parse into upstream's own pydantic models
+  # (server code run in-process with fake providers, inside the real ahf image).
+  docker run --rm --network none -v "$PWD/ai-trading/market-data:/md:ro" -e PYTHONPATH=/md -e PYTHONDONTWRITEBYTECODE=1 \
+    --entrypoint python "$(image ahf-terminal)" -c '
+import threading
+import server, test_metrics
+from hedge_fund.data import FDClient
+class P:
+    def daily_bars(self, t, s, e, a):
+        return [{"open": 1.0, "close": 20.0, "high": 2.0, "low": 0.5, "volume": 7, "time": "2024-04-30T04:00:00Z"}]
+class F:
+    def companyfacts(self, t): return test_metrics.company()
+    def facts(self, t): return {"ticker": t, "name": "Example", "cik": "1", "is_active": True, "sector": "Manufacturing"}
+srv = server.make_server(0, "k", P(), F())
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+FDClient.BASE_URL = f"http://127.0.0.1:{srv.server_address[1]}"
+fd = FDClient(api_key="k")
+assert fd.get_prices("AAPL", "2024-04-01", "2024-04-30")[0].close == 20.0
+m = fd.get_financial_metrics("AAPL", "2024-05-01", limit=2)
+assert [r.report_period for r in m] == ["2024-03-31", "2023-12-31"] and m[0].market_cap == 200.0, m
+assert fd.get_company_facts("AAPL").sector == "Manufacturing"
+' || fail "market-data responses do not parse into upstream models"
+  echo "ok   market-data prices, metrics, and facts parse into upstream models"
+  docker rm -f smoke-market-data >/dev/null
+  docker network rm "$net" >/dev/null 2>&1 || true
+}
+
 case "${1:-all}" in
   web) smoke_web ;;
   ta-terminal) smoke_terminal ta-terminal tradingagents /u/tradingagents 17681 ;;
@@ -405,17 +462,19 @@ case "${1:-all}" in
   mirofish-backend) smoke_mirofish_backend ;;
   mirofish) smoke_mirofish_backend; smoke_mirofish_frontend ;;
   gateway) smoke_gateway ;;
+  market-data) smoke_market_data ;;
   all)
     smoke_web
     smoke_terminal ta-terminal tradingagents /u/tradingagents 17681
     smoke_gateway
     smoke_terminal ahf-terminal aihf /u/ai-hedge-fund 17682
+    smoke_market_data
     smoke_vibe
     smoke_mirofish_backend
     smoke_mirofish_frontend
     ;;
   *)
-    echo "usage: $0 [web|ta-terminal|ahf-terminal|vibe-trading|mirofish-backend|mirofish|gateway|all]" >&2
+    echo "usage: $0 [web|ta-terminal|ahf-terminal|market-data|vibe-trading|mirofish-backend|mirofish|gateway|all]" >&2
     exit 2
     ;;
 esac
